@@ -1,3 +1,7 @@
+[!WARNING]
+AI-coded and untested!
+Syntax will change in the future!
+
 # STM32 Pinout Tool
 
 A browser-based tool for automatic STM32 pin assignment using constraint-based solving. Define your peripheral requirements in a simple constraint language, and the solver finds optimal pin assignments across multiple MCU variants.
