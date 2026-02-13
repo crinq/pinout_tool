@@ -1,6 +1,6 @@
-[!WARNING]
-AI-coded and untested!
-Syntax will change in the future!
+> [!WARNING]
+> AI-coded and untested!<br>
+> Syntax will change in the future!
 
 # STM32 Pinout Tool
 
