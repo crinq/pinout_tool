@@ -1,0 +1,329 @@
+/* ============================================================
+   Constraint Editor
+   ============================================================ */
+
+.constraint-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ce-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.ce-toolbar-spacer {
+  flex: 1;
+}
+
+.ce-stats {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ce-solver-status {
+  padding: 2px 8px;
+  font-size: 11px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.ce-solver-status:empty {
+  display: none;
+}
+
+.ce-editor-wrapper {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Line numbers */
+.ce-line-numbers {
+  width: 36px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  padding: 8px 0;
+  overflow: hidden;
+  user-select: none;
+}
+
+.ce-line-num {
+  height: 18px;
+  line-height: 18px;
+  padding: 0 6px;
+  text-align: right;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Code area (stacked highlight + textarea) */
+.ce-code-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: var(--panel-bg);
+}
+
+.ce-highlight,
+.ce-textarea {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  padding-bottom: 50%;
+  margin: 0;
+  border: none;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 2;
+  word-wrap: normal;
+  background: transparent;
+}
+
+.ce-highlight {
+  pointer-events: none;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.ce-textarea {
+  color: transparent;
+  caret-color: var(--text-primary);
+  resize: none;
+  outline: none;
+}
+
+.ce-textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+/* When textarea has placeholder, make it visible */
+.ce-textarea:placeholder-shown {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+/* Syntax highlighting colors */
+.ce-keyword {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+[data-theme="dark"] .ce-keyword {
+  color: #a78bfa;
+}
+
+.ce-string {
+  color: #059669;
+}
+
+[data-theme="dark"] .ce-string {
+  color: #34d399;
+}
+
+.ce-comment {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.ce-number {
+  color: #d97706;
+}
+
+[data-theme="dark"] .ce-number {
+  color: #fbbf24;
+}
+
+.ce-builtin {
+  color: #2563eb;
+}
+
+[data-theme="dark"] .ce-builtin {
+  color: #60a5fa;
+}
+
+.ce-operator {
+  color: #dc2626;
+}
+
+[data-theme="dark"] .ce-operator {
+  color: #f87171;
+}
+
+/* Error line highlight */
+.ce-error-line {
+  background: rgba(220, 38, 38, 0.1);
+  display: inline;
+  border-bottom: 1px wavy #dc2626;
+}
+
+[data-theme="dark"] .ce-error-line {
+  background: rgba(248, 113, 113, 0.1);
+  border-bottom-color: #f87171;
+}
+
+/* Error panel */
+.ce-error-panel {
+  max-height: 100px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.ce-error-item {
+  padding: 2px 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.ce-error-loc {
+  color: var(--error);
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ce-error-msg {
+  color: var(--text-primary);
+}
+
+.ce-suggestion {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.ce-error-more {
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 2px 0;
+}
+
+/* ============================================================
+   Help Modal
+   ============================================================ */
+
+.ce-help-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ce-help-modal {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.ce-help-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.ce-help-body {
+  overflow-y: auto;
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ce-help-body section {
+  margin-bottom: 16px;
+}
+
+.ce-help-body h3 {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.ce-help-body p {
+  margin: 4px 0;
+  color: var(--text-secondary);
+}
+
+.ce-help-code {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-primary);
+}
+
+.ce-help-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+}
+
+.ce-help-body table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.ce-help-body table td:first-child {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.ce-help-body table td:last-child {
+  color: var(--text-secondary);
+}
+
+.ce-help-body code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 11px;
+  background: var(--bg-secondary);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
