@@ -171,10 +171,12 @@ export class App {
     this.showStatus('Solving...', 'info');
     this.setSolveButtonState(true);
 
-    const workerUrl = this.settings.solverType === 'backtracking'
-      ? new URL('./solver/solver-worker.ts', import.meta.url)
-      : new URL(`./solver/${this.settings.solverType}-worker.ts`, import.meta.url);
-    const worker = new Worker(workerUrl, { type: 'module' });
+    // Vite requires new Worker(new URL(...)) as a single static expression
+    // to detect and bundle workers. Add new solver workers as cases here.
+    const worker = new Worker(
+      new URL('./solver/solver-worker.ts', import.meta.url),
+      { type: 'module' }
+    );
     this.solverWorker = worker;
 
     worker.onmessage = (e) => {
