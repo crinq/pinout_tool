@@ -46,9 +46,14 @@ export class PackageViewer implements Panel {
   // Search / highlight state
   private searchInput!: HTMLInputElement;
   private searchMatchPins: Set<string> = new Set();
+  private searchMatchSignals: Set<string> = new Set();
   private searchAnimationId: number | null = null;
   private searchAnimPhase = 0;
   private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Hover-based signal highlight state
+  private hoverMatchPins: Set<string> = new Set();
+  private signalToPins: Map<string, string[]> = new Map();
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -157,9 +162,12 @@ export class PackageViewer implements Panel {
     this.assignments = [];
     this.hoveredPin = null;
     this.selectedPin = null;
+    this.hoverMatchPins.clear();
     if (this.searchInput) this.searchInput.value = '';
     this.searchMatchPins.clear();
+    this.searchMatchSignals.clear();
     this.stopSearchAnimation();
+    this.buildSignalToPins(mcu);
     this.render();
   }
 
@@ -280,7 +288,6 @@ export class PackageViewer implements Panel {
       this.renderLQFP(ctx, width, height);
     }
 
-    this.renderSearchHighlights(ctx);
   }
 
   private isBGA(): boolean {
@@ -465,8 +472,9 @@ export class PackageViewer implements Panel {
       ctx.rotate(screenLabelRotation);
 
       const fontSize = Math.min(9, pinSpacing * 0.65);
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
-      ctx.font = `${fontSize}px monospace`;
+      const searchColor = this.getSearchHighlightColor(pin.name);
+      ctx.fillStyle = searchColor || getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+      ctx.font = searchColor ? `bold ${fontSize}px monospace` : `${fontSize}px monospace`;
       ctx.textBaseline = 'middle';
 
       // Label text
@@ -691,11 +699,12 @@ export class PackageViewer implements Panel {
           ? `P${pin.gpioPort}${pin.gpioNumber}`
           : pin.name.substring(0, 4);
         const fontSize = Math.min(7, cellSize * 0.28);
+        const searchColor = this.getSearchHighlightColor(pin.name);
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(counterAngle);
-        ctx.fillStyle = isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor;
-        ctx.font = `${fontSize}px monospace`;
+        ctx.fillStyle = searchColor || (isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor);
+        ctx.font = searchColor ? `bold ${fontSize}px monospace` : `${fontSize}px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(gpio, 0, 0);
@@ -747,6 +756,7 @@ export class PackageViewer implements Panel {
 
     if (pin !== this.hoveredPin) {
       this.hoveredPin = pin;
+      this.updateHoverMatches();
       this.render();
     }
 
@@ -759,6 +769,7 @@ export class PackageViewer implements Panel {
 
   private onMouseLeave(): void {
     this.hoveredPin = null;
+    this.updateHoverMatches();
     this.hideTooltip();
     this.render();
   }
@@ -821,6 +832,9 @@ export class PackageViewer implements Panel {
       item.className = 'pv-assign-item';
       if (signal.name === currentSignal) {
         item.classList.add('pv-assign-current');
+      }
+      if (this.searchMatchSignals.has(signal.name)) {
+        item.classList.add('pv-assign-match');
       }
       item.textContent = signal.name;
       item.addEventListener('click', (ev) => {
@@ -898,7 +912,12 @@ export class PackageViewer implements Panel {
       }
     }
     if (signals.length > 0) {
-      html += `<span class="tooltip-signals">${signals.join(', ')}</span>`;
+      const formatted = signals.map(s =>
+        this.searchMatchSignals.has(s)
+          ? `<span class="tooltip-match">${s}</span>`
+          : s
+      );
+      html += `<span class="tooltip-signals">${formatted.join(', ')}</span>`;
     } else {
       html += '<span class="tooltip-none">No peripheral signals</span>';
     }
@@ -927,14 +946,62 @@ export class PackageViewer implements Panel {
   }
 
   // ============================================================
+  // Hover-based alternative pin highlight
+  // ============================================================
+
+  private buildSignalToPins(mcu: Mcu): void {
+    this.signalToPins.clear();
+    for (const pin of mcu.pins) {
+      for (const sig of pin.signals) {
+        if (sig.name === 'GPIO') continue;
+        let list = this.signalToPins.get(sig.name);
+        if (!list) { list = []; this.signalToPins.set(sig.name, list); }
+        list.push(pin.name);
+      }
+    }
+  }
+
+  private updateHoverMatches(): void {
+    this.hoverMatchPins.clear();
+    if (!this.hoveredPin || this.assignments.length === 0) {
+      this.updateAnimation();
+      return;
+    }
+    // Only use signals that are actually assigned to this pin in the current solution
+    const assignedSignals = new Set<string>();
+    for (const a of this.assignments) {
+      if (a.pinName === this.hoveredPin.name) {
+        assignedSignals.add(a.signalName);
+      }
+    }
+    if (assignedSignals.size === 0) {
+      this.updateAnimation();
+      return;
+    }
+    // Find other pins that can map to at least one of the assigned signals
+    for (const sigName of assignedSignals) {
+      const pins = this.signalToPins.get(sigName);
+      if (pins) {
+        for (const p of pins) {
+          if (p !== this.hoveredPin!.name) {
+            this.hoverMatchPins.add(p);
+          }
+        }
+      }
+    }
+    this.updateAnimation();
+  }
+
+  // ============================================================
   // Pin/Signal Search
   // ============================================================
 
   private executeSearch(query: string): void {
     this.searchMatchPins.clear();
+    this.searchMatchSignals.clear();
 
     if (!query.trim() || !this.mcu) {
-      this.stopSearchAnimation();
+      this.updateAnimation();
       this.render();
       return;
     }
@@ -958,6 +1025,7 @@ export class PackageViewer implements Panel {
         const candidates = expandPatternToCandidates(patternNode, this.mcu);
         for (const c of candidates) {
           this.searchMatchPins.add(c.pin.name);
+          this.searchMatchSignals.add(c.signalName);
         }
       }
     }
@@ -968,16 +1036,25 @@ export class PackageViewer implements Panel {
         for (const sig of pin.signals) {
           if (sig.name.toUpperCase().includes(trimmed)) {
             this.searchMatchPins.add(pin.name);
+            this.searchMatchSignals.add(sig.name);
           }
         }
       }
     }
 
-    if (this.searchMatchPins.size > 0) {
+    this.updateAnimation();
+    if (this.searchMatchPins.size === 0) {
+      this.render();
+    }
+  }
+
+  /** Start or stop the pulsating animation based on whether any pins need highlighting */
+  private updateAnimation(): void {
+    const needsAnimation = this.searchMatchPins.size > 0 || this.hoverMatchPins.size > 0;
+    if (needsAnimation) {
       this.startSearchAnimation();
     } else {
       this.stopSearchAnimation();
-      this.render();
     }
   }
 
@@ -1006,40 +1083,9 @@ export class PackageViewer implements Panel {
     this.searchAnimPhase = 0;
   }
 
-  private renderSearchHighlights(ctx: CanvasRenderingContext2D): void {
-    if (this.searchMatchPins.size === 0) return;
-
+  private getSearchHighlightColor(pinName: string): string | null {
+    if (!this.searchMatchPins.has(pinName) && !this.hoverMatchPins.has(pinName)) return null;
     const intensity = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
-    const glowRadius = 2 + 3 * intensity;
-
-    ctx.save();
-    ctx.strokeStyle = `rgba(251, 191, 36, ${intensity})`;
-    ctx.lineWidth = 2.5;
-    ctx.shadowColor = 'rgba(251, 191, 36, 0.8)';
-    ctx.shadowBlur = glowRadius * 2;
-
-    const isBga = this.isBGA();
-
-    for (const pr of this.pinRects) {
-      if (!this.searchMatchPins.has(pr.pin.name)) continue;
-
-      if (isBga) {
-        const cx = pr.x + pr.width / 2;
-        const cy = pr.y + pr.height / 2;
-        const r = pr.width / 2 + glowRadius;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.stroke();
-      } else {
-        ctx.strokeRect(
-          pr.x - glowRadius,
-          pr.y - glowRadius,
-          pr.width + glowRadius * 2,
-          pr.height + glowRadius * 2
-        );
-      }
-    }
-
-    ctx.restore();
+    return `rgba(251, 191, 36, ${intensity})`;
   }
 }

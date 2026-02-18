@@ -112,6 +112,24 @@ registerCostFunction({
   },
 });
 
+// ============================================================
+// Pin Proximity Helpers
+// ============================================================
+
+export function parseBgaPosition(pos: string): { row: number; col: number } | null {
+  const match = pos.match(/^([A-Z])(\d+)$/);
+  if (!match) return null;
+  return {
+    row: match[1].charCodeAt(0) - 'A'.charCodeAt(0),
+    col: parseInt(match[2], 10),
+  };
+}
+
+export function parsePackagePinCount(pkg: string): number {
+  const match = pkg.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 registerCostFunction({
   id: 'pin_clustering',
   name: 'Pin Clustering',
@@ -136,6 +154,64 @@ registerCostFunction({
       // Each extra port adds 1
       cost += Math.max(0, gpioPorts.size - 1);
     }
+    return cost;
+  },
+});
+
+registerCostFunction({
+  id: 'pin_proximity',
+  name: 'Pin Proximity',
+  description: 'Physical distance between pins in the same port (lower means pins are closer together)',
+  compute(solution: Solution, mcu: Mcu): number {
+    const isBGA = /BGA|WLCSP/i.test(mcu.package);
+    const totalPins = parsePackagePinCount(mcu.package);
+
+    // Group unique pin positions by port
+    const portPins = new Map<string, string[]>();
+    for (const ca of solution.configAssignments) {
+      for (const a of ca.assignments) {
+        if (a.portName === '<pinned>') continue;
+        const pin = mcu.pinByName.get(a.pinName);
+        if (!pin) continue;
+        let positions = portPins.get(a.portName);
+        if (!positions) {
+          positions = [];
+          portPins.set(a.portName, positions);
+        }
+        if (!positions.includes(pin.position)) {
+          positions.push(pin.position);
+        }
+      }
+    }
+
+    let cost = 0;
+
+    for (const positions of portPins.values()) {
+      if (positions.length < 2) continue;
+
+      if (isBGA) {
+        const parsed = positions.map(parseBgaPosition).filter((p): p is { row: number; col: number } => p !== null);
+        for (let i = 0; i < parsed.length; i++) {
+          for (let j = i + 1; j < parsed.length; j++) {
+            const dr = parsed[i].row - parsed[j].row;
+            const dc = parsed[i].col - parsed[j].col;
+            cost += Math.sqrt(dr * dr + dc * dc);
+          }
+        }
+      } else {
+        // LQFP-style: circular distance
+        const nums = positions.map(p => parseInt(p, 10)).filter(n => !isNaN(n));
+        if (totalPins > 0) {
+          for (let i = 0; i < nums.length; i++) {
+            for (let j = i + 1; j < nums.length; j++) {
+              const diff = Math.abs(nums[i] - nums[j]);
+              cost += Math.min(diff, totalPins - diff);
+            }
+          }
+        }
+      }
+    }
+
     return cost;
   },
 });

@@ -1,0 +1,145 @@
+port clock:
+  channel IN
+  channel OUT
+  color "brown"
+  
+  config "XTAL":
+    IN = RCC_OSCIN
+    OUT = RCC_OSCOUT
+  
+port debug:
+  channel DIO
+  channel CLK
+  channel SWO
+  color "brown"
+
+  config "SWD":
+    DIO = *_SWDIO
+    CLK = *_SWCLK
+    SWO = *_SWO
+    
+port USB:
+  channel DP
+  channel DM
+  
+  config "USB":
+    DP = USB*_OTGFSDP
+    DM = USB*_OTGFSDM
+
+port SAFETY:
+  channel TX
+  channel RX
+  
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX, "USART")
+
+port ECAT_GD:
+  channel mosi
+  channel miso
+  channel sck
+  channel cs_ecat
+  channel cs_gd
+  channel sync0
+  channel sync1
+  channel irq
+  color "red"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    #cs_ecat = OUT
+    #cs_gd = OUT
+    #sync0 = IN
+    #sync1 = OUT
+    #irq = IN
+    require same_instance(miso, mosi, sck, "SPI")
+
+port ENC0:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en
+  color "orange"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    #cs_ecat = OUT
+    require same_instance(miso, mosi, sck, "SPI")
+    
+port ENC1:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en
+  color "green"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    #cs_ecat = OUT
+    require same_instance(miso, mosi, sck, "SPI")
+
+port ENC2:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en
+  color "red"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    #cs_ecat = OUT
+    require same_instance(miso, mosi, sck, "SPI")
+ 
+port MOT:
+  channel A
+  channel AN
+  channel B
+  channel BN
+  channel C
+  channel CN
+  channel EN
+  channel FAULT
+  channel IA
+  channel IB
+  channel IC
+  channel IDC
+  channel UA
+  channel UB
+  channel UC
+  channel UDC
+  channel TMOT
+  channel TFET
+  color "blue"
+
+  config "MOT":
+    A = TIM[1,8]_CH1
+    AN = TIM[1,8]_CH1N
+    B = TIM[1,8]_CH2
+    BN = TIM[1,8]_CH2N
+    C = TIM[1,8]_CH3
+    CN = TIM[1,8]_CH3N
+    IA = ADC1_INP[1-3]
+    IB = ADC2_INP[1-3]
+    IC = ADC3_INP[1-3]
+    IDC = ADC1_INP[7-10]
+    UA = ADC1_INP[4-6]
+    UB = ADC2_INP[4-6]
+    UC = ADC3_INP[4-6]
+    UDC = ADC2_INP[7-10]
+    TMOT = ADC3_INP[7-10]
+    TFET = ADC3_INP[7-10]
+    EN = TIM[1,8]_BKIN | TIM[1,8]_BKIN2
+    FAULT = TIM[1,8]_BKIN2 | TIM[1,8]_BKIN
+    require same_instance(A, AN, B, BN, C, CN, EN, FAULT, "TIM")

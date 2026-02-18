@@ -131,6 +131,8 @@ export interface SolverResult {
 
 export interface Solution {
   id: number;
+  name?: string;
+  solverOrigin?: string;
   mcuRef: string;
   configAssignments: ConfigCombinationAssignment[];
   portPeripherals: Map<string, Set<string>>;
@@ -165,6 +167,7 @@ export interface SolverStats {
   validSolutions: number;
   solveTimeMs: number;
   configCombinations: number;
+  perSolver?: Record<string, SolverStats>;
 }
 
 // ============================================================

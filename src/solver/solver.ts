@@ -18,7 +18,7 @@ import { normalizePeripheralType } from '../types';
 import type {
   ProgramNode,
   RequireNode, SignalPatternNode,
-  ConstraintExprNode,
+  ConstraintExprNode, PatternPart,
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
@@ -51,34 +51,34 @@ const DEFAULT_CONFIG: SolverConfig = {
 // Internal Types
 // ============================================================
 
-interface PortSpec {
+export interface PortSpec {
   name: string;
   channels: Map<string, ChannelSpec>;
   configs: ConfigSpec[];
 }
 
-interface ChannelSpec {
+export interface ChannelSpec {
   name: string;
   allowedPins?: Set<string>;
 }
 
-interface ConfigSpec {
+export interface ConfigSpec {
   name: string;
   mappings: MappingSpec[];
   requires: RequireNode[];
 }
 
-interface MappingSpec {
+export interface MappingSpec {
   channelName: string;
   signalExprs: SignalExprSpec[];
 }
 
-interface SignalExprSpec {
+export interface SignalExprSpec {
   alternatives: SignalPatternNode[];
   candidates: SignalCandidate[]; // resolved against MCU
 }
 
-interface SolverVariable {
+export interface SolverVariable {
   portName: string;
   channelName: string;
   configName: string;
@@ -88,7 +88,7 @@ interface SolverVariable {
   domain: number[]; // indices into candidates
 }
 
-interface VariableAssignment {
+export interface VariableAssignment {
   variable: SolverVariable;
   candidate: SignalCandidate;
 }
@@ -97,7 +97,7 @@ interface VariableAssignment {
 // Pin Tracking (port-aware uniqueness)
 // ============================================================
 
-interface PinTracker {
+export interface PinTracker {
   // pin -> port that owns it (pins can't be shared across ports)
   pinOwner: Map<string, string>;
   // "port\0pin" -> number of configs in that port using this pin
@@ -107,9 +107,15 @@ interface PinTracker {
   // "port\0pin" -> channel that owns this pin within the port
   // (a pin is exclusive to one channel across all configs)
   portPinChannel: Map<string, string>;
+  // Peripheral instance -> port that owns it (exclusive by default)
+  instanceOwner: Map<string, string>;
+  // "port\0instance" -> ref count for backtracking
+  instanceRefCount: Map<string, number>;
+  // Patterns for instances that may be shared across ports
+  sharedPatterns: PatternPart[];
 }
 
-function createPinTracker(reservedPins: string[]): PinTracker {
+export function createPinTracker(reservedPins: string[], sharedPatterns: PatternPart[]): PinTracker {
   const pinOwner = new Map<string, string>();
   // Mark reserved pins as owned by a sentinel port
   for (const pin of reservedPins) {
@@ -120,11 +126,15 @@ function createPinTracker(reservedPins: string[]): PinTracker {
     portPinRefCount: new Map(),
     configPins: new Map(),
     portPinChannel: new Map(),
+    instanceOwner: new Map(),
+    instanceRefCount: new Map(),
+    sharedPatterns,
   };
 }
 
-function canAssignPin(
-  tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string
+export function canAssignPin(
+  tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string,
+  peripheralInstance?: string
 ): boolean {
   // Cross-port exclusivity
   const owner = tracker.pinOwner.get(pin);
@@ -136,11 +146,17 @@ function canAssignPin(
   const ppKey = `${portName}\0${pin}`;
   const existingChannel = tracker.portPinChannel.get(ppKey);
   if (existingChannel !== undefined && existingChannel !== channelName) return false;
+  // Peripheral instance exclusivity (unless shared)
+  if (peripheralInstance && !isSharedInstance(peripheralInstance, tracker.sharedPatterns)) {
+    const instOwner = tracker.instanceOwner.get(peripheralInstance);
+    if (instOwner !== undefined && instOwner !== portName) return false;
+  }
   return true;
 }
 
-function assignPin(
-  tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string
+export function assignPin(
+  tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string,
+  peripheralInstance?: string
 ): void {
   tracker.pinOwner.set(pin, portName);
   const ppKey = `${portName}\0${pin}`;
@@ -149,10 +165,17 @@ function assignPin(
   const configKey = `${portName}\0${configName}`;
   if (!tracker.configPins.has(configKey)) tracker.configPins.set(configKey, new Set());
   tracker.configPins.get(configKey)!.add(pin);
+  // Track peripheral instance ownership
+  if (peripheralInstance) {
+    tracker.instanceOwner.set(peripheralInstance, portName);
+    const ipKey = `${portName}\0${peripheralInstance}`;
+    tracker.instanceRefCount.set(ipKey, (tracker.instanceRefCount.get(ipKey) || 0) + 1);
+  }
 }
 
-function unassignPin(
-  tracker: PinTracker, pin: string, portName: string, configName: string
+export function unassignPin(
+  tracker: PinTracker, pin: string, portName: string, configName: string,
+  peripheralInstance?: string
 ): void {
   const configKey = `${portName}\0${configName}`;
   tracker.configPins.get(configKey)!.delete(pin);
@@ -165,13 +188,24 @@ function unassignPin(
   } else {
     tracker.portPinRefCount.set(ppKey, count);
   }
+  // Untrack peripheral instance
+  if (peripheralInstance) {
+    const ipKey = `${portName}\0${peripheralInstance}`;
+    const iCount = tracker.instanceRefCount.get(ipKey)! - 1;
+    if (iCount === 0) {
+      tracker.instanceRefCount.delete(ipKey);
+      tracker.instanceOwner.delete(peripheralInstance);
+    } else {
+      tracker.instanceRefCount.set(ipKey, iCount);
+    }
+  }
 }
 
 // ============================================================
 // AST Extraction
 // ============================================================
 
-function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
+export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
   const ports = new Map<string, PortSpec>();
 
   for (const stmt of ast.statements) {
@@ -213,7 +247,7 @@ function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
   return ports;
 }
 
-function extractReservedPins(ast: ProgramNode): string[] {
+export function extractReservedPins(ast: ProgramNode): string[] {
   const pins: string[] = [];
   for (const stmt of ast.statements) {
     if (stmt.type === 'reserve_decl') {
@@ -223,12 +257,12 @@ function extractReservedPins(ast: ProgramNode): string[] {
   return pins;
 }
 
-interface PinnedAssignment {
+export interface PinnedAssignment {
   pinName: string;
   signalName: string;
 }
 
-function extractPinnedAssignments(ast: ProgramNode): PinnedAssignment[] {
+export function extractPinnedAssignments(ast: ProgramNode): PinnedAssignment[] {
   const result: PinnedAssignment[] = [];
   for (const stmt of ast.statements) {
     if (stmt.type === 'pin_decl') {
@@ -238,11 +272,46 @@ function extractPinnedAssignments(ast: ProgramNode): PinnedAssignment[] {
   return result;
 }
 
+export function extractSharedPatterns(ast: ProgramNode): PatternPart[] {
+  const patterns: PatternPart[] = [];
+  for (const stmt of ast.statements) {
+    if (stmt.type === 'shared_decl') {
+      patterns.push(...stmt.patterns);
+    }
+  }
+  return patterns;
+}
+
+/** Check if a peripheral instance name matches any shared pattern */
+export function isSharedInstance(instance: string, patterns: PatternPart[]): boolean {
+  for (const p of patterns) {
+    if (matchInstancePattern(instance, p)) return true;
+  }
+  return false;
+}
+
+function matchInstancePattern(instance: string, pattern: PatternPart): boolean {
+  switch (pattern.type) {
+    case 'literal':
+      return instance === pattern.value;
+    case 'any':
+      return true;
+    case 'wildcard':
+      return instance.startsWith(pattern.prefix);
+    case 'range': {
+      if (!instance.startsWith(pattern.prefix)) return false;
+      const suffix = instance.substring(pattern.prefix.length);
+      const num = parseInt(suffix, 10);
+      return !isNaN(num) && String(num) === suffix && pattern.values.includes(num);
+    }
+  }
+}
+
 // ============================================================
 // Config Combinations
 // ============================================================
 
-function generateConfigCombinations(ports: Map<string, PortSpec>): Map<string, string>[] {
+export function generateConfigCombinations(ports: Map<string, PortSpec>): Map<string, string>[] {
   const portNames: string[] = [];
   const configNames: string[][] = [];
 
@@ -285,7 +354,7 @@ function generateConfigCombinations(ports: Map<string, PortSpec>): Map<string, s
 // Variable Resolution (all configs at once)
 // ============================================================
 
-function resolveAllVariables(
+export function resolveAllVariables(
   ports: Map<string, PortSpec>,
   mcu: Mcu,
   reservedPins: Set<string>
@@ -345,7 +414,7 @@ const KNOWN_FUNCTIONS = new Set([
   'gpio_pin', 'gpio_port',
 ]);
 
-function validateConstraints(ports: Map<string, PortSpec>, errors: SolverError[]): void {
+export function validateConstraints(ports: Map<string, PortSpec>, errors: SolverError[]): void {
   for (const [portName, port] of ports) {
     // Collect all channel names that have mappings in any config
     const mappedChannels = new Set<string>();
@@ -415,6 +484,102 @@ function validateExpr(
 }
 
 // ============================================================
+// Shared Solver Context
+// ============================================================
+
+export interface SolverContext {
+  expandedAst: ProgramNode;
+  ports: Map<string, PortSpec>;
+  reservedPins: string[];
+  pinnedAssignments: PinnedAssignment[];
+  sharedPatterns: PatternPart[];
+  configCombinations: Map<string, string>[];
+  variables: SolverVariable[];
+  lastVarOfConfig: Map<string, number>;
+  configRequiresMap: Map<string, RequireNode[]>;
+  tracker: PinTracker;
+  stats: SolverStats;
+  deepest: { depth: number; assignments: VariableAssignment[] };
+}
+
+/**
+ * Prepare common solver state: expand macros, extract ports/pins,
+ * resolve variables, build eager-check structures.
+ * Returns null if there are fatal errors (empty domains, macro errors with type 'error').
+ */
+export function prepareSolverContext(
+  ast: ProgramNode, mcu: Mcu, errors: SolverError[]
+): SolverContext | null {
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  for (const me of macroErrors) {
+    errors.push({ type: 'error', message: me.message, source: me.macroName });
+  }
+
+  const ports = extractPorts(expandedAst);
+  const reservedPins = extractReservedPins(expandedAst);
+  const pinnedAssignments = extractPinnedAssignments(expandedAst);
+  const sharedPatterns = extractSharedPatterns(expandedAst);
+
+  const reservedSet = new Set(reservedPins);
+  for (const pa of pinnedAssignments) {
+    reservedSet.add(pa.pinName);
+  }
+
+  validateConstraints(ports, errors);
+
+  const configCombinations = generateConfigCombinations(ports);
+  const variables = resolveAllVariables(ports, mcu, reservedSet);
+
+  if (variables.length === 0) return null;
+
+  const emptyVar = variables.find(v => v.domain.length === 0);
+  if (emptyVar) {
+    errors.push({
+      type: 'error',
+      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
+      source: `${emptyVar.portName}.${emptyVar.channelName}`,
+    });
+    return null;
+  }
+
+  // Sort by MRV
+  variables.sort((a, b) => a.domain.length - b.domain.length);
+
+  // Pre-compute last variable index per (port, config)
+  const lastVarOfConfig = new Map<string, number>();
+  const configRequiresMap = new Map<string, RequireNode[]>();
+  for (let i = 0; i < variables.length; i++) {
+    const key = `${variables[i].portName}\0${variables[i].configName}`;
+    lastVarOfConfig.set(key, i);
+  }
+  for (const [portName, port] of ports) {
+    for (const config of port.configs) {
+      if (config.requires.length > 0) {
+        configRequiresMap.set(`${portName}\0${config.name}`, config.requires);
+      }
+    }
+  }
+
+  const tracker = createPinTracker(reservedPins, sharedPatterns);
+
+  const stats: SolverStats = {
+    totalCombinations: configCombinations.length,
+    evaluatedCombinations: 0,
+    validSolutions: 0,
+    solveTimeMs: 0,
+    configCombinations: configCombinations.length,
+  };
+
+  const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
+
+  return {
+    expandedAst, ports, reservedPins, pinnedAssignments, sharedPatterns,
+    configCombinations, variables, lastVarOfConfig, configRequiresMap,
+    tracker, stats, deepest,
+  };
+}
+
+// ============================================================
 // Backtracking Search
 // ============================================================
 
@@ -441,6 +606,7 @@ export function solveConstraints(
   const ports = extractPorts(expandedAst);
   const reservedPins = extractReservedPins(expandedAst);
   const pinnedAssignments = extractPinnedAssignments(expandedAst);
+  const sharedPatterns = extractSharedPatterns(expandedAst);
 
   const reservedSet = new Set(reservedPins);
   for (const pa of pinnedAssignments) {
@@ -512,7 +678,7 @@ export function solveConstraints(
     }
   }
 
-  const tracker = createPinTracker(reservedPins);
+  const tracker = createPinTracker(reservedPins, sharedPatterns);
 
   const stats: SolverStats = {
     totalCombinations: configCombinations.length,
@@ -583,7 +749,7 @@ export function solveConstraints(
   return { mcuRef: mcu.refName, solutions: deduped, errors, statistics: stats };
 }
 
-function solveBacktrack(
+export function solveBacktrack(
   variables: SolverVariable[],
   varIndex: number,
   tracker: PinTracker,
@@ -630,10 +796,10 @@ function solveBacktrack(
 
     const candidate = v.candidates[candidateIdx];
 
-    // Port-aware pin uniqueness check (includes channel exclusivity)
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName)) continue;
+    // Port-aware pin uniqueness check (includes channel and peripheral instance exclusivity)
+    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance)) continue;
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName);
+    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance);
     current.push({ variable: v, candidate });
 
     // Eager constraint check: when all variables of a (port, config) are assigned,
@@ -675,7 +841,7 @@ function solveBacktrack(
     }
 
     current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName);
+    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance);
   }
 }
 
@@ -683,7 +849,7 @@ function solveBacktrack(
 // Constraint Evaluation (checks ALL config combinations)
 // ============================================================
 
-function evaluateAllConstraints(
+export function evaluateAllConstraints(
   assignments: VariableAssignment[],
   configCombinations: Map<string, string>[],
   ports: Map<string, PortSpec>
@@ -732,7 +898,7 @@ function evaluateAllConstraints(
   return true;
 }
 
-function evaluateExpr(
+export function evaluateExpr(
   expr: ConstraintExprNode,
   currentPort: string,
   channelInfo: Map<string, Map<string, VariableAssignment[]>>
@@ -907,7 +1073,7 @@ function evaluateFunctionCall(
 // Solution Building
 // ============================================================
 
-function buildSolution(
+export function buildSolution(
   varAssignments: VariableAssignment[],
   configCombinations: Map<string, string>[],
   _ports: Map<string, PortSpec>,
@@ -965,7 +1131,7 @@ function buildSolution(
 // Deduplication
 // ============================================================
 
-function deduplicateSolutions(solutions: Solution[]): Solution[] {
+export function deduplicateSolutions(solutions: Solution[]): Solution[] {
   const seen = new Set<string>();
   const result: Solution[] = [];
 
@@ -1000,7 +1166,7 @@ function deduplicateSolutions(solutions: Solution[]): Solution[] {
 // Helpers
 // ============================================================
 
-function extractPeripherals(assignments: Assignment[]): Map<string, Set<string>> {
+export function extractPeripherals(assignments: Assignment[]): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
   for (const a of assignments) {
     if (!result.has(a.portName)) {

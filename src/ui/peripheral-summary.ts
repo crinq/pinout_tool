@@ -9,6 +9,7 @@ export class PeripheralSummary implements Panel {
   private listEl!: HTMLElement;
   private portColors = new Map<string, string>();
   private portPeripherals = new Map<string, Set<string>>();
+  private currentAssignments: Assignment[] = [];
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -24,11 +25,17 @@ export class PeripheralSummary implements Panel {
   onStateChange(change: StateChange): void {
     if (change.type === 'solution-selected') {
       this.portColors = change.portColors ?? new Map();
-      this.portPeripherals = this.derivePeripherals(change.assignments ?? []);
+      this.currentAssignments = change.assignments ?? [];
+      this.portPeripherals = this.derivePeripherals(this.currentAssignments);
       this.render();
     } else if (change.type === 'solver-complete') {
-      this.portPeripherals.clear();
-      this.render();
+      // Only clear when there are no solutions; when solutions exist,
+      // the auto-selected solution will fire 'solution-selected' to populate us
+      if (!change.solverResult?.solutions?.length) {
+        this.portPeripherals.clear();
+        this.currentAssignments = [];
+        this.render();
+      }
     }
   }
 
@@ -55,6 +62,19 @@ export class PeripheralSummary implements Panel {
 
     const ports = [...this.portPeripherals.keys()].sort();
     this.listEl.innerHTML = '';
+
+    // Summary line: pin and peripheral counts
+    const pins = new Set<string>();
+    const peripherals = new Set<string>();
+    for (const a of this.currentAssignments) {
+      if (a.portName !== '<pinned>') pins.add(a.pinName);
+      const ui = a.signalName.indexOf('_');
+      if (ui !== -1) peripherals.add(a.signalName.substring(0, ui));
+    }
+    const summary = document.createElement('div');
+    summary.className = 'ps-summary';
+    summary.textContent = `${pins.size} pins, ${peripherals.size} peripherals`;
+    this.listEl.appendChild(summary);
 
     for (const port of ports) {
       const peripherals = this.portPeripherals.get(port)!;

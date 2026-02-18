@@ -2,7 +2,7 @@ import type { Panel, StateChange } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 
-const KEYWORDS = ['mcu', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
+const KEYWORDS = ['mcu', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
 const DEBOUNCE_MS = 300;
 
 function escapeRegex(str: string): string {
@@ -484,8 +484,25 @@ mcu: STM32F405*
 # Reserve pins from solving
 reserve: PH0, PH1
 
+# Allow peripheral instance sharing across ports
+shared: ADC*
+
 # Fix a pin to a specific signal
 pin PA4 = DAC1_OUT1</pre>
+        </section>
+
+        <section>
+          <h3>Shared Peripherals</h3>
+          <p>By default, a peripheral instance (e.g., ADC1) is exclusive to one port.
+          Use <code>shared</code> to allow multiple ports to use the same instance (individual signals remain exclusive):</p>
+          <pre class="ce-help-code"># Exact instance
+shared: ADC1
+
+# Wildcard (all ADC instances)
+shared: ADC*
+
+# Range
+shared: ADC[1,2], TIM[1-4]</pre>
         </section>
 
         <section>

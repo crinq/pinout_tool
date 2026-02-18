@@ -8,6 +8,7 @@
    - [MCU Selection](#mcu-selection)
    - [Pin Reservations](#pin-reservations)
    - [Fixed Pin Assignments](#fixed-pin-assignments)
+   - [Shared Peripherals](#shared-peripherals)
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
    - [Signal Patterns](#signal-patterns)
@@ -19,13 +20,16 @@
 4. [Practical Examples](#practical-examples)
 5. [Package Viewer](#package-viewer)
 6. [Solver](#solver)
-7. [Project Management](#project-management)
+7. [Solution Browser](#solution-browser)
+8. [Project Management](#project-management)
 
 ---
 
 ## Overview
 
-The STM32 Pinout Tool is a browser-based application for finding optimal pin assignments on STM32 microcontrollers. You describe your hardware requirements using a constraint language -- which peripherals you need, how they relate to each other -- and a backtracking CSP solver finds all valid assignments, ranked by cost.
+The STM32 Pinout Tool is a browser-based application for finding optimal pin assignments on STM32 microcontrollers. You describe your hardware requirements using a constraint language -- which peripherals you need, how they relate to each other -- and the solver finds all valid assignments, ranked by cost.
+
+Seven solver algorithms are available (backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, and diverse instances). Multiple solvers can run in parallel using separate Web Workers, with results automatically merged, deduplicated, and ranked.
 
 The tool works entirely in the browser. MCU data is loaded from STM32CubeMX XML files and stored in localStorage.
 
@@ -93,6 +97,23 @@ pin PA12 = USB_DP
 ```
 
 Forces a specific signal onto a specific pin. The solver respects these and won't use those pins for other assignments.
+
+### Shared Peripherals
+
+By default, a peripheral instance (e.g., ADC1) is exclusive to one port. Use `shared` to allow multiple ports to use the same instance (individual signals remain exclusive):
+
+```
+# Exact instance
+shared: ADC1
+
+# Wildcard (all ADC instances)
+shared: ADC*
+
+# Range and multiple patterns
+shared: ADC[1,2], TIM[1-4]
+```
+
+This is useful when multiple ports need channels on the same ADC or timer, such as multiple analog sensor groups sharing ADC1.
 
 ### Ports and Channels
 
@@ -457,14 +478,37 @@ Matching pins pulse with an amber glow animation. Press **Escape** to clear the 
 
 ### How It Works
 
-The solver uses constraint satisfaction with backtracking:
+All solvers share the same preprocessing pipeline:
 
 1. **Expand patterns** -- each channel's signal pattern is expanded to a set of candidate (pin, signal) pairs
 2. **Generate config combinations** -- all permutations of configs across ports
-3. **Backtracking search** -- assigns pins to channels using MRV (Minimum Remaining Values) heuristic, with eager constraint checking
+3. **Search** -- each solver applies its own strategy to find valid pin assignments
 4. **Cost ranking** -- valid solutions are scored and sorted
 
-The solver runs in a **Web Worker** to keep the UI responsive. Click **Abort** to cancel a long-running solve.
+Each solver runs in a separate **Web Worker** to keep the UI responsive. Multiple solvers can run in parallel. Click **Abort** to cancel all running solvers.
+
+### Solver Algorithms
+
+| Solver | Description |
+|--------|-------------|
+| **Two-Phase** | First assigns peripheral instances, then solves pin mappings per group. Good general-purpose solver. |
+| **Backtracking CSP** | Classic constraint satisfaction with MRV (Minimum Remaining Values) heuristic and eager pruning. |
+| **Randomized Restarts** | Runs backtracking N times with shuffled candidate orderings for diverse solutions. |
+| **Cost-Guided** | Backtracking with candidates sorted by estimated cost (proximity, spread, debug penalty). Tends to find low-cost solutions first. |
+| **Diverse Instances** | Two-phase solver with multi-round shuffled instance exploration for diverse peripheral groupings. |
+| **AC-3 Forward Checking** | Backtracking with forward checking -- propagates pin/instance exclusivity to prune domains early. |
+| **Dynamic MRV** | Dynamically picks the most constrained variable at each step with forward checking. |
+
+### Parallel Multi-Solver
+
+Select multiple solvers in Settings to run them in parallel. Each solver runs in its own Web Worker with the full solution budget. When all solvers complete, their results are merged:
+
+1. Solutions are tagged with their solver origin
+2. All solutions are concatenated and sorted by cost
+3. Duplicate solutions (same pin assignments) are removed
+4. The result is trimmed to the configured max solutions limit
+
+The solution browser shows which solver found each solution in the Name column.
 
 ### Cost Functions
 
@@ -477,17 +521,59 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 | **peripheral_count** | Fewer distinct peripheral instances is better |
 | **debug_pin_penalty** | Penalize using debug pins (PA13/PA14/PA15/PB3/PB4) |
 | **pin_clustering** | Prefer numerically adjacent pins |
+| **pin_proximity** | Prefer pins that are physically close on the package |
 
-Weights are configurable: `0` = disabled, `1` = normal, `2` = double impact.
+Weights are configurable: `0` = disabled, `1` = normal, higher values = more impact.
 
 ### Settings
 
 Access via the **Settings** button:
 
+- **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle)
 - **Max solutions** -- stop after finding this many (default: 300)
+- **Max groups** -- limit the number of solution groups (default: 50)
+- **Max solutions per group** -- limit solutions within each group (default: 10)
+- **Num restarts** -- number of restarts for randomized-restarts solver (default: 5)
 - **Timeout** -- abort after this many milliseconds (default: 5000)
-- **Cost weights** -- adjust the ranking formula
+- **Cost weights** -- adjust the ranking formula for all 6 cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
+
+---
+
+## Solution Browser
+
+Solutions are displayed in a grouped table. Solutions with the same peripheral-to-port mapping are grouped together.
+
+### Peripheral Summary
+
+The Peripherals panel shows the port-to-peripheral mapping for the currently selected solution, along with the total number of used pins and peripherals.
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| **Arrow Up/Down** | Navigate to previous/next item in the visible list |
+| **Arrow Right** | Expand the current group |
+| **Arrow Left** | Collapse the current group |
+| **Enter** | Save the selected solution to the project |
+| **Click group header** | Toggle expand/collapse and preview the group's best solution |
+| **Click solution row** | Select and preview the solution |
+
+When groups are collapsed, Up/Down moves between group headers. When expanded, it moves through individual solutions within the group.
+
+After a solver run, the solution list is automatically focused for immediate keyboard navigation. The first group is selected and its best solution is previewed in the package viewer.
+
+### Columns
+
+| Column | Description |
+|--------|-------------|
+| **#** | Solution ID |
+| **Cost** | Total weighted cost score |
+| **Pins** | Number of MCU pins used |
+| **Peripherals** | Number of peripheral instances used |
+| **Name** | User-defined name, or the solver that found the solution (BT, 2Ph, Rnd, CG, Div, AC3, MRV) |
+
+All columns except Name are sortable (click header to toggle ascending/descending).
 
 ---
 
@@ -511,11 +597,14 @@ Access via the **Data** button. Shows:
 
 ### Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| **Ctrl+Enter** | Run solver |
-| **Escape** | Close modal / clear search |
-| **Ctrl+Z** | Undo in editor |
-| **Ctrl+Shift+Z** | Redo in editor |
-| **Tab** | Insert 2 spaces in editor |
-| **Arrow Up/Down** | Navigate solution table |
+| Shortcut | Context | Action |
+|----------|---------|--------|
+| **Ctrl+Enter** | Editor | Run solver |
+| **Escape** | Global | Close modal / clear search |
+| **Ctrl+Z** | Editor | Undo |
+| **Ctrl+Shift+Z** | Editor | Redo |
+| **Tab** | Editor | Insert 2 spaces |
+| **Arrow Up/Down** | Solution list | Navigate items |
+| **Arrow Right** | Solution list | Expand group |
+| **Arrow Left** | Solution list | Collapse group |
+| **Enter** | Solution list | Save selected solution |

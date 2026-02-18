@@ -19,7 +19,8 @@ export type StatementNode =
   | ReserveDeclNode
   | PinDeclNode
   | PortDeclNode
-  | MacroDeclNode;
+  | MacroDeclNode
+  | SharedDeclNode;
 
 // mcu: STM32G473* | STM32F405*
 export interface McuDeclNode {
@@ -32,6 +33,13 @@ export interface McuDeclNode {
 export interface ReserveDeclNode {
   type: 'reserve_decl';
   pins: string[];
+  loc: SourceLocation;
+}
+
+// shared: ADC1, ADC*, ADC[1,2]
+export interface SharedDeclNode {
+  type: 'shared_decl';
+  patterns: PatternPart[];
   loc: SourceLocation;
 }
 

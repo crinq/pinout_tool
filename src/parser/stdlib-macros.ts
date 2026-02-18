@@ -13,7 +13,7 @@ const STDLIB_SOURCE = `
 macro uart_port(TX, RX):
   TX = USART*_TX
   RX = USART*_RX
-  require same_instance(TX, RX)
+  require same_instance(TX, RX, "USART")
 
 # UART half-duplex (single wire)
 macro uart_half_duplex(TX):
@@ -33,29 +33,28 @@ macro spi_port_cs(MOSI, MISO, SCK, NSS):
   MISO = SPI*_MISO
   SCK = SPI*_SCK
   NSS = SPI*_NSS
-  require same_instance(MOSI, MISO)
-  require same_instance(MOSI, SCK)
-  require same_instance(MOSI, NSS)
+  require same_instance(MOSI, MISO, SCK, NSS, "SPI")
 
 # I2C port
 macro i2c_port(SDA, SCL):
   SDA = I2C*_SDA
   SCL = I2C*_SCL
-  require same_instance(SDA, SCL)
+  require same_instance(SDA, SCL, "I2C")
 
 # Timer encoder (2-channel quadrature)
 macro encoder(A, B):
-  A = TIM*_CH1
-  B = TIM*_CH2
+  A = TIM*_CH[1,2]
+  B = TIM*_CH[1,2]
   require same_instance(A, B, "TIM")
+  require instance(A, "TIM") == TIM[1-5,8,20]
 
 # Timer encoder with index
 macro encoder_with_index(A, B, Z):
-  A = TIM*_CH1
-  B = TIM*_CH2
-  Z = TIM*_CH3
-  require same_instance(A, B, "TIM")
-  require same_instance(A, Z, "TIM")
+  A = TIM*_CH[1,2]
+  B = TIM*_CH[1,2]
+  Z = TIM*_CH[3,4]
+  require same_instance(A, B, Z, "TIM")
+  require instance(A, "TIM") == TIM[1-5,8,20]
 
 # PWM output on a single timer channel
 macro pwm(CH):
@@ -73,7 +72,7 @@ macro adc(IN):
 macro can_port(TX, RX):
   TX = CAN*_TX
   RX = CAN*_RX
-  require same_instance(TX, RX)
+  require same_instance(TX, RX, "CAN")
 `;
 
 let cachedStdlib: Map<string, MacroDeclNode> | null = null;

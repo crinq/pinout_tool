@@ -1,0 +1,225 @@
+shared: ADC*
+
+port clock:
+  channel IN
+  channel OUT
+  color "green"
+  
+  config "XTAL":
+    IN = RCC_OSCIN
+    OUT = RCC_OSCOUT
+  
+port debug:
+  channel DIO
+  channel CLK
+  color "green"
+
+  config "SWD":
+    DIO = *_SWDIO
+    CLK = *_SWCLK
+    
+port USB:
+  channel DP
+  channel DM
+  
+  config "USB":
+    DP = USB*_OTGFSDP
+    DM = USB*_OTGFSDM
+
+
+port CMD:
+  channel D12
+  channel D12_en
+  channel D36
+  channel D36_en
+  channel D54
+  channel D54_en
+  channel D78
+  channel D78_en
+  channel L1
+  channel L2
+  color "red"
+
+  config "USART":
+    D12 = USART[1,6]_RX
+    #D12_en = OUT
+    D36 = USART*_CK
+    #D36_en = OUT
+    D54 = USART*_TX
+    #D54_en = OUT
+    #D78 = OUT
+    #D78_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "USART")
+  
+  config "SPI":
+    D12 = SPI[1,6]_MISO
+    #D12_en = OUT
+    D36 = SPI*_SCK
+    #D36_en = OUT
+    D54 = SPI*_MOSI
+    #D54_en = OUT
+    #D78 = OUT
+    #D78_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "SPI")
+    
+  config "TIM":
+    D12 = TIM*_CH[1,2]
+    #D12_en = OUT
+    D36 = TIM*_CH[1,2]
+    #D36_en = OUT
+    D54 = TIM*_CH[3,4]
+    #D54_en = OUT
+    #D78 = OUT
+    #D78_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "TIM")
+
+port FB0:
+  channel D12
+  channel D12_en
+  channel D12_ain
+  channel D36
+  channel D36_en
+  channel D36_ain
+  channel D54
+  channel D54_en
+  channel D78_ain
+  channel L1
+  channel L2
+  color "orange"
+
+  config "USART":
+    D12 = USART[1,6]_RX
+    #D12_en = OUT
+    D36 = USART*_CK
+    #D36_en = OUT
+    D54 = USART*_TX
+    #D54_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "USART")
+  
+  config "SPI":
+    D12 = SPI*_MISO
+    #D12_en = OUT
+    D36 = SPI*_SCK
+    #D36_en = OUT
+    D54 = SPI*_MOSI
+    #D54_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "SPI")
+    
+  config "TIM":
+    D12 = TIM[1,2,3,4,5,8]_CH[1,2]
+    #D12_en = OUT
+    D12_ain = ADC1_IN[0-4]
+    D36 = TIM*_CH[1,2]
+    #D36_en = OUT
+    D36_ain = ADC2_IN[0-4]
+    D54 = TIM*_CH[3,4]
+    #D54_en = OUT
+    D78_ain = ADC3_IN*
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "TIM")
+    require diff_instance(D12_ain, D36_ain, "ADC")
+
+port FB1:
+  channel D12
+  channel D12_en
+  channel D12_ain
+  channel D36
+  channel D36_en
+  channel D36_ain
+  channel D54
+  channel D54_en
+  channel D78_ain
+  channel L1
+  channel L2
+  color "orange"
+
+  config "USART":
+    D12 = USART*_RX
+    #D12_en = OUT
+    D36 = USART*_CK
+    #D36_en = OUT
+    D54 = USART*_TX
+    #D54_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "USART")
+  
+  config "SPI":
+    D12 = SPI*_MISO
+    #D12_en = OUT
+    D36 = SPI*_SCK
+    #D36_en = OUT
+    D54 = SPI*_MOSI
+    #D54_en = OUT
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "SPI")
+    
+  config "TIM":
+    D12 = TIM[1,2,3,4,5,8]_CH[1,2]
+    #D12_en = OUT
+    D12_ain = ADC1_IN[0-4]
+    D36 = TIM*_CH[1,2]
+    #D36_en = OUT
+    D36_ain = ADC2_IN[0-4]
+    D54 = TIM*_CH[3,4]
+    #D54_en = OUT
+    D78_ain = ADC3_IN*
+    #L1 = OUT
+    #L2 = OUT
+    require same_instance(D12, D36, D54, "TIM")
+    require diff_instance(D12_ain, D36_ain, "ADC")
+
+port HV:
+  channel TX
+  channel RX
+  color "blue"
+
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port IO:
+  channel LED_r
+  channel LED_y
+  channel LED_g
+  channel LED_in0
+  channel LED_in1
+  channel OUT_fan
+  channel OUT0
+  channel OUT1
+  channel OUT2
+  channel IN0
+  channel IN1
+  channel IO_CANTX
+  channel IO_CANRX
+  
+  color "yellow"
+  
+  config "IO":
+    #LED_r = OUT
+    #LED_y = OUT
+    #LED_g = OUT
+    #LED_in0 = OUT
+    #LED_in1 = OUT
+    #OUT_fan = OUT
+    #OUT0 = OUT
+    #OUT1 = OUT
+    OUT2 = OUT
+    IN0 = ADC3_IN*
+    IN0 = ADC3_IN*
+    IO_CANTX = CAN*_TX
+    IO_CANRX = CAN*_RX
+    

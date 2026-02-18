@@ -8,6 +8,7 @@ import type {
   StatementNode,
   McuDeclNode,
   ReserveDeclNode,
+  SharedDeclNode,
   PinDeclNode,
   PortDeclNode,
   ChannelDeclNode,
@@ -68,7 +69,7 @@ interface Token {
 }
 
 const KEYWORDS = new Set([
-  'mcu', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color',
+  'mcu', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
 ]);
 
 // ============================================================
@@ -319,6 +320,7 @@ class Parser {
       switch (tok.value) {
         case 'mcu': return this.parseMcuDecl();
         case 'reserve': return this.parseReserveDecl();
+        case 'shared': return this.parseSharedDecl();
         case 'pin': return this.parsePinDecl();
         case 'port': return this.parsePortDecl();
         case 'macro': return this.parseMacroDecl();
@@ -334,7 +336,7 @@ class Parser {
       return null;
     }
 
-    this.error(`Expected a declaration (mcu, reserve, pin, port, macro), got '${tok.value || tok.type}'`, tok);
+    this.error(`Expected a declaration (mcu, reserve, shared, pin, port, macro), got '${tok.value || tok.type}'`, tok);
     this.advance();
     return null;
   }
@@ -389,6 +391,25 @@ class Parser {
 
     this.expectNewlineOrEnd();
     return { type: 'reserve_decl', pins, loc };
+  }
+
+  // shared: pattern (, pattern)*
+  // pattern uses same syntax as signal instance part: ADC1, ADC*, ADC[1,2], TIM[1-3]
+  private parseSharedDecl(): SharedDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('shared');
+    this.expect('COLON');
+
+    const patterns: PatternPart[] = [];
+    patterns.push(this.parsePatternPart());
+
+    while (this.check('COMMA')) {
+      this.advance();
+      patterns.push(this.parsePatternPart());
+    }
+
+    this.expectNewlineOrEnd();
+    return { type: 'shared_decl', patterns, loc };
   }
 
   // pin pin_name = signal_name

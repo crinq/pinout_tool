@@ -1,0 +1,14 @@
+# Test stdlib macro expansion with the G474
+# Uses uart_port and i2c_port macros
+
+port SERIAL:
+  channel TX
+  channel RX
+  config "USART":
+    uart_port(TX, RX)
+
+port SENSOR:
+  channel SDA
+  channel SCL
+  config "I2C":
+    i2c_port(SDA, SCL)

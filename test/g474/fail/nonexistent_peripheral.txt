@@ -1,0 +1,10 @@
+# Fail: G474 does not have CAN peripheral (it has FDCAN)
+# CAN*_TX should not match any signals
+
+port BUS:
+  channel TX
+  channel RX
+  config "CAN":
+    TX = CAN*_TX
+    RX = CAN*_RX
+    require same_instance(TX, RX)

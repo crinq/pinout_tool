@@ -6,4 +6,9 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  server: {
+    headers: {
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline';",
+    },
+  },
 });

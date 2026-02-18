@@ -1,0 +1,13 @@
+# Test shared peripheral with ADC channels across multiple ports
+
+shared: ADC*
+
+port ANALOG0:
+  channel IN
+  config "ADC":
+    IN = ADC1_IN[1-5]
+
+port ANALOG1:
+  channel IN
+  config "ADC":
+    IN = ADC1_IN[6-10]

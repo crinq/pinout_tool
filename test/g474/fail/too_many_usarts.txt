@@ -1,0 +1,59 @@
+# Fail: Request more USART ports than can be satisfied
+# G474 has USART1,2,3 + UART4,5 + LPUART1 = 6 possible instances
+# But we ask for 7 exclusive USART ports - impossible
+
+port U1:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U2:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U3:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U4:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U5:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U6:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port U7:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)

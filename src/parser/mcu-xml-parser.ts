@@ -37,8 +37,10 @@ function parseSignalName(name: string): {
   // Parse instance part: extract type prefix and trailing number
   // e.g., "USART1" -> type="USART", number=1
   // e.g., "I2S2" -> type="I2S", number=2
+  // e.g., "I2C2" -> type="I2C", number=2
   // e.g., "DAC" -> type="DAC", number=undefined
-  const instanceMatch = instancePart.match(/^([A-Za-z_]+?)(\d+)$/);
+  // Note: .*? (non-greedy) + \d+$ (greedy) correctly splits "I2C2" → "I2C" + "2"
+  const instanceMatch = instancePart.match(/^(.*?)(\d+)$/);
 
   let peripheralType: string;
   let instanceNumber: number | undefined;

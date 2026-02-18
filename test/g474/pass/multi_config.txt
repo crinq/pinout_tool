@@ -1,0 +1,19 @@
+# Test port with multiple configs (USART vs SPI)
+# Solver should pick whichever config works
+
+port COMM:
+  channel D0
+  channel D1
+  channel CLK
+
+  config "USART":
+    D0 = USART*_TX
+    D1 = USART*_RX
+    CLK = USART*_CK
+    require same_instance(D0, D1, CLK, "USART")
+
+  config "SPI":
+    D0 = SPI*_MOSI
+    D1 = SPI*_MISO
+    CLK = SPI*_SCK
+    require same_instance(D0, D1, CLK, "SPI")

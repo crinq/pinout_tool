@@ -1,8 +1,19 @@
 import type { Panel, StateChange } from './panel';
-import type { Solution, SolverResult, Assignment } from '../types';
+import type { Solution, SolverResult } from '../types';
 
 type SortKey = 'id' | 'cost' | 'pins' | 'peripherals';
 type SortDir = 'asc' | 'desc';
+
+interface SolutionGroup {
+  key: string;
+  label: string;
+  solutions: Solution[];
+}
+
+/** A visible row — either a group header or a solution row */
+type FlatItem =
+  | { type: 'group'; group: SolutionGroup }
+  | { type: 'solution'; solution: Solution; group: SolutionGroup };
 
 export class SolutionTable implements Panel {
   readonly id = 'solution-table';
@@ -11,12 +22,20 @@ export class SolutionTable implements Panel {
   private container!: HTMLElement;
   private tableWrapper!: HTMLElement;
   private solverResult: SolverResult | null = null;
-  private selectedSolutionId: number | null = null;
   private sortKey: SortKey = 'cost';
   private sortDir: SortDir = 'asc';
   private selectionCallbacks: Array<(solution: Solution) => void> = [];
-  private sortedSolutions: Solution[] = [];
+  private saveCallbacks: Array<(solution: Solution) => void> = [];
+  private expandedGroups: Set<string> = new Set();
+
+  /** Flat list of visible items for keyboard navigation */
+  private flatItems: FlatItem[] = [];
+  /** Index into flatItems of the currently focused/selected item */
   private focusedIndex = 0;
+  /** Computed groups (cached between render calls) */
+  private groups: SolutionGroup[] = [];
+  /** Whether we have multiple groups */
+  private multipleGroups = false;
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -42,36 +61,114 @@ export class SolutionTable implements Panel {
     this.selectionCallbacks.push(callback);
   }
 
+  onSaveRequested(callback: (solution: Solution) => void): void {
+    this.saveCallbacks.push(callback);
+  }
+
   setSolverResult(result: SolverResult): void {
     this.solverResult = result;
-    this.selectedSolutionId = null;
+    this.expandedGroups.clear();
     this.focusedIndex = 0;
     this.render();
 
-    // Auto-select first solution
-    if (this.sortedSolutions.length > 0) {
-      this.selectSolution(this.sortedSolutions[0]);
+    // Auto-select first group (previews its first solution)
+    if (this.flatItems.length > 0) {
+      this.activateItem(0);
+      this.tableWrapper.focus();
     }
   }
 
   private onKeyDown(e: KeyboardEvent): void {
-    if (this.sortedSolutions.length === 0) return;
+    if (this.flatItems.length === 0) return;
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      this.focusedIndex = Math.min(this.focusedIndex + 1, this.sortedSolutions.length - 1);
-      this.selectSolution(this.sortedSolutions[this.focusedIndex]);
+      const next = Math.min(this.focusedIndex + 1, this.flatItems.length - 1);
+      this.focusedIndex = next;
+      this.activateItem(next);
+      this.render();
       this.scrollToFocused();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      this.focusedIndex = Math.max(this.focusedIndex - 1, 0);
-      this.selectSolution(this.sortedSolutions[this.focusedIndex]);
+      const prev = Math.max(this.focusedIndex - 1, 0);
+      this.focusedIndex = prev;
+      this.activateItem(prev);
+      this.render();
+      this.scrollToFocused();
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      this.expandAtFocus();
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      this.collapseAtFocus();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const sol = this.getSelectedSolution();
+      if (sol) {
+        for (const cb of this.saveCallbacks) cb(sol);
+      }
+    }
+  }
+
+  /** Expand the group at (or containing) the focused item */
+  private expandAtFocus(): void {
+    const item = this.flatItems[this.focusedIndex];
+    if (!item) return;
+
+    const groupKey = item.type === 'group' ? item.group.key
+      : item.group.key;
+
+    if (!this.expandedGroups.has(groupKey)) {
+      this.expandedGroups.add(groupKey);
+      this.render();
+      // Keep focus on the same group header
+      this.focusedIndex = this.flatItems.findIndex(
+        fi => fi.type === 'group' && fi.group.key === groupKey
+      );
+      if (this.focusedIndex === -1) this.focusedIndex = 0;
       this.scrollToFocused();
     }
   }
 
+  /** Collapse the group at (or containing) the focused item, then select the group */
+  private collapseAtFocus(): void {
+    const item = this.flatItems[this.focusedIndex];
+    if (!item) return;
+
+    const groupKey = item.type === 'group' ? item.group.key
+      : item.group.key;
+
+    if (this.expandedGroups.has(groupKey)) {
+      this.expandedGroups.delete(groupKey);
+      this.render();
+      // Focus the group header
+      this.focusedIndex = this.flatItems.findIndex(
+        fi => fi.type === 'group' && fi.group.key === groupKey
+      );
+      if (this.focusedIndex === -1) this.focusedIndex = 0;
+      this.activateItem(this.focusedIndex);
+      this.render();
+      this.scrollToFocused();
+    }
+  }
+
+  /** Activate an item: preview its solution (for groups, preview the first solution) */
+  private activateItem(index: number): void {
+    const item = this.flatItems[index];
+    if (!item) return;
+
+    if (item.type === 'group') {
+      const first = item.group.solutions[0];
+      if (first) {
+        for (const cb of this.selectionCallbacks) cb(first);
+      }
+    } else {
+      for (const cb of this.selectionCallbacks) cb(item.solution);
+    }
+  }
+
   private scrollToFocused(): void {
-    const row = this.tableWrapper.querySelector(`tr[data-solution-id="${this.selectedSolutionId}"]`);
+    const row = this.tableWrapper.querySelector('tr.st-focused');
     if (row) {
       row.scrollIntoView({ block: 'nearest' });
     }
@@ -85,19 +182,27 @@ export class SolutionTable implements Panel {
 
     const result = this.solverResult;
 
-    // Sort solutions
-    this.sortedSolutions = [...result.solutions];
-    const sorted = this.sortedSolutions;
-    sorted.sort((a, b) => {
-      let cmp = 0;
-      switch (this.sortKey) {
-        case 'id': cmp = a.id - b.id; break;
-        case 'cost': cmp = a.totalCost - b.totalCost; break;
-        case 'pins': cmp = this.countPins(a) - this.countPins(b); break;
-        case 'peripherals': cmp = this.countPeripherals(a) - this.countPeripherals(b); break;
+    // Group and sort solutions
+    this.groups = this.groupSolutions(result.solutions);
+    this.multipleGroups = this.groups.length > 1;
+
+    // Build flat items list for navigation
+    this.flatItems = [];
+    for (const group of this.groups) {
+      if (this.multipleGroups) {
+        this.flatItems.push({ type: 'group', group });
       }
-      return this.sortDir === 'asc' ? cmp : -cmp;
-    });
+      if (!this.multipleGroups || this.expandedGroups.has(group.key)) {
+        for (const sol of group.solutions) {
+          this.flatItems.push({ type: 'solution', solution: sol, group });
+        }
+      }
+    }
+
+    // Clamp focus index
+    if (this.focusedIndex >= this.flatItems.length) {
+      this.focusedIndex = Math.max(0, this.flatItems.length - 1);
+    }
 
     // Build table
     const table = document.createElement('table');
@@ -110,7 +215,7 @@ export class SolutionTable implements Panel {
       ${this.headerCell('Cost', 'cost')}
       ${this.headerCell('Pins', 'pins')}
       ${this.headerCell('Peripherals', 'peripherals')}
-      <th>Assignments</th>
+      <th>Name</th>
     </tr>`;
     table.appendChild(thead);
 
@@ -130,48 +235,150 @@ export class SolutionTable implements Panel {
 
     // Body
     const tbody = document.createElement('tbody');
-    const displayCount = Math.min(sorted.length, 200);
 
-    for (let i = 0; i < displayCount; i++) {
-      const sol = sorted[i];
-      const tr = document.createElement('tr');
-      tr.className = sol.id === this.selectedSolutionId ? 'st-row-selected' : '';
-      tr.dataset.solutionId = String(sol.id);
+    for (let fi = 0; fi < this.flatItems.length; fi++) {
+      const item = this.flatItems[fi];
+      const isFocused = fi === this.focusedIndex;
 
-      const assignments = this.getAllAssignments(sol);
-      const summary = assignments
-        .filter(a => a.portName !== '<pinned>')
-        .slice(0, 6)
-        .map(a => `${a.channelName}:${this.abbreviatePin(a.pinName)}=${this.abbreviateSignal(a.signalName)}`)
-        .join(', ');
-      const more = assignments.length > 6 ? ` +${assignments.length - 6}` : '';
+      if (item.type === 'group') {
+        const group = item.group;
+        const isExpanded = this.expandedGroups.has(group.key);
 
-      tr.innerHTML = `
-        <td class="st-cell-id">${sol.id}</td>
-        <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
-        <td class="st-cell-pins">${this.countPins(sol)}</td>
-        <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
-        <td class="st-cell-assign">${summary}${more}</td>
-      `;
+        const groupTr = document.createElement('tr');
+        groupTr.className = 'st-group-header'
+          + (isExpanded ? ' st-group-expanded' : '')
+          + (isFocused ? ' st-focused' : '');
+        const groupTd = document.createElement('td');
+        groupTd.colSpan = 5;
+        const arrow = isExpanded ? '\u25BE' : '\u25B8';
+        const best = group.solutions[0];
+        const bestCost = best ? ` \u2014 best ${best.totalCost.toFixed(1)}` : '';
+        groupTd.textContent = `${arrow} ${group.label} (${group.solutions.length}${bestCost})`;
+        groupTr.appendChild(groupTd);
 
-      tr.addEventListener('click', () => {
-        this.focusedIndex = i;
-        this.selectSolution(sol);
-      });
-      tbody.appendChild(tr);
+        const idx = fi;
+        groupTr.addEventListener('click', () => {
+          this.focusedIndex = idx;
+          if (this.expandedGroups.has(group.key)) {
+            this.expandedGroups.delete(group.key);
+          } else {
+            this.expandedGroups.add(group.key);
+          }
+          this.activateItem(idx);
+          this.render();
+        });
+        tbody.appendChild(groupTr);
+      } else {
+        const sol = item.solution;
+        const tr = document.createElement('tr');
+        tr.className = (isFocused ? 'st-row-selected st-focused' : '');
+        tr.dataset.solutionId = String(sol.id);
+
+        tr.innerHTML = `
+          <td class="st-cell-id">${sol.id}</td>
+          <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
+          <td class="st-cell-pins">${this.countPins(sol)}</td>
+          <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
+          <td class="st-cell-name">${sol.name || this.solverShortLabel(sol.solverOrigin)}</td>
+        `;
+
+        const idx = fi;
+        tr.addEventListener('click', () => {
+          this.focusedIndex = idx;
+          this.activateItem(idx);
+          this.render();
+        });
+        tbody.appendChild(tr);
+      }
     }
 
     table.appendChild(tbody);
     this.tableWrapper.innerHTML = '';
-    this.tableWrapper.appendChild(table);
 
-    if (sorted.length > displayCount) {
-      const more = document.createElement('div');
-      more.className = 'st-more';
-      more.textContent = `Showing ${displayCount} of ${sorted.length} solutions`;
-      this.tableWrapper.appendChild(more);
+    // Save button bar (above table)
+    if (result.solutions.length > 0) {
+      const bar = document.createElement('div');
+      bar.className = 'st-save-bar';
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-small';
+      saveBtn.textContent = 'Save';
+      saveBtn.title = 'Save selected solution to project';
+      saveBtn.addEventListener('click', () => {
+        const sol = this.getSelectedSolution();
+        if (sol) {
+          for (const cb of this.saveCallbacks) cb(sol);
+        }
+      });
+      bar.appendChild(saveBtn);
+      const info = document.createElement('span');
+      info.className = 'st-save-info';
+      const totalSolutions = result.solutions.length;
+      info.textContent = `${totalSolutions} solutions in ${this.groups.length} group${this.groups.length !== 1 ? 's' : ''}`;
+      bar.appendChild(info);
+      this.tableWrapper.appendChild(bar);
     }
 
+    this.tableWrapper.appendChild(table);
+  }
+
+  private groupSolutions(solutions: Solution[]): SolutionGroup[] {
+    const groupMap = new Map<string, SolutionGroup>();
+
+    for (const sol of solutions) {
+      const key = this.peripheralKey(sol);
+      let group = groupMap.get(key);
+      if (!group) {
+        group = { key, label: this.peripheralLabel(sol), solutions: [] };
+        groupMap.set(key, group);
+      }
+      group.solutions.push(sol);
+    }
+
+    // Sort solutions within each group
+    for (const group of groupMap.values()) {
+      group.solutions.sort((a, b) => {
+        let cmp = 0;
+        switch (this.sortKey) {
+          case 'id': cmp = a.id - b.id; break;
+          case 'cost': cmp = a.totalCost - b.totalCost; break;
+          case 'pins': cmp = this.countPins(a) - this.countPins(b); break;
+          case 'peripherals': cmp = this.countPeripherals(a) - this.countPeripherals(b); break;
+        }
+        return this.sortDir === 'asc' ? cmp : -cmp;
+      });
+    }
+
+    // Sort groups by best cost in each group
+    const groups = [...groupMap.values()];
+    groups.sort((a, b) => {
+      const aBest = a.solutions[0]?.totalCost ?? 0;
+      const bBest = b.solutions[0]?.totalCost ?? 0;
+      return aBest - bBest;
+    });
+
+    return groups;
+  }
+
+  /** Create a stable grouping key from port -> peripherals mapping */
+  private peripheralKey(solution: Solution): string {
+    const parts: string[] = [];
+    const sortedPorts = [...solution.portPeripherals.keys()].sort();
+    for (const port of sortedPorts) {
+      const peripherals = [...solution.portPeripherals.get(port)!].sort();
+      parts.push(`${port}:${peripherals.join(',')}`);
+    }
+    return parts.join('|');
+  }
+
+  /** Create a human-readable label for the group */
+  private peripheralLabel(solution: Solution): string {
+    const parts: string[] = [];
+    const sortedPorts = [...solution.portPeripherals.keys()].sort();
+    for (const port of sortedPorts) {
+      const peripherals = [...solution.portPeripherals.get(port)!].sort();
+      parts.push(`${port}: ${peripherals.join(', ')}`);
+    }
+    return parts.join(' | ');
   }
 
   private headerCell(label: string, key: SortKey): string {
@@ -179,18 +386,13 @@ export class SolutionTable implements Panel {
     return `<th class="st-sortable" data-sort="${key}">${label}${arrow}</th>`;
   }
 
-  private selectSolution(solution: Solution): void {
-    this.selectedSolutionId = solution.id;
-    this.render();
-    for (const cb of this.selectionCallbacks) {
-      cb(solution);
-    }
-  }
-
-  private getAllAssignments(solution: Solution): Assignment[] {
-    // Use first config combination for display summary
-    if (solution.configAssignments.length === 0) return [];
-    return solution.configAssignments[0].assignments;
+  private getSelectedSolution(): Solution | null {
+    const item = this.flatItems[this.focusedIndex];
+    if (!item) return null;
+    if (item.type === 'solution') return item.solution;
+    // For group focus, return first solution
+    if (item.type === 'group') return item.group.solutions[0] ?? null;
+    return null;
   }
 
   private countPins(solution: Solution): number {
@@ -211,12 +413,19 @@ export class SolutionTable implements Panel {
     return count;
   }
 
-  private abbreviatePin(name: string): string {
-    // PA4 -> PA4, keep short
-    return name.length > 5 ? name.substring(0, 5) : name;
+  private static SOLVER_SHORT_LABELS: Record<string, string> = {
+    'backtracking': 'BT',
+    'two-phase': '2Ph',
+    'randomized-restarts': 'Rnd',
+    'cost-guided': 'CG',
+    'diverse-instances': 'Div',
+    'ac3': 'AC3',
+    'dynamic-mrv': 'MRV',
+  };
+
+  private solverShortLabel(origin?: string): string {
+    if (!origin) return '';
+    return SolutionTable.SOLVER_SHORT_LABELS[origin] ?? origin;
   }
 
-  private abbreviateSignal(name: string): string {
-    return name.length > 12 ? name.substring(0, 10) + '..' : name;
-  }
 }

@@ -1,0 +1,20 @@
+# Simple test: one UART port and one SPI port on G474
+# Should be easily solvable
+
+port COMM:
+  channel TX
+  channel RX
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+
+port BUS:
+  channel MOSI
+  channel MISO
+  channel SCK
+  config "SPI":
+    MOSI = SPI*_MOSI
+    MISO = SPI*_MISO
+    SCK = SPI*_SCK
+    require same_instance(MOSI, MISO, SCK, "SPI")

@@ -1,17 +1,15 @@
-> [!WARNING]
-> AI-coded and untested!<br>
-> Syntax will change in the future!
-
 # STM32 Pinout Tool
 
 A browser-based tool for automatic STM32 pin assignment using constraint-based solving. Define your peripheral requirements in a simple constraint language, and the solver finds optimal pin assignments across multiple MCU variants.
 
 ## Features
 
-- **Constraint-based solver** -- declare what peripherals you need, not which pins to use
+- **7 solver algorithms** -- backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, and diverse instances
+- **Parallel multi-solver** -- run multiple solvers simultaneously and merge results
 - **Visual package viewer** -- interactive canvas with zoom, rotation, pin assignment popup, and signal search
 - **Multiple package types** -- LQFP, BGA, and WLCSP support with correct ball/pin rendering
-- **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, and more
+- **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, proximity, and more
+- **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
 - **Project management** -- save/load projects, store MCU data in browser localStorage
 - **Dark mode** -- full light/dark theme support
 
@@ -66,7 +64,7 @@ See [doc.md](doc.md) for the full constraint language reference, practical examp
 
 - TypeScript, Vite
 - Canvas 2D rendering
-- Web Worker for non-blocking solver execution
+- Web Workers for parallel solver execution
 - Zero runtime dependencies
 
 ## Build
