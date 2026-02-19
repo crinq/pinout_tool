@@ -2,7 +2,8 @@ import { LayoutManager } from './core/layout-manager';
 import { HorizontalSplitter, VerticalSplitter } from './core/splitter';
 import { PackageViewer } from './ui/package-viewer';
 import { ConstraintEditor } from './ui/constraint-editor';
-import { SolutionTable } from './ui/solution-table';
+import { SolverSolutions } from './ui/solution-table';
+import { ProjectSolutions } from './ui/project-solutions';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
@@ -11,7 +12,7 @@ import type { Mcu, Assignment, Solution, SolverResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
 import { serializeSolution, deserializeSolution, migrateProjectData } from './storage';
-import type { ProjectData, ProjectVersion } from './storage';
+import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 
 export interface AppSettings {
@@ -26,40 +27,51 @@ export interface AppSettings {
   maxZoom: number;
   mouseZoomGain: number;
   dataInspector: boolean;
+  urlEncoding: 'none' | 'constraints' | 'constraints-mcu' | 'full';
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 300,
-  solverTimeoutMs: 5000,
+  maxSolutions: 5000,
+  solverTimeoutMs: 2500,
   solverTypes: ['two-phase'],
-  maxGroups: 50,
-  maxSolutionsPerGroup: 10,
-  numRestarts: 5,
+  maxGroups: 100,
+  maxSolutionsPerGroup: 25,
+  numRestarts: 25,
   costWeights: {
     pin_count: 1,
     port_spread: 0.2,
     peripheral_count: 0.5,
-    debug_pin_penalty: 1,
-    pin_clustering: 0.5,
-    pin_proximity: 0.3,
+    debug_pin_penalty: 0.0,
+    pin_clustering: 0.0,
+    pin_proximity: 1,
   },
   minZoom: 0.5,
   maxZoom: 2,
-  mouseZoomGain: 0.05,
+  mouseZoomGain: 0.025,
   dataInspector: false,
+  urlEncoding: 'full',
 };
+
+interface UrlState {
+  v: 1;
+  c: string;
+  m?: string;
+  sol?: SerializedSolution;
+}
 
 export class App {
   private layout!: LayoutManager;
   private packageViewer!: PackageViewer;
   private constraintEditor!: ConstraintEditor;
-  private solutionTable!: SolutionTable;
+  private solverSolutions!: SolverSolutions;
+  private projectSolutions!: ProjectSolutions;
   private peripheralSummary!: PeripheralSummary;
   currentMcu: Mcu | null = null;
   settings: AppSettings = this.loadSettings();
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
+  private currentSolution: Solution | null = null;
   private currentProjectName: string | null = null;
   private projectSelect!: HTMLSelectElement;
 
@@ -75,12 +87,14 @@ export class App {
     // Create and register panels
     this.packageViewer = new PackageViewer();
     this.constraintEditor = new ConstraintEditor();
-    this.solutionTable = new SolutionTable();
+    this.solverSolutions = new SolverSolutions();
+    this.projectSolutions = new ProjectSolutions();
     this.peripheralSummary = new PeripheralSummary();
 
     const bottomSplitter = HorizontalSplitter();
-    bottomSplitter.add(this.solutionTable, 1);
-    bottomSplitter.add(this.peripheralSummary, 0.4);
+    bottomSplitter.add(this.solverSolutions, 1);
+    bottomSplitter.add(this.projectSolutions, 1);
+    bottomSplitter.add(this.peripheralSummary, 0.5);
 
     const vSplitter = VerticalSplitter();
     vSplitter.add(this.packageViewer, 1);
@@ -121,9 +135,9 @@ export class App {
       solveBtn.addEventListener('click', () => this.runSolver());
     }
 
-    // Solution selection -> package viewer (all assignments across all configs)
-    this.solutionTable.onSolutionSelected((solution) => {
-      // Collect all unique assignments across all config combinations
+    // Solution selection -> package viewer (shared by both lists)
+    const handleSolutionSelected = (solution: Solution) => {
+      this.currentSolution = solution;
       const seen = new Set<string>();
       const assignments = solution.configAssignments.flatMap(ca => ca.assignments).filter(a => {
         const key = `${a.pinName}:${a.signalName}:${a.portName}:${a.channelName}`;
@@ -131,15 +145,22 @@ export class App {
         seen.add(key);
         return true;
       });
-      // Extract port colors from the current parse result
       const portColors = this.getPortColors();
       this.layout.broadcastStateChange({ type: 'solution-selected', assignments, portColors });
-    });
+      if (this.settings.urlEncoding === 'full') this.updateUrlHash();
+    };
+
+    this.solverSolutions.onSolutionSelected(handleSolutionSelected);
+    this.projectSolutions.onSolutionSelected(handleSolutionSelected);
+
+    // Focus coordination: when one list gains focus, deselect the other
+    this.solverSolutions.onFocusGained(() => this.projectSolutions.deselect());
+    this.projectSolutions.onFocusGained(() => this.solverSolutions.deselect());
 
     // Constraint editor changes -> enable/disable solve button + persist state + pin preview
     this.constraintEditor.onChange((_text, result) => {
       if (this.loadingProject) return;
-      this.saveStateDebounced(_text);
+      this.saveStateDebounced();
       this.hasSolverResult = false;
 
       const solveBtn = this.constraintEditor.getSolveButton();
@@ -164,17 +185,20 @@ export class App {
       this.constraintEditor.removePinDeclaration(pinName);
     });
 
-    // Solution save button -> project save (single selected solution)
-    this.solutionTable.onSaveRequested((solution) => {
-      const solName = prompt('Solution name:', `Solution ${solution.id}`);
-      if (solName === null) return; // cancelled
-      const nameToSave = solName.trim() || undefined;
-      if (this.currentProjectName) {
-        this.saveProject(this.currentProjectName, solution, nameToSave);
-      } else {
-        this.saveProjectAs(solution, nameToSave);
-      }
+    // Enter in solver list -> add to project solutions
+    this.solverSolutions.onSaveRequested((solution) => {
+      const solName = prompt('Solution name:', solution.name || `Solution ${solution.id}`);
+      if (solName === null) return;
+      const clone: Solution = {
+        ...solution,
+        name: solName.trim() || undefined,
+        configAssignments: [...solution.configAssignments],
+        portPeripherals: new Map(solution.portPeripherals),
+        costs: new Map(solution.costs),
+      };
+      this.projectSolutions.addSolution(clone);
     });
+
   }
 
   private runSolver(): void {
@@ -183,6 +207,8 @@ export class App {
       this.abortSolver();
       return;
     }
+
+    this.currentSolution = null;
 
     if (!this.currentMcu) {
       this.showStatus('No MCU loaded', 'error');
@@ -531,10 +557,12 @@ export class App {
 
   private newProject(): void {
     this.currentProjectName = null;
+    this.currentSolution = null;
     localStorage.removeItem('current-project');
     this.constraintEditor.setText('');
     this.hasSolverResult = false;
 
+    this.projectSolutions.clear();
     this.layout.broadcastStateChange({
       type: 'solution-selected',
       assignments: [],
@@ -580,11 +608,11 @@ export class App {
     });
   }
 
-  private saveProject(name: string, solutionToSave?: Solution, solutionName?: string): void {
-    const text = this.constraintEditor.getText();
-    const mcuRef = this.currentMcu?.refName ?? '';
+  /** Save project by overwriting the latest version (header Save + project list Save) */
+  private saveProject(name: string): void {
+    const version = this.buildCurrentVersion(0);
 
-    // Load existing project data to preserve version history
+    // Load existing project data
     let projectData: ProjectData = { name, versions: [] };
     try {
       const existing = localStorage.getItem(`project:${name}`);
@@ -594,29 +622,49 @@ export class App {
       }
     } catch { /* start fresh */ }
 
-    // Carry forward existing solutions from latest version, then append the new one
-    const latestVersion = projectData.versions[projectData.versions.length - 1];
-    const existingSolutions = latestVersion?.solutions ?? [];
-    let solutions = existingSolutions;
-    if (solutionToSave) {
-      const serialized = serializeSolution(solutionToSave);
-      if (solutionName) serialized.name = solutionName;
-      solutions = [...existingSolutions, serialized];
+    // Overwrite latest version, or create first version
+    if (projectData.versions.length > 0) {
+      const latest = projectData.versions[projectData.versions.length - 1];
+      version.id = latest.id;
+      projectData.versions[projectData.versions.length - 1] = version;
+    } else {
+      projectData.versions.push(version);
     }
 
-    // Re-index solution IDs to ensure uniqueness
-    solutions.forEach((s, i) => s.id = i + 1);
+    this.persistProject(name, projectData, version);
+  }
 
-    // Append new version
-    const version: ProjectVersion = {
-      id: projectData.versions.length,
-      timestamp: Date.now(),
-      constraintText: text,
-      mcuRef,
-      solutions,
-    };
+  /** Save As: prompt for name, append a new version */
+  private saveProjectAs(): void {
+    const name = prompt('Project name:', this.currentProjectName || '');
+    if (!name?.trim()) return;
+    const trimmed = name.trim();
+
+    // Load existing project data (may or may not exist)
+    let projectData: ProjectData = { name: trimmed, versions: [] };
+    try {
+      const existing = localStorage.getItem(`project:${trimmed}`);
+      if (existing) {
+        projectData = migrateProjectData(JSON.parse(existing));
+        projectData.name = trimmed;
+      }
+    } catch { /* start fresh */ }
+
+    const version = this.buildCurrentVersion(projectData.versions.length);
     projectData.versions.push(version);
 
+    this.persistProject(trimmed, projectData, version);
+  }
+
+  private buildCurrentVersion(id: number): ProjectVersion {
+    const text = this.constraintEditor.getText();
+    const mcuRef = this.currentMcu?.refName ?? '';
+    const solutions = this.projectSolutions.getSolutions().map(serializeSolution);
+    solutions.forEach((s, i) => s.id = i + 1);
+    return { id, timestamp: Date.now(), constraintText: text, mcuRef, solutions };
+  }
+
+  private persistProject(name: string, projectData: ProjectData, version: ProjectVersion): void {
     const json = JSON.stringify(projectData);
 
     try {
@@ -656,18 +704,8 @@ export class App {
     localStorage.setItem('current-project', name);
     this.refreshProjectList();
 
-    const solCount = solutions.length;
-    const msg = solutionToSave
-      ? `Solution #${solutionToSave.id} saved to "${name}" (${solCount} total)`
-      : `Project "${name}" saved (v${version.id})`;
-    this.showStatus(msg, 'success');
-  }
-
-  private saveProjectAs(solutionToSave?: Solution, solutionName?: string): void {
-    const name = prompt('Project name:', this.currentProjectName || '');
-    if (name && name.trim()) {
-      this.saveProject(name.trim(), solutionToSave, solutionName);
-    }
+    const solCount = version.solutions.length;
+    this.showStatus(`Project "${name}" saved (v${version.id}, ${solCount} solutions)`, 'success');
   }
 
   loadProject(name: string): void {
@@ -711,41 +749,39 @@ export class App {
     this.currentProjectName = name;
     localStorage.setItem('current-project', name);
 
+    // Clear solver results
+    this.layout.broadcastStateChange({
+      type: 'solver-complete',
+      solverResult: { mcuRef: '', solutions: [], errors: [], statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 } },
+    });
+
     // Load MCU if version references one
     if (version.mcuRef && (!this.currentMcu || this.currentMcu.refName !== version.mcuRef)) {
       this.loadStoredMcu(version.mcuRef);
     }
 
-    // Restore solutions if present
+    // Restore solutions into the project list (not the solver list)
     if (version.solutions && version.solutions.length > 0) {
       const solutions = version.solutions.map(deserializeSolution);
-      const solverResult: SolverResult = {
-        mcuRef: version.mcuRef,
-        solutions,
-        errors: [],
-        statistics: {
-          totalCombinations: 0,
-          evaluatedCombinations: 0,
-          validSolutions: solutions.length,
-          solveTimeMs: 0,
-          configCombinations: 0,
-        },
-      };
-
-      this.hasSolverResult = true;
-      this.layout.broadcastStateChange({ type: 'solver-complete', solverResult });
-    } else {
-  
+      this.projectSolutions.setSolutions(solutions);
       this.hasSolverResult = false;
-      this.layout.broadcastStateChange({
-        type: 'solver-complete',
-        solverResult: { mcuRef: '', solutions: [], errors: [], statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 } },
-      });
+    } else {
+      this.projectSolutions.clear();
+      this.hasSolverResult = false;
     }
 
     this.refreshProjectList();
     // Delay clearing the flag to outlast the 300ms debounced parse triggered by setText()
-    setTimeout(() => { this.loadingProject = false; }, 400);
+    setTimeout(() => {
+      this.loadingProject = false;
+      // Re-evaluate solve button now that parse has completed and loading is done
+      const solveBtn = this.constraintEditor.getSolveButton() as HTMLButtonElement | null;
+      if (solveBtn) {
+        const parseResult = this.constraintEditor.getParseResult();
+        const hasErrors = !parseResult || parseResult.errors.length > 0;
+        solveBtn.disabled = hasErrors || !this.currentMcu;
+      }
+    }, 400);
     const solCount = version.solutions?.length ?? 0;
     this.showStatus(`Project "${name}" loaded (v${version.id}${solCount > 0 ? `, ${solCount} solutions` : ''})`, 'success');
   }
@@ -839,6 +875,28 @@ export class App {
     // Try URL hash first, then localStorage
     const hash = window.location.hash.slice(1);
     if (hash) {
+      if (hash.startsWith('v1:')) {
+        // New structured format
+        try {
+          const json = decodeURIComponent(atob(hash.slice(3)));
+          const state: UrlState = JSON.parse(json);
+          this.constraintEditor.setText(state.c || '');
+          if (state.m) this.loadStoredMcu(state.m);
+          if (state.sol) {
+            const solution = deserializeSolution(state.sol);
+            const solverResult: SolverResult = {
+              mcuRef: state.m || '',
+              solutions: [solution],
+              errors: [],
+              statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 1, solveTimeMs: 0, configCombinations: 0 },
+            };
+            this.hasSolverResult = true;
+            this.layout.broadcastStateChange({ type: 'solver-complete', solverResult });
+          }
+          return;
+        } catch { /* invalid structured hash, fall through */ }
+      }
+      // Legacy format: plain base64 constraint text
       try {
         const text = decodeURIComponent(atob(hash));
         this.constraintEditor.setText(text);
@@ -869,17 +927,41 @@ export class App {
 
   private saveStateDebounced = (() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    return (text: string) => {
+    return () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        localStorage.setItem('constraint-text', text);
-        try {
-          const encoded = btoa(encodeURIComponent(text));
-          history.replaceState(null, '', '#' + encoded);
-        } catch { /* ignore encoding errors */ }
+        localStorage.setItem('constraint-text', this.constraintEditor.getText());
+        this.updateUrlHash();
       }, 1000);
     };
   })();
+
+  private updateUrlHash(): void {
+    const mode = this.settings.urlEncoding;
+    if (mode === 'none') {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      return;
+    }
+
+    try {
+      const text = this.constraintEditor.getText();
+      if (mode === 'constraints') {
+        // Legacy format for simplicity and smaller URLs
+        const encoded = btoa(encodeURIComponent(text));
+        history.replaceState(null, '', '#' + encoded);
+      } else {
+        // Structured format
+        const state: UrlState = { v: 1, c: text };
+        if (this.currentMcu) state.m = this.currentMcu.refName;
+        if (mode === 'full' && this.currentSolution) {
+          state.sol = serializeSolution(this.currentSolution);
+        }
+        const json = JSON.stringify(state);
+        const encoded = btoa(encodeURIComponent(json));
+        history.replaceState(null, '', '#v1:' + encoded);
+      }
+    } catch { /* ignore encoding errors */ }
+  }
 
   private loadSettings(): AppSettings {
     try {
@@ -991,6 +1073,19 @@ export class App {
         </section>
 
         <section class="settings-section">
+          <h3>URL Sharing</h3>
+          <div class="settings-row">
+            <label>Encode in URL</label>
+            <select class="settings-input" id="set-url-encoding">
+              <option value="none"${this.settings.urlEncoding === 'none' ? ' selected' : ''}>Nothing</option>
+              <option value="constraints"${this.settings.urlEncoding === 'constraints' ? ' selected' : ''}>Constraints</option>
+              <option value="constraints-mcu"${this.settings.urlEncoding === 'constraints-mcu' ? ' selected' : ''}>Constraints + MCU</option>
+              <option value="full"${this.settings.urlEncoding === 'full' ? ' selected' : ''}>Constraints + MCU + Solution</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="settings-section">
           <h3>Debug</h3>
           <div class="settings-row">
             <label>Data inspector</label>
@@ -1033,8 +1128,10 @@ export class App {
       });
 
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
+      this.settings.urlEncoding = (modal.querySelector('#set-url-encoding') as HTMLSelectElement).value as AppSettings['urlEncoding'];
 
       this.saveSettings();
+      this.updateUrlHash();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
       overlay.remove();
       this.showStatus('Settings saved', 'success');
@@ -1128,7 +1225,7 @@ export class App {
         if (key) totalChars += key.length + (localStorage.getItem(key) || '').length;
       }
       const usedKB = (totalChars / 1024).toFixed(0);
-      const limitKB = 2560; // ~5MB UTF-16 = ~2.5M chars
+      const limitKB = 5120; // ~10MB UTF-16 = ~5M chars
 
       modal.innerHTML = `
         <div class="settings-header">

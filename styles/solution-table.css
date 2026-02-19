@@ -28,6 +28,12 @@
   flex: 1;
   overflow: auto;
   min-height: 0;
+  outline: none;
+  border: 2px solid transparent;
+}
+
+.st-table-wrapper:focus {
+  border-color: var(--accent);
 }
 
 .st-empty {
@@ -145,4 +151,55 @@
 
 [data-theme="dark"] .st-warning {
   color: #fbbf24;
+}
+
+/* Save bar (project solutions) */
+.st-save-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.st-save-info {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Group header rows */
+.st-group-header {
+  cursor: pointer;
+  background: var(--bg-secondary);
+}
+
+.st-group-header td {
+  padding: 4px 8px;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.st-group-header:hover td {
+  color: var(--accent);
+}
+
+.st-group-header.st-focused td {
+  background: var(--accent);
+  color: white;
+}
+
+.st-cell-solver {
+  width: 30px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.st-cell-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
 }

@@ -12,12 +12,12 @@ interface SolutionGroup {
 
 /** A visible row — either a group header or a solution row */
 type FlatItem =
-  | { type: 'group'; group: SolutionGroup }
+  | { type: 'group'; group: SolutionGroup; groupNum: number }
   | { type: 'solution'; solution: Solution; group: SolutionGroup };
 
-export class SolutionTable implements Panel {
-  readonly id = 'solution-table';
-  readonly title = 'Solutions';
+export class SolverSolutions implements Panel {
+  readonly id = 'solver-solutions';
+  readonly title = 'Solver Solutions';
 
   private container!: HTMLElement;
   private tableWrapper!: HTMLElement;
@@ -26,12 +26,13 @@ export class SolutionTable implements Panel {
   private sortDir: SortDir = 'asc';
   private selectionCallbacks: Array<(solution: Solution) => void> = [];
   private saveCallbacks: Array<(solution: Solution) => void> = [];
+  private focusCallbacks: Array<() => void> = [];
   private expandedGroups: Set<string> = new Set();
 
   /** Flat list of visible items for keyboard navigation */
   private flatItems: FlatItem[] = [];
-  /** Index into flatItems of the currently focused/selected item */
-  private focusedIndex = 0;
+  /** Index into flatItems of the currently focused/selected item (-1 = none) */
+  private focusedIndex = -1;
   /** Computed groups (cached between render calls) */
   private groups: SolutionGroup[] = [];
   /** Whether we have multiple groups */
@@ -45,10 +46,19 @@ export class SolutionTable implements Panel {
     this.tableWrapper = document.createElement('div');
     this.tableWrapper.className = 'st-table-wrapper';
     this.tableWrapper.tabIndex = 0;
-    this.tableWrapper.innerHTML = '<div class="st-empty">Load MCU and enter constraints, then click Solve</div>';
+    this.tableWrapper.innerHTML = '<div class="st-empty">Run solver to see solutions</div>';
     this.container.appendChild(this.tableWrapper);
 
     this.tableWrapper.addEventListener('keydown', (e) => this.onKeyDown(e));
+    this.tableWrapper.addEventListener('focus', () => {
+      for (const cb of this.focusCallbacks) cb();
+      // If nothing focused yet, focus first item
+      if (this.focusedIndex < 0 && this.flatItems.length > 0) {
+        this.focusedIndex = 0;
+        this.activateItem(0);
+        this.render();
+      }
+    });
   }
 
   onStateChange(change: StateChange): void {
@@ -65,6 +75,10 @@ export class SolutionTable implements Panel {
     this.saveCallbacks.push(callback);
   }
 
+  onFocusGained(callback: () => void): void {
+    this.focusCallbacks.push(callback);
+  }
+
   setSolverResult(result: SolverResult): void {
     this.solverResult = result;
     this.expandedGroups.clear();
@@ -78,12 +92,21 @@ export class SolutionTable implements Panel {
     }
   }
 
+  /** Clear visual selection (called when the other list gains focus) */
+  deselect(): void {
+    this.focusedIndex = -1;
+    this.render();
+  }
+
   private onKeyDown(e: KeyboardEvent): void {
     if (this.flatItems.length === 0) return;
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      const next = Math.min(this.focusedIndex + 1, this.flatItems.length - 1);
+      const next = Math.min(
+        this.focusedIndex < 0 ? 0 : this.focusedIndex + 1,
+        this.flatItems.length - 1,
+      );
       this.focusedIndex = next;
       this.activateItem(next);
       this.render();
@@ -107,6 +130,33 @@ export class SolutionTable implements Panel {
       if (sol) {
         for (const cb of this.saveCallbacks) cb(sol);
       }
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      this.deleteAtFocus();
+    }
+  }
+
+  /** Remove the focused solution from the result list */
+  private deleteAtFocus(): void {
+    if (!this.solverResult) return;
+    const item = this.flatItems[this.focusedIndex];
+    if (!item || item.type !== 'solution') return;
+
+    const sol = item.solution;
+    // Remove from the underlying solverResult.solutions array
+    const idx = this.solverResult.solutions.indexOf(sol);
+    if (idx >= 0) {
+      this.solverResult.solutions.splice(idx, 1);
+    }
+
+    // Re-render and adjust focus
+    this.render();
+    if (this.focusedIndex >= this.flatItems.length) {
+      this.focusedIndex = Math.max(0, this.flatItems.length - 1);
+    }
+    if (this.flatItems.length > 0) {
+      this.activateItem(this.focusedIndex);
+      this.render();
     }
   }
 
@@ -115,8 +165,7 @@ export class SolutionTable implements Panel {
     const item = this.flatItems[this.focusedIndex];
     if (!item) return;
 
-    const groupKey = item.type === 'group' ? item.group.key
-      : item.group.key;
+    const groupKey = item.group.key;
 
     if (!this.expandedGroups.has(groupKey)) {
       this.expandedGroups.add(groupKey);
@@ -135,8 +184,7 @@ export class SolutionTable implements Panel {
     const item = this.flatItems[this.focusedIndex];
     if (!item) return;
 
-    const groupKey = item.type === 'group' ? item.group.key
-      : item.group.key;
+    const groupKey = item.group.key;
 
     if (this.expandedGroups.has(groupKey)) {
       this.expandedGroups.delete(groupKey);
@@ -168,15 +216,26 @@ export class SolutionTable implements Panel {
   }
 
   private scrollToFocused(): void {
-    const row = this.tableWrapper.querySelector('tr.st-focused');
-    if (row) {
-      row.scrollIntoView({ block: 'nearest' });
+    const row = this.tableWrapper.querySelector('tr.st-focused') as HTMLElement | null;
+    if (!row) return;
+
+    const thead = this.tableWrapper.querySelector('thead');
+    const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
+    const wrapperRect = this.tableWrapper.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+
+    // If row is behind the sticky header, scroll it down into view
+    if (rowRect.top < wrapperRect.top + headerHeight) {
+      this.tableWrapper.scrollTop -= (wrapperRect.top + headerHeight - rowRect.top);
+    } else if (rowRect.bottom > wrapperRect.bottom) {
+      this.tableWrapper.scrollTop += (rowRect.bottom - wrapperRect.bottom);
     }
   }
 
   private render(): void {
-    if (!this.solverResult) {
-      this.tableWrapper.innerHTML = '<div class="st-empty">No solutions yet</div>';
+    if (!this.solverResult || this.solverResult.solutions.length === 0) {
+      this.tableWrapper.innerHTML = '<div class="st-empty">Run solver to see solutions</div>';
+      this.flatItems = [];
       return;
     }
 
@@ -188,9 +247,10 @@ export class SolutionTable implements Panel {
 
     // Build flat items list for navigation
     this.flatItems = [];
-    for (const group of this.groups) {
+    for (let gi = 0; gi < this.groups.length; gi++) {
+      const group = this.groups[gi];
       if (this.multipleGroups) {
-        this.flatItems.push({ type: 'group', group });
+        this.flatItems.push({ type: 'group', group, groupNum: gi + 1 });
       }
       if (!this.multipleGroups || this.expandedGroups.has(group.key)) {
         for (const sol of group.solutions) {
@@ -214,8 +274,8 @@ export class SolutionTable implements Panel {
       ${this.headerCell('#', 'id')}
       ${this.headerCell('Cost', 'cost')}
       ${this.headerCell('Pins', 'pins')}
-      ${this.headerCell('Peripherals', 'peripherals')}
-      <th>Name</th>
+      ${this.headerCell('Periphs', 'peripherals')}
+      <th>Solver</th>
     </tr>`;
     table.appendChild(thead);
 
@@ -252,8 +312,8 @@ export class SolutionTable implements Panel {
         groupTd.colSpan = 5;
         const arrow = isExpanded ? '\u25BE' : '\u25B8';
         const best = group.solutions[0];
-        const bestCost = best ? ` \u2014 best ${best.totalCost.toFixed(1)}` : '';
-        groupTd.textContent = `${arrow} ${group.label} (${group.solutions.length}${bestCost})`;
+        const bestCost = best ? `, best ${best.totalCost.toFixed(1)}` : '';
+        groupTd.textContent = `${arrow} Group ${item.groupNum}: ${group.solutions.length} solutions${bestCost}`;
         groupTr.appendChild(groupTd);
 
         const idx = fi;
@@ -279,7 +339,7 @@ export class SolutionTable implements Panel {
           <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
           <td class="st-cell-pins">${this.countPins(sol)}</td>
           <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
-          <td class="st-cell-name">${sol.name || this.solverShortLabel(sol.solverOrigin)}</td>
+          <td class="st-cell-solver">${this.solverShortLabel(sol.solverOrigin)}</td>
         `;
 
         const idx = fi;
@@ -294,30 +354,6 @@ export class SolutionTable implements Panel {
 
     table.appendChild(tbody);
     this.tableWrapper.innerHTML = '';
-
-    // Save button bar (above table)
-    if (result.solutions.length > 0) {
-      const bar = document.createElement('div');
-      bar.className = 'st-save-bar';
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'btn btn-small';
-      saveBtn.textContent = 'Save';
-      saveBtn.title = 'Save selected solution to project';
-      saveBtn.addEventListener('click', () => {
-        const sol = this.getSelectedSolution();
-        if (sol) {
-          for (const cb of this.saveCallbacks) cb(sol);
-        }
-      });
-      bar.appendChild(saveBtn);
-      const info = document.createElement('span');
-      info.className = 'st-save-info';
-      const totalSolutions = result.solutions.length;
-      info.textContent = `${totalSolutions} solutions in ${this.groups.length} group${this.groups.length !== 1 ? 's' : ''}`;
-      bar.appendChild(info);
-      this.tableWrapper.appendChild(bar);
-    }
-
     this.tableWrapper.appendChild(table);
   }
 
@@ -370,15 +406,13 @@ export class SolutionTable implements Panel {
     return parts.join('|');
   }
 
-  /** Create a human-readable label for the group */
+  /** Create a compact label listing unique peripherals across all ports */
   private peripheralLabel(solution: Solution): string {
-    const parts: string[] = [];
-    const sortedPorts = [...solution.portPeripherals.keys()].sort();
-    for (const port of sortedPorts) {
-      const peripherals = [...solution.portPeripherals.get(port)!].sort();
-      parts.push(`${port}: ${peripherals.join(', ')}`);
+    const allPeripherals = new Set<string>();
+    for (const peripherals of solution.portPeripherals.values()) {
+      for (const p of peripherals) allPeripherals.add(p);
     }
-    return parts.join(' | ');
+    return [...allPeripherals].sort().join(', ');
   }
 
   private headerCell(label: string, key: SortKey): string {
@@ -425,7 +459,7 @@ export class SolutionTable implements Panel {
 
   private solverShortLabel(origin?: string): string {
     if (!origin) return '';
-    return SolutionTable.SOLVER_SHORT_LABELS[origin] ?? origin;
+    return SolverSolutions.SOLVER_SHORT_LABELS[origin] ?? origin;
   }
 
 }

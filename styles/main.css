@@ -162,6 +162,96 @@ body.splitter-dragging {
   user-select: none;
 }
 
+/* Switcher (tabbed layout) */
+.switcher {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.switcher-v {
+  flex-direction: column;
+}
+
+.switcher-h {
+  flex-direction: row;
+}
+
+.switcher-tabs {
+  display: flex;
+  flex-shrink: 0;
+  background: var(--panel-header-bg);
+  gap: 0;
+}
+
+.switcher-tabs-v {
+  flex-direction: row;
+  border-bottom: 1px solid var(--border);
+}
+
+.switcher-tabs-h {
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+}
+
+.switcher-tab {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.switcher-tabs-v .switcher-tab {
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.switcher-tabs-h .switcher-tab {
+  border-right: 2px solid transparent;
+  margin-right: -1px;
+}
+
+.switcher-tab:hover {
+  color: var(--accent);
+}
+
+.switcher-tab-active {
+  color: var(--accent);
+  background: var(--bg-primary);
+}
+
+.switcher-tabs-v .switcher-tab-active {
+  border-bottom-color: var(--accent);
+}
+
+.switcher-tabs-h .switcher-tab-active {
+  border-right-color: var(--accent);
+}
+
+.switcher-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.switcher-pane {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .app-footer {
   padding: 4px 12px;
   background: var(--panel-header-bg);

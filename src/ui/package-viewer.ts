@@ -434,11 +434,15 @@ export class PackageViewer implements Panel {
       const isHovered = this.hoveredPin === pin;
       const isSelected = this.selectedPin === pin;
 
+      const searchColor = this.getSearchHighlightColor(pin.name);
+
       let fillColor: string;
       if (isHovered) {
         fillColor = '#fbbf24'; // yellow
       } else if (isSelected) {
         fillColor = '#f97316'; // orange
+      } else if (searchColor) {
+        fillColor = searchColor;
       } else if (pinAssignments && pinAssignments.length > 0) {
         // Use port color if set, otherwise default assigned color
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
@@ -452,8 +456,8 @@ export class PackageViewer implements Panel {
 
       ctx.fillStyle = fillColor;
       ctx.fillRect(x, y, pw, ph);
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = searchColor ? '#b45309' : getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+      ctx.lineWidth = searchColor ? 2 : 0.5;
       ctx.strokeRect(x, y, pw, ph);
 
       // Draw pin label (counter-rotate so labels stay readable regardless of view rotation)
@@ -472,7 +476,6 @@ export class PackageViewer implements Panel {
       ctx.rotate(screenLabelRotation);
 
       const fontSize = Math.min(9, pinSpacing * 0.65);
-      const searchColor = this.getSearchHighlightColor(pin.name);
       ctx.fillStyle = searchColor || getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
       ctx.font = searchColor ? `bold ${fontSize}px monospace` : `${fontSize}px monospace`;
       ctx.textBaseline = 'middle';
@@ -669,12 +672,15 @@ export class PackageViewer implements Panel {
       const pinAssignments = assignmentsByPin.get(pin.name);
       const isHovered = this.hoveredPin === pin;
       const isSelected = this.selectedPin === pin;
+      const searchColor = this.getSearchHighlightColor(pin.name);
 
       let fillColor: string;
       if (isHovered) {
         fillColor = '#fbbf24';
       } else if (isSelected) {
         fillColor = '#f97316';
+      } else if (searchColor) {
+        fillColor = searchColor;
       } else if (pinAssignments && pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
@@ -689,8 +695,8 @@ export class PackageViewer implements Panel {
       ctx.arc(cx, cy, ballRadius, 0, Math.PI * 2);
       ctx.fillStyle = fillColor;
       ctx.fill();
-      ctx.strokeStyle = textColor;
-      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = searchColor ? '#b45309' : textColor;
+      ctx.lineWidth = searchColor ? 2 : 0.5;
       ctx.stroke();
 
       // Draw pin name inside ball if large enough
@@ -699,7 +705,6 @@ export class PackageViewer implements Panel {
           ? `P${pin.gpioPort}${pin.gpioNumber}`
           : pin.name.substring(0, 4);
         const fontSize = Math.min(7, cellSize * 0.28);
-        const searchColor = this.getSearchHighlightColor(pin.name);
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(counterAngle);
@@ -1020,7 +1025,7 @@ export class PackageViewer implements Panel {
 
     // Tier 2: Signal pattern match (TIM*_CH1, ADC*_IN[1-4], etc.)
     if (this.searchMatchPins.size === 0) {
-      const patternNode = parseSearchPattern(query.trim());
+      const patternNode = parseSearchPattern(trimmed);
       if (patternNode) {
         const candidates = expandPatternToCandidates(patternNode, this.mcu);
         for (const c of candidates) {

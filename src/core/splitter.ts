@@ -1,11 +1,19 @@
 import type { Panel } from '../ui/panel';
 
-export type SplitChild = Panel | Splitter;
-
-export interface Splitter {
+/** Any layout container that can be nested in other containers */
+export interface LayoutNode {
   readonly element: HTMLElement;
-  add(child: SplitChild, weight: number): void;
   collectPanels(): Panel[];
+}
+
+export type SplitChild = Panel | LayoutNode;
+
+export interface Splitter extends LayoutNode {
+  add(child: SplitChild, weight: number): void;
+}
+
+export interface Switcher extends LayoutNode {
+  add(child: SplitChild, name: string): void;
 }
 
 function isPanel(child: SplitChild): child is Panel {
@@ -143,4 +151,110 @@ export function HorizontalSplitter(): Splitter {
 
 export function VerticalSplitter(): Splitter {
   return new SplitterImpl('vertical');
+}
+
+// ---- Switcher ----
+
+class SwitcherImpl implements Switcher {
+  readonly element: HTMLElement;
+  private children: SplitChild[] = [];
+  private panes: HTMLElement[] = [];
+  private tabs: HTMLElement[] = [];
+  private tabBar: HTMLElement;
+  private content: HTMLElement;
+  private activeIndex = 0;
+
+  constructor(direction: 'horizontal' | 'vertical') {
+    this.element = document.createElement('div');
+    this.element.className = direction === 'horizontal'
+      ? 'switcher switcher-h'
+      : 'switcher switcher-v';
+
+    this.tabBar = document.createElement('div');
+    this.tabBar.className = direction === 'horizontal'
+      ? 'switcher-tabs switcher-tabs-h'
+      : 'switcher-tabs switcher-tabs-v';
+
+    this.content = document.createElement('div');
+    this.content.className = 'switcher-content';
+
+    this.element.appendChild(this.tabBar);
+    this.element.appendChild(this.content);
+  }
+
+  add(child: SplitChild, name: string): void {
+    const index = this.children.length;
+
+    // Tab
+    const tab = document.createElement('div');
+    tab.className = 'switcher-tab';
+    tab.textContent = name;
+    tab.addEventListener('click', () => this.activate(index));
+    this.tabBar.appendChild(tab);
+    this.tabs.push(tab);
+
+    // Pane
+    const pane = document.createElement('div');
+    pane.className = 'switcher-pane';
+
+    if (isPanel(child)) {
+      const panelWrapper = document.createElement('div');
+      panelWrapper.className = 'panel-wrapper';
+      panelWrapper.dataset.panelId = child.id;
+
+      const panelContent = document.createElement('div');
+      panelContent.className = 'panel-content';
+
+      panelWrapper.appendChild(panelContent);
+      pane.appendChild(panelWrapper);
+
+      child.createView(panelContent);
+    } else {
+      pane.appendChild(child.element);
+    }
+
+    this.content.appendChild(pane);
+    this.children.push(child);
+    this.panes.push(pane);
+
+    // Show first, hide rest
+    if (index === 0) {
+      tab.classList.add('switcher-tab-active');
+      pane.style.display = '';
+    } else {
+      pane.style.display = 'none';
+    }
+  }
+
+  collectPanels(): Panel[] {
+    const panels: Panel[] = [];
+    for (const child of this.children) {
+      if (isPanel(child)) {
+        panels.push(child);
+      } else {
+        panels.push(...child.collectPanels());
+      }
+    }
+    return panels;
+  }
+
+  private activate(index: number): void {
+    if (index === this.activeIndex) return;
+
+    this.tabs[this.activeIndex]?.classList.remove('switcher-tab-active');
+    this.panes[this.activeIndex].style.display = 'none';
+
+    this.activeIndex = index;
+
+    this.tabs[index]?.classList.add('switcher-tab-active');
+    this.panes[index].style.display = '';
+  }
+}
+
+export function HorizontalSwitcher(): Switcher {
+  return new SwitcherImpl('horizontal');
+}
+
+export function VerticalSwitcher(): Switcher {
+  return new SwitcherImpl('vertical');
 }

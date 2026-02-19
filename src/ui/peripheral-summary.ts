@@ -10,6 +10,7 @@ export class PeripheralSummary implements Panel {
   private portColors = new Map<string, string>();
   private portPeripherals = new Map<string, Set<string>>();
   private currentAssignments: Assignment[] = [];
+  private totalAssignablePins = 0;
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -27,6 +28,9 @@ export class PeripheralSummary implements Panel {
       this.portColors = change.portColors ?? new Map();
       this.currentAssignments = change.assignments ?? [];
       this.portPeripherals = this.derivePeripherals(this.currentAssignments);
+      this.render();
+    } else if (change.type === 'mcu-loaded' && change.mcu) {
+      this.totalAssignablePins = change.mcu.pins.filter(p => p.isAssignable).length;
       this.render();
     } else if (change.type === 'solver-complete') {
       // Only clear when there are no solutions; when solutions exist,
@@ -73,7 +77,13 @@ export class PeripheralSummary implements Panel {
     }
     const summary = document.createElement('div');
     summary.className = 'ps-summary';
-    summary.textContent = `${pins.size} pins, ${peripherals.size} peripherals`;
+    const freePins = this.totalAssignablePins > 0
+      ? this.totalAssignablePins - pins.size
+      : 0;
+    const pinText = this.totalAssignablePins > 0
+      ? `${pins.size}/${this.totalAssignablePins} pins (${freePins} free)`
+      : `${pins.size} pins`;
+    summary.textContent = `${pinText}, ${peripherals.size} peripherals`;
     this.listEl.appendChild(summary);
 
     for (const port of ports) {
