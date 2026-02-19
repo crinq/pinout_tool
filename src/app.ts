@@ -31,11 +31,11 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 5000,
-  solverTimeoutMs: 2500,
+  maxSolutions: 7500,
+  solverTimeoutMs: 5000,
   solverTypes: ['two-phase'],
-  maxGroups: 100,
-  maxSolutionsPerGroup: 25,
+  maxGroups: 50,
+  maxSolutionsPerGroup: 50,
   numRestarts: 25,
   costWeights: {
     pin_count: 1,
