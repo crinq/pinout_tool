@@ -76,9 +76,6 @@ export class ProjectSolutions implements Panel {
     this.render();
     this.activateItem(this.focusedIndex);
     this.scrollToFocused();
-
-    // Grab focus so user can see the newly added solution
-    this.tableWrapper.focus();
   }
 
   /** Return the current in-memory solution list */
@@ -210,6 +207,7 @@ export class ProjectSolutions implements Panel {
     thead.innerHTML = `<tr>
       ${this.headerCell('#', 'id')}
       <th>Name</th>
+      <th>MCU</th>
       ${this.headerCell('Cost', 'cost')}
       ${this.headerCell('Pins', 'pins')}
       ${this.headerCell('Periphs', 'peripherals')}
@@ -246,6 +244,7 @@ export class ProjectSolutions implements Panel {
       tr.innerHTML = `
         <td class="st-cell-id">${sol.id}</td>
         <td class="st-cell-name">${this.escapeHtml(displayName)}</td>
+        <td class="st-cell-mcu">${this.escapeHtml(sol.mcuRef)}</td>
         <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
         <td class="st-cell-pins">${this.countPins(sol)}</td>
         <td class="st-cell-perif">${this.countPeripherals(sol)}</td>

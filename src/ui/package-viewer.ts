@@ -1,4 +1,4 @@
-import type { Mcu, Pin, Signal, Assignment } from '../types';
+import type { Mcu, Pin, Signal, Assignment, CompatibilityResult } from '../types';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
@@ -25,6 +25,8 @@ export class PackageViewer implements Panel {
   private mcu: Mcu | null = null;
   private assignments: Assignment[] = [];
   private portColors: Map<string, string> = new Map();
+  private dmaAssignment: Map<string, string> = new Map(); // signalName → stream name
+  private compatibility: CompatibilityResult | null = null;
   private pinRects: PinRect[] = [];
   private hoveredPin: Pin | null = null;
   private selectedPin: Pin | null = null;
@@ -66,6 +68,7 @@ export class PackageViewer implements Panel {
       <button class="btn btn-small pv-btn" title="Zoom in">+</button>
       <button class="btn btn-small pv-btn" title="Zoom out">&minus;</button>
       <span class="pv-zoom-label">100%</span>
+      <button class="btn btn-small pv-btn" title="Rotate 90° counter-clockwise">&#x21BA;</button>
       <button class="btn btn-small pv-btn" title="Rotate 90° clockwise">&#x21BB;</button>
       <button class="btn btn-small pv-btn" title="Reset view">Reset</button>
     `;
@@ -75,8 +78,9 @@ export class PackageViewer implements Panel {
     buttons[0].addEventListener('click', () => this.zoomBy(0.2));
     buttons[1].addEventListener('click', () => this.zoomBy(-0.2));
     this.zoomLabel = toolbar.querySelector('.pv-zoom-label')!;
-    buttons[2].addEventListener('click', () => this.rotateCW());
-    buttons[3].addEventListener('click', () => this.resetView());
+    buttons[2].addEventListener('click', () => this.rotateCCW());
+    buttons[3].addEventListener('click', () => this.rotateCW());
+    buttons[4].addEventListener('click', () => this.resetView());
 
     // Search input
     const separator = document.createElement('span');
@@ -150,6 +154,8 @@ export class PackageViewer implements Panel {
     }
     if (change.type === 'solution-selected' && change.assignments) {
       this.portColors = change.portColors || new Map();
+      this.dmaAssignment = change.dmaStreamAssignment ?? new Map();
+      this.compatibility = change.compatibility ?? null;
       this.setAssignments(change.assignments);
     }
     if (change.type === 'theme-changed') {
@@ -160,6 +166,7 @@ export class PackageViewer implements Panel {
   setMcu(mcu: Mcu): void {
     this.mcu = mcu;
     this.assignments = [];
+    this.compatibility = null;
     this.hoveredPin = null;
     this.selectedPin = null;
     this.hoverMatchPins.clear();
@@ -208,6 +215,11 @@ export class PackageViewer implements Panel {
     this.render();
   }
 
+  private rotateCCW(): void {
+    this.rotation = (this.rotation + 3) % 4;
+    this.render();
+  }
+
   private rotateCW(): void {
     this.rotation = (this.rotation + 1) % 4;
     this.render();
@@ -235,13 +247,20 @@ export class PackageViewer implements Panel {
     const data = {
       mcuRef: this.mcu.refName,
       package: this.mcu.package,
-      assignments: this.assignments.map(a => ({
-        pinName: a.pinName,
-        signalName: a.signalName,
-        portName: a.portName,
-        channelName: a.channelName,
-        configurationName: a.configurationName,
-      })),
+      assignments: this.assignments.map(a => {
+        const entry: Record<string, unknown> = {
+          pinName: a.pinName,
+          signalName: a.signalName,
+          portName: a.portName,
+          channelName: a.channelName,
+          configurationName: a.configurationName,
+        };
+        const stream = this.dmaAssignment.get(a.signalName);
+        if (stream) {
+          entry.dmaStream = stream;
+        }
+        return entry;
+      }),
       portColors: Object.fromEntries(this.portColors),
     };
 
@@ -433,6 +452,7 @@ export class PackageViewer implements Panel {
       const pinAssignments = assignmentsByPin.get(pin.name);
       const isHovered = this.hoveredPin === pin;
       const isSelected = this.selectedPin === pin;
+      const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
 
       const searchColor = this.getSearchHighlightColor(pin.name);
 
@@ -441,8 +461,8 @@ export class PackageViewer implements Panel {
         fillColor = '#fbbf24'; // yellow
       } else if (isSelected) {
         fillColor = '#f97316'; // orange
-      } else if (searchColor) {
-        fillColor = searchColor;
+      } else if (isIncompat) {
+        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
       } else if (pinAssignments && pinAssignments.length > 0) {
         // Use port color if set, otherwise default assigned color
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
@@ -456,8 +476,15 @@ export class PackageViewer implements Panel {
 
       ctx.fillStyle = fillColor;
       ctx.fillRect(x, y, pw, ph);
-      ctx.strokeStyle = searchColor ? '#b45309' : getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
-      ctx.lineWidth = searchColor ? 2 : 0.5;
+
+      if (searchColor) {
+        // Pulsing amber border ring (keeps original fill visible)
+        ctx.strokeStyle = searchColor;
+        ctx.lineWidth = 2.5;
+      } else {
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+        ctx.lineWidth = 0.5;
+      }
       ctx.strokeRect(x, y, pw, ph);
 
       // Draw pin label (counter-rotate so labels stay readable regardless of view rotation)
@@ -476,8 +503,11 @@ export class PackageViewer implements Panel {
       ctx.rotate(screenLabelRotation);
 
       const fontSize = Math.min(9, pinSpacing * 0.65);
-      ctx.fillStyle = searchColor || getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
-      ctx.font = searchColor ? `bold ${fontSize}px monospace` : `${fontSize}px monospace`;
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+      ctx.font = `${fontSize}px monospace`;
+      if (searchColor) {
+        ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
+      }
       ctx.textBaseline = 'middle';
 
       // Label text
@@ -672,6 +702,7 @@ export class PackageViewer implements Panel {
       const pinAssignments = assignmentsByPin.get(pin.name);
       const isHovered = this.hoveredPin === pin;
       const isSelected = this.selectedPin === pin;
+      const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
       const searchColor = this.getSearchHighlightColor(pin.name);
 
       let fillColor: string;
@@ -679,8 +710,8 @@ export class PackageViewer implements Panel {
         fillColor = '#fbbf24';
       } else if (isSelected) {
         fillColor = '#f97316';
-      } else if (searchColor) {
-        fillColor = searchColor;
+      } else if (isIncompat) {
+        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
       } else if (pinAssignments && pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
@@ -695,9 +726,17 @@ export class PackageViewer implements Panel {
       ctx.arc(cx, cy, ballRadius, 0, Math.PI * 2);
       ctx.fillStyle = fillColor;
       ctx.fill();
-      ctx.strokeStyle = searchColor ? '#b45309' : textColor;
-      ctx.lineWidth = searchColor ? 2 : 0.5;
-      ctx.stroke();
+
+      if (searchColor) {
+        // Pulsing amber border ring (drawn outside the ball)
+        ctx.strokeStyle = searchColor;
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = textColor;
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      }
 
       // Draw pin name inside ball if large enough
       if (cellSize >= 16) {
@@ -708,8 +747,11 @@ export class PackageViewer implements Panel {
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(counterAngle);
-        ctx.fillStyle = searchColor || (isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor);
-        ctx.font = searchColor ? `bold ${fontSize}px monospace` : `${fontSize}px monospace`;
+        ctx.fillStyle = isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor;
+        ctx.font = `${fontSize}px monospace`;
+        if (searchColor) {
+          ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
+        }
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(gpio, 0, 0);
@@ -908,12 +950,24 @@ export class PackageViewer implements Panel {
     const pinAssignments = this.assignments.filter(a => a.pinName === pin.name);
 
     let html = `<strong>${pin.name}</strong> (pos ${pin.position}, ${pin.type})<br>`;
+    if (this.compatibility && !this.compatibility.isCompatible) {
+      if (this.compatibility.missingPins.has(pin.name)) {
+        html += `<span class="tooltip-error">Pin not available on ${this.mcu?.refName ?? 'target MCU'}</span><br>`;
+      } else if (this.compatibility.missingSignals.has(pin.name)) {
+        const sig = this.compatibility.missingSignals.get(pin.name)!;
+        html += `<span class="tooltip-error">Signal ${sig} not available on this pin</span><br>`;
+      }
+    }
     if (pinAssignments.length > 0) {
       for (const a of pinAssignments) {
         const label = a.portName !== '<pinned>'
           ? `${a.portName}.${a.channelName} [${a.configurationName}]`
           : 'pinned';
-        html += `<span class="tooltip-assigned">${label}: ${a.signalName}</span><br>`;
+        const stream = this.dmaAssignment.get(a.signalName);
+        const dmaInfo = stream
+          ? ` <span class="tooltip-dma">(${stream})</span>`
+          : '';
+        html += `<span class="tooltip-assigned">${label}: ${a.signalName}${dmaInfo}</span><br>`;
       }
     }
     if (signals.length > 0) {
@@ -1086,6 +1140,11 @@ export class PackageViewer implements Panel {
       this.searchAnimationId = null;
     }
     this.searchAnimPhase = 0;
+  }
+
+  private isIncompatiblePin(pinName: string): boolean {
+    if (!this.compatibility || this.compatibility.isCompatible) return false;
+    return this.compatibility.missingPins.has(pinName) || this.compatibility.missingSignals.has(pinName);
   }
 
   private getSearchHighlightColor(pinName: string): string | null {

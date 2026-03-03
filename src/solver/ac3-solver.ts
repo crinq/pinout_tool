@@ -10,12 +10,13 @@
 // 2. Instance exclusivity: non-shared instance removed from other ports
 // ============================================================
 
-import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
+import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { computeTotalCost } from './cost-functions';
 import {
   prepareSolverContext,
   evaluateAllConstraints, buildSolution, deduplicateSolutions,
+  validateGpioAvailability,
   canAssignPin, assignPin, unassignPin, isSharedInstance, evaluateExpr,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
@@ -41,7 +42,7 @@ export function solveAC3(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const ctx = prepareSolverContext(ast, mcu, errors);
+  const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
   if (!ctx) {
     return {
       mcuRef: mcu.refName,
@@ -82,7 +83,8 @@ export function solveAC3(
     ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
-    domains, pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns
+    domains, pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
+    ctx.dmaData
   );
 
   if (solutions.length >= cfg.maxSolutions) {
@@ -102,7 +104,8 @@ export function solveAC3(
   ctx.stats.solveTimeMs = performance.now() - startTime;
 
   const deduped = deduplicateSolutions(solutions);
-  return { mcuRef: mcu.refName, solutions: deduped, errors, statistics: ctx.stats };
+  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
 }
 
 /**
@@ -244,7 +247,8 @@ function solveBacktrackAC3(
   domains: number[][],
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[]
+  sharedPatterns: PatternPart[],
+  dmaData?: DmaData
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -256,12 +260,16 @@ function solveBacktrackAC3(
 
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
-    if (evaluateAllConstraints(current, configCombinations, ports)) {
+    const dmaOut: Map<string, string>[] = [];
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut)) {
       const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length
+        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );
       solutions.push(solution);
       stats.validSolutions++;
+      const elapsed = performance.now() - startTime;
+      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
+      stats.lastSolutionMs = elapsed;
     }
     return;
   }
@@ -278,9 +286,9 @@ function solveBacktrackAC3(
 
     const candidate = v.candidates[candidateIdx];
 
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance)) continue;
+    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance);
+    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
     current.push({ variable: v, candidate });
 
     // Eager constraint check
@@ -302,7 +310,7 @@ function solveBacktrackAC3(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
-          if (!evaluateExpr(req.expression, v.portName, channelInfo)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
             pruned = true;
             break;
           }
@@ -326,7 +334,8 @@ function solveBacktrackAC3(
           configCombinations, ports, pinnedAssignments,
           solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
           lastVarOfConfig, configRequiresMap,
-          domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns
+          domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
+          dmaData
         );
         undoPropagate(removed, domains);
       }
@@ -334,6 +343,6 @@ function solveBacktrackAC3(
     }
 
     current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance);
+    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
   }
 }

@@ -7,6 +7,12 @@ import { solveCostGuided } from './cost-guided-solver';
 import { solveDiverseInstances } from './diverse-solver';
 import { solveAC3 } from './ac3-solver';
 import { solveDynamicMRV } from './dynamic-mrv-solver';
+import { solvePriorityBacktracking } from './priority-backtracking-solver';
+import { solvePriorityTwoPhase } from './priority-two-phase-solver';
+import { solvePriorityDiverse } from './priority-diverse-solver';
+import { solvePriorityGroup } from './priority-group-solver';
+import { solveMrvGroup } from './mrv-group-solver';
+import { solveRatioMrvGroup } from './ratio-mrv-group-solver';
 import type { Mcu } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 
@@ -28,6 +34,7 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
       maxSolutionsPerGroup: twoPhaseConfig?.maxSolutionsPerGroup ?? 10,
       timeoutMs: config.timeoutMs ?? 5000,
       costWeights: config.costWeights ?? new Map(),
+      skipGpioMapping: config.skipGpioMapping,
     });
 
     let result;
@@ -42,6 +49,7 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
           maxSolutions: config.maxSolutions ?? 100,
           timeoutMs: config.timeoutMs ?? 5000,
           costWeights: config.costWeights ?? new Map(),
+          skipGpioMapping: config.skipGpioMapping,
         });
         break;
 
@@ -59,6 +67,36 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
 
       case 'dynamic-mrv':
         result = solveDynamicMRV(ast, mcu, config);
+        break;
+
+      case 'priority-backtracking':
+        result = solvePriorityBacktracking(ast, mcu, config);
+        break;
+
+      case 'priority-two-phase':
+        result = solvePriorityTwoPhase(ast, mcu, buildTwoPhaseConfig());
+        break;
+
+      case 'priority-diverse':
+        result = solvePriorityDiverse(ast, mcu, {
+          numRestarts: randomizedConfig?.numRestarts ?? 25,
+          maxSolutions: config.maxSolutions ?? 100,
+          timeoutMs: config.timeoutMs ?? 5000,
+          costWeights: config.costWeights ?? new Map(),
+          skipGpioMapping: config.skipGpioMapping,
+        });
+        break;
+
+      case 'priority-group':
+        result = solvePriorityGroup(ast, mcu, buildTwoPhaseConfig());
+        break;
+
+      case 'mrv-group':
+        result = solveMrvGroup(ast, mcu, buildTwoPhaseConfig());
+        break;
+
+      case 'ratio-mrv-group':
+        result = solveRatioMrvGroup(ast, mcu, buildTwoPhaseConfig());
         break;
 
       default:

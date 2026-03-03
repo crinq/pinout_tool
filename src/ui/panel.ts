@@ -1,4 +1,4 @@
-import type { Mcu, Assignment, SolverResult } from '../types';
+import type { Mcu, Assignment, SolverResult, CompatibilityResult } from '../types';
 
 export type StateChangeType =
   | 'mcu-loaded'
@@ -14,6 +14,9 @@ export interface StateChange {
   solverResult?: SolverResult;
   constraintText?: string;
   portColors?: Map<string, string>;
+  gpioCount?: number;
+  dmaStreamAssignment?: Map<string, string>;
+  compatibility?: CompatibilityResult;
 }
 
 export interface Panel {

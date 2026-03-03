@@ -18,6 +18,7 @@ export interface SerializedSolution {
   portPeripherals: Record<string, string[]>;
   costs: Record<string, number>;
   totalCost: number;
+  gpioCount?: number;
 }
 
 export interface ProjectVersion {
@@ -90,6 +91,7 @@ export function deserializeSolution(data: SerializedSolution): Solution {
     ),
     costs: new Map(Object.entries(data.costs)),
     totalCost: data.totalCost,
+    gpioCount: data.gpioCount ?? 0,
   };
 }
 

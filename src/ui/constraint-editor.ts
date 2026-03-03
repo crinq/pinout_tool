@@ -481,8 +481,8 @@ export class ConstraintEditor implements Panel {
           <pre class="ce-help-code"># MCU selection (glob patterns)
 mcu: STM32F405*
 
-# Reserve pins from solving
-reserve: PH0, PH1
+# Reserve pins and peripherals from solving
+reserve: PH0, PH1, ADC*, SPI[1,3]
 
 # Allow peripheral instance sharing across ports
 shared: ADC*

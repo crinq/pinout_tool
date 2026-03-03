@@ -56,3 +56,39 @@ registerSolver({
   name: 'Dynamic MRV',
   description: 'Dynamically picks the most constrained variable at each step with forward checking',
 });
+
+registerSolver({
+  id: 'priority-backtracking',
+  name: 'Priority Backtracking',
+  description: 'Backtracking that maps constrained peripherals first (fewer available pins = higher priority)',
+});
+
+registerSolver({
+  id: 'priority-two-phase',
+  name: 'Priority Two-Phase',
+  description: 'Two-phase solver that maps constrained peripherals first in both phases',
+});
+
+registerSolver({
+  id: 'priority-diverse',
+  name: 'Priority Diverse',
+  description: 'Priority ordering with multi-round shuffled exploration for diverse groups',
+});
+
+registerSolver({
+  id: 'priority-group',
+  name: 'Priority Group',
+  description: 'Diverse instance groups with instance permutation and priority-ordered pin assignment',
+});
+
+registerSolver({
+  id: 'mrv-group',
+  name: 'MRV Group',
+  description: 'Diverse instance groups with instance permutation and dynamic MRV pin assignment',
+});
+
+registerSolver({
+  id: 'ratio-mrv-group',
+  name: 'Ratio MRV Group',
+  description: 'MRV Group with normalized priority (candidates per signal ratio instead of raw pin count)',
+});

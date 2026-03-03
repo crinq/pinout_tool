@@ -33,6 +33,9 @@ export interface Mcu {
   typeToInstances: Map<string, string[]>;
   peripheralSignals: Map<string, Set<string>>;
   pinSignalSet: Map<string, Set<string>>;
+
+  // Optional DMA data (attached when DMA XML is available)
+  dma?: DmaData;
 }
 
 export interface Peripheral {
@@ -67,6 +70,33 @@ export interface Signal {
   peripheralType?: string;     // normalized
   instanceNumber?: number;
   signalFunction?: string;
+}
+
+// ============================================================
+// DMA Data Model
+// ============================================================
+
+export interface DmaData {
+  version: string;
+  streams: DmaStreamInfo[];
+
+  // Derived lookup tables
+  signalToDmaStreams: Map<string, DmaStreamInfo[]>;
+  instanceToDmaStreams: Map<string, DmaStreamInfo[]>;
+}
+
+export interface DmaStreamInfo {
+  name: string;         // "DMA1_Stream0"
+  controller: string;   // "DMA1"
+  streamNumber: number; // 0
+  requests: DmaRequest[];
+}
+
+export interface DmaRequest {
+  /** Normalized signal names (e.g. ["TIM5_CH3", "TIM5_UP"] for "TIM5_CH3/UP") */
+  signalNames: string[];
+  /** Peripheral instance name (e.g. "TIM5", "ADC1") */
+  peripheralInstance: string;
 }
 
 // ============================================================
@@ -138,11 +168,14 @@ export interface Solution {
   portPeripherals: Map<string, Set<string>>;
   costs: Map<string, number>;
   totalCost: number;
+  gpioCount: number;
 }
 
 export interface ConfigCombinationAssignment {
   activeConfigs: Map<string, string>;
   assignments: Assignment[];
+  /** DMA stream assignments: signalName → stream name (e.g. "DMA2_Stream7"). Only present for channels with dma() constraints. */
+  dmaStreamAssignment?: Map<string, string>;
 }
 
 export interface Assignment {
@@ -167,7 +200,22 @@ export interface SolverStats {
   validSolutions: number;
   solveTimeMs: number;
   configCombinations: number;
+  firstSolutionMs?: number;
+  lastSolutionMs?: number;
   perSolver?: Record<string, SolverStats>;
+}
+
+// ============================================================
+// Cross-MCU Compatibility
+// ============================================================
+
+export interface CompatibilityResult {
+  isCompatible: boolean;
+  isCrossMcu: boolean;
+  missingPins: Set<string>;              // pin not bonded out on target MCU
+  missingSignals: Map<string, string>;   // pinName -> signalName (pin exists but signal unavailable)
+  validCount: number;
+  totalCount: number;
 }
 
 // ============================================================
@@ -205,5 +253,12 @@ export const TYPE_ALIASES: Record<string, string> = {
 };
 
 export function normalizePeripheralType(type: string): string {
-  return TYPE_ALIASES[type] ?? type;
+  // Try exact match first (handles "TIM1_8" → "TIM", "UART" → "USART", etc.)
+  if (TYPE_ALIASES[type] !== undefined) return TYPE_ALIASES[type];
+  // Handle compound types like "USART_RX", "SPI_TX" — extract base type before underscore
+  if (type.includes('_')) {
+    const base = type.substring(0, type.indexOf('_'));
+    return TYPE_ALIASES[base] ?? base;
+  }
+  return type;
 }

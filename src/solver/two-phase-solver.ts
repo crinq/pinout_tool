@@ -9,7 +9,7 @@
 // ============================================================
 
 import type {
-  Mcu, Solution, SolverResult, SolverError, SolverStats,
+  Mcu, Solution, SolverResult, SolverError, SolverStats, DmaData,
 } from '../types';
 import { normalizePeripheralType } from '../types';
 import type {
@@ -23,10 +23,12 @@ import type {
   SolverVariable, VariableAssignment, PortSpec, PinnedAssignment,
 } from './solver';
 import {
-  extractPorts, extractReservedPins, extractPinnedAssignments,
+  extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, isSharedInstance, resolveAllVariables,
   generateConfigCombinations, validateConstraints,
   solveBacktrack, deduplicateSolutions, createPinTracker,
+  partitionGpioVariables, validateGpioAvailability, isGpioVariable,
+  configsHaveDma,
 } from './solver';
 
 // ============================================================
@@ -38,6 +40,7 @@ export interface TwoPhaseConfig {
   maxSolutionsPerGroup: number;
   timeoutMs: number;
   costWeights: Map<string, number>;
+  skipGpioMapping?: boolean;
 }
 
 // ============================================================
@@ -91,19 +94,21 @@ export function solveTwoPhase(
   }
 
   const ports = extractPorts(expandedAst);
-  const reservedPins = extractReservedPins(expandedAst);
+  const reserved = resolveReservePatterns(expandedAst, mcu);
   const pinnedAssignments = extractPinnedAssignments(expandedAst);
   const sharedPatterns = extractSharedPatterns(expandedAst);
 
-  const reservedSet = new Set(reservedPins);
+  const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedSet.add(pa.pinName);
+    reservedPinSet.add(pa.pinName);
   }
+  const reservedPeripheralSet = new Set(reserved.peripherals);
 
   validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
-  const allVariables = resolveAllVariables(ports, mcu, reservedSet);
+  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
+  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
   if (allVariables.length === 0) {
     return {
@@ -142,8 +147,32 @@ export function solveTwoPhase(
     };
   }
 
-  // Build instance variables from all solver variables
-  const allInstanceVars = buildInstanceVariables(allVariables);
+  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+
+  if (solveVars.length === 0 && gpioVars.length === 0) {
+    return {
+      mcuRef: mcu.refName,
+      solutions: [],
+      errors: [{ type: 'warning', message: 'No variables to solve (no port configs defined)' }],
+      statistics: {
+        totalCombinations: configCombinations.length,
+        evaluatedCombinations: 0,
+        validSolutions: 0,
+        solveTimeMs: performance.now() - startTime,
+        configCombinations: configCombinations.length,
+      },
+    };
+  }
+
+  if (gpioVars.length > 0) {
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
+  }
+
+  // Build instance variables from non-GPIO solver variables only.
+  // GPIO variables (IN/OUT) don't have meaningful peripheral instances
+  // and would explode Phase 1's search space.
+  const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
+  const allInstanceVars = buildInstanceVariables(nonGpioVars);
 
   // Build requires map
   const configRequiresMap = new Map<string, RequireNode[]>();
@@ -239,9 +268,10 @@ export function solveTwoPhase(
     if (performance.now() - startTime > config.timeoutMs) break;
 
     const groupSolutions = solvePhase2ForGroup(
-      group, allVariables, ports, reservedPins, pinnedAssignments,
+      group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats
+      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
+      undefined, dmaData
     );
     solutions.push(...groupSolutions);
   }
@@ -268,8 +298,9 @@ export function solveTwoPhase(
   stats.solveTimeMs = performance.now() - startTime;
 
   const deduped = deduplicateSolutions(solutions);
+  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reserved.pins, pinnedAssignments);
 
-  return { mcuRef: mcu.refName, solutions: deduped, errors, statistics: stats };
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
 }
 
 // ============================================================
@@ -339,7 +370,8 @@ export function solvePhase1(
   startTime: number,
   timeoutMs: number,
   lastVarOfConfig: Map<string, number>,
-  configRequiresMap: Map<string, RequireNode[]>
+  configRequiresMap: Map<string, RequireNode[]>,
+  dmaData?: DmaData
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (groups.length >= maxGroups) return;
@@ -388,7 +420,7 @@ export function solvePhase1(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
-          const result = evaluateExprPhase1(req.expression, v.portName, channelInfo);
+          const result = evaluateExprPhase1(req.expression, v.portName, channelInfo, dmaData);
           if (result === false) {
             pruned = true;
             break;
@@ -401,7 +433,8 @@ export function solvePhase1(
       solvePhase1(
         variables, varIndex + 1, tracker, current,
         ports, groups, maxGroups,
-        startTime, timeoutMs, lastVarOfConfig, configRequiresMap
+        startTime, timeoutMs, lastVarOfConfig, configRequiresMap,
+        dmaData
       );
     }
 
@@ -431,15 +464,16 @@ function syntheticVariableAssignment(ia: InstanceAssignment): VariableAssignment
 function evaluateExprPhase1(
   expr: ConstraintExprNode,
   currentPort: string,
-  channelInfo: Map<string, Map<string, VariableAssignment[]>>
+  channelInfo: Map<string, Map<string, VariableAssignment[]>>,
+  dmaData?: DmaData
 ): boolean | string {
   switch (expr.type) {
     case 'function_call':
-      return evaluateFunctionCallPhase1(expr.name, expr.args, currentPort, channelInfo);
+      return evaluateFunctionCallPhase1(expr.name, expr.args, currentPort, channelInfo, dmaData);
 
     case 'binary_expr': {
-      const left = evaluateExprPhase1(expr.left, currentPort, channelInfo);
-      const right = evaluateExprPhase1(expr.right, currentPort, channelInfo);
+      const left = evaluateExprPhase1(expr.left, currentPort, channelInfo, dmaData);
+      const right = evaluateExprPhase1(expr.right, currentPort, channelInfo, dmaData);
       switch (expr.operator) {
         case '==': return left === right;
         case '!=': return left !== right;
@@ -451,7 +485,7 @@ function evaluateExprPhase1(
     }
 
     case 'unary_expr':
-      return !evaluateExprPhase1(expr.operand, currentPort, channelInfo);
+      return !evaluateExprPhase1(expr.operand, currentPort, channelInfo, dmaData);
 
     case 'ident':
       return expr.name;
@@ -468,7 +502,8 @@ function evaluateFunctionCallPhase1(
   name: string,
   args: ConstraintExprNode[],
   currentPort: string,
-  channelInfo: Map<string, Map<string, VariableAssignment[]>>
+  channelInfo: Map<string, Map<string, VariableAssignment[]>>,
+  dmaData?: DmaData
 ): boolean | string {
   const resolveChannel = (arg: ConstraintExprNode): VariableAssignment[] => {
     if (arg.type === 'ident') {
@@ -552,6 +587,33 @@ function evaluateFunctionCallPhase1(
     case 'gpio_port':
       return '';
 
+    case 'dma': {
+      // Phase 1 only knows instance-level info (no pin/signal yet).
+      // Be optimistic: Phase 2 does the full DMA stream feasibility check.
+      // Only reject if the channel is assigned and uses an instance with
+      // peripheral-level DMA entries that don't exist.
+      if (!dmaData) return true;
+      const dmaArgs = args.slice();
+      if (dmaArgs.length >= 1) {
+        const vas = resolveChannel(dmaArgs[0]);
+        if (vas.length === 0) return true; // channel not yet assigned
+        for (const va of vas) {
+          const inst = va.candidate.peripheralInstance;
+          if (inst) {
+            // Check instance-level DMA (ADC, DAC, etc.)
+            const instStreams = dmaData.instanceToDmaStreams.get(inst);
+            if (instStreams && instStreams.length > 0) return true;
+            // Check signal-level DMA (USART, SPI, etc.) — any signal from this instance
+            for (const [sigName, streams] of dmaData.signalToDmaStreams) {
+              if (sigName.startsWith(inst + '_') && streams.length > 0) return true;
+            }
+          }
+        }
+        return false;
+      }
+      return true;
+    }
+
     default:
       return false;
   }
@@ -572,7 +634,9 @@ export function solvePhase2ForGroup(
   maxSolutions: number,
   startTime: number,
   timeoutMs: number,
-  stats: SolverStats
+  stats: SolverStats,
+  sortVariables?: (vars: SolverVariable[]) => void,
+  dmaData?: DmaData
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
   const filteredVars: SolverVariable[] = allVariables.map(sv => {
@@ -595,8 +659,12 @@ export function solvePhase2ForGroup(
   const emptyVar = filteredVars.find(v => v.domain.length === 0);
   if (emptyVar) return [];
 
-  // Sort by MRV
-  filteredVars.sort((a, b) => a.domain.length - b.domain.length);
+  // Sort variables (custom sort or default MRV)
+  if (sortVariables) {
+    sortVariables(filteredVars);
+  } else {
+    filteredVars.sort((a, b) => a.domain.length - b.domain.length);
+  }
 
   // Build eager-check structures
   const lastVarOfConfig = new Map<string, number>();
@@ -621,7 +689,8 @@ export function solvePhase2ForGroup(
     filteredVars, 0, tracker, [],
     configCombinations, ports, pinnedAssignments,
     solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
-    lastVarOfConfig, configRequiresMap
+    lastVarOfConfig, configRequiresMap,
+    dmaData
   );
 
   return solutions;

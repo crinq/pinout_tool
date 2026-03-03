@@ -1,0 +1,21 @@
+port UART1:
+  channel TX
+  channel RX
+
+  config "USART":
+    TX = USART[1,2,3]_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+    require dma(TX)
+    require dma(RX)
+
+port UART2:
+  channel TX
+  channel RX
+
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+    require dma(TX)
+    require dma(RX)

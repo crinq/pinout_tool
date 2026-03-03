@@ -207,15 +207,23 @@ export function parseMcuXml(xmlString: string): Mcu {
     });
   }
 
+  // Peripheral types that use the analog switch path (not digital AF mux)
+  const ANALOG_PERIPHERAL_TYPES = new Set(['ADC', 'DAC', 'OPAMP', 'COMP']);
+
   // Parse pins
   const pins: Pin[] = [];
   const pinEls = mcuEl.querySelectorAll('Pin');
   for (const pinEl of pinEls) {
     const rawName = pinEl.getAttribute('Name') ?? '';
-    const gpioMatch = rawName.match(/^(P[A-Z]\d+)/);
-    const name = gpioMatch ? gpioMatch[1] : rawName.split('-')[0];
     const position = pinEl.getAttribute('Position') ?? '0';
     const type = parsePinType(pinEl.getAttribute('Type') ?? '');
+
+    // Detect _C pins (low-impedance analog switch variants, e.g. PC2_C, PA0_C).
+    // These share the same digital AF signals as the base pin but have different
+    // analog (ADC) channels. Keep them as separate pins with only analog signals.
+    const isCPin = /^P[A-Z]\d+_C$/.test(rawName);
+    const gpioMatch = rawName.match(/^(P[A-Z]\d+)/);
+    const name = isCPin ? rawName : (gpioMatch ? gpioMatch[1] : rawName.split('-')[0]);
 
     const signals: Signal[] = [];
     const signalEls = pinEl.querySelectorAll('Signal');
@@ -229,6 +237,15 @@ export function parseMcuXml(xmlString: string): Mcu {
       for (const rawName of expandedNames) {
         const collapsed = collapseSignalName(rawName);
         const parsed = parseSignalName(collapsed);
+
+        // For _C pins, only keep analog signals (ADC, DAC, OPAMP, COMP).
+        // Digital AF signals are duplicates of the base pin.
+        if (isCPin) {
+          if (!parsed.peripheralType || !ANALOG_PERIPHERAL_TYPES.has(parsed.peripheralType)) {
+            continue;
+          }
+        }
+
         signals.push({
           name: collapsed,
           ioModes,
@@ -240,7 +257,8 @@ export function parseMcuXml(xmlString: string): Mcu {
       }
     }
 
-    const gpio = parseGpioName(name);
+    // _C pins don't get GPIO association — they share the pad with the base pin
+    const gpio = isCPin ? null : parseGpioName(name);
 
     // Add synthetic GPIO signal (e.g., PA3 → GPIO1_3)
     if (gpio) {

@@ -1,9 +1,11 @@
 // ============================================================
-// Randomized Restarts Solver
+// Priority Diverse Solver
 //
-// Runs the backtracking solver N times with differently shuffled
-// candidate orderings. Each restart explores a different part of
-// the design space, improving solution diversity.
+// Hybrid strategy combining fast priority-based initial solving
+// with diverse randomized restarts:
+// - Round 0: port-priority ordering for fast initial solutions
+// - Remaining rounds: MRV ordering with shuffled domains for
+//   group diversity (explores different peripheral instances)
 // ============================================================
 
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
@@ -13,10 +15,11 @@ import {
   prepareSolverContext, solveBacktrack, deduplicateSolutions,
   validateGpioAvailability,
   createPinTracker,
-  type SolverVariable,
+  type SolverVariable, type VariableAssignment,
 } from './solver';
+import { computePortPriority, sortByPortPriority } from './port-priority';
 
-export interface RandomizedConfig {
+export interface PriorityDiverseConfig {
   numRestarts: number;
   maxSolutions: number;
   timeoutMs: number;
@@ -44,10 +47,10 @@ function shuffleArray<T>(arr: T[], rng: () => number): T[] {
   return result;
 }
 
-export function solveRandomizedRestarts(
+export function solvePriorityDiverse(
   ast: ProgramNode,
   mcu: Mcu,
-  config: RandomizedConfig
+  config: PriorityDiverseConfig
 ): SolverResult {
   const startTime = performance.now();
   const errors: SolverError[] = [];
@@ -62,8 +65,14 @@ export function solveRandomizedRestarts(
     };
   }
 
+  const portPriority = computePortPriority(ctx.variables);
+
   const allSolutions: Solution[] = [];
-  const perRestart = Math.max(1, Math.ceil(config.maxSolutions / config.numRestarts));
+
+  // Give round 0 (priority) half the budget, remaining rounds share the rest
+  const round0Budget = Math.ceil(config.maxSolutions / 2);
+  const diverseRounds = Math.max(1, config.numRestarts - 1);
+  const perDiverseRound = Math.max(1, Math.ceil((config.maxSolutions - round0Budget) / diverseRounds));
 
   const stats: SolverStats = {
     totalCombinations: ctx.configCombinations.length,
@@ -73,37 +82,63 @@ export function solveRandomizedRestarts(
     configCombinations: ctx.configCombinations.length,
   };
 
-  for (let r = 0; r < config.numRestarts; r++) {
+  // ========== Round 0: Priority ordering (fast initial solve) ==========
+  {
+    const vars: SolverVariable[] = ctx.variables.map(v => ({ ...v, domain: [...v.domain] }));
+    sortByPortPriority(vars, portPriority);
+
+    const lastVarOfConfig = new Map<string, number>();
+    for (let i = 0; i < vars.length; i++) {
+      const key = `${vars[i].portName}\0${vars[i].configName}`;
+      lastVarOfConfig.set(key, i);
+    }
+
+    const tracker = createPinTracker(ctx.reservedPins, ctx.sharedPatterns);
+    const restartSolutions: Solution[] = [];
+    const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
+
+    solveBacktrack(
+      vars, 0, tracker, [],
+      ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
+      restartSolutions, round0Budget, startTime, config.timeoutMs, stats, deepest,
+      lastVarOfConfig, ctx.configRequiresMap,
+      ctx.dmaData
+    );
+
+    allSolutions.push(...restartSolutions);
+  }
+
+  // ========== Rounds 1-N: MRV ordering with shuffled domains (diversity) ==========
+  for (let r = 1; r <= diverseRounds; r++) {
     if (performance.now() - startTime > config.timeoutMs) break;
     if (allSolutions.length >= config.maxSolutions) break;
 
     const rng = mulberry32(r * 12345 + 67890);
 
-    // Shuffle each variable's domain
-    const shuffled: SolverVariable[] = ctx.variables.map(v => ({
+    // Shuffle each variable's candidate domain
+    const vars: SolverVariable[] = ctx.variables.map(v => ({
       ...v,
       domain: shuffleArray([...v.domain], rng),
     }));
 
-    // Re-sort by MRV (preserves MRV heuristic, shuffled order breaks ties)
-    shuffled.sort((a, b) => a.domain.length - b.domain.length);
+    // MRV sort (standard) — shuffled domains break ties differently each round
+    vars.sort((a, b) => a.domain.length - b.domain.length);
 
-    // Rebuild lastVarOfConfig for the new variable order
     const lastVarOfConfig = new Map<string, number>();
-    for (let i = 0; i < shuffled.length; i++) {
-      const key = `${shuffled[i].portName}\0${shuffled[i].configName}`;
+    for (let i = 0; i < vars.length; i++) {
+      const key = `${vars[i].portName}\0${vars[i].configName}`;
       lastVarOfConfig.set(key, i);
     }
 
     const remaining = config.maxSolutions - allSolutions.length;
-    const limit = Math.min(perRestart, remaining);
+    const limit = Math.min(perDiverseRound, remaining);
 
     const tracker = createPinTracker(ctx.reservedPins, ctx.sharedPatterns);
     const restartSolutions: Solution[] = [];
-    const deepest = { depth: -1, assignments: [] as import('./solver').VariableAssignment[] };
+    const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
 
     solveBacktrack(
-      shuffled, 0, tracker, [],
+      vars, 0, tracker, [],
       ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
       restartSolutions, limit, startTime, config.timeoutMs, stats, deepest,
       lastVarOfConfig, ctx.configRequiresMap,
@@ -118,6 +153,17 @@ export function solveRandomizedRestarts(
   }
   if (performance.now() - startTime > config.timeoutMs) {
     errors.push({ type: 'warning', message: `Solver timeout after ${allSolutions.length} solutions.` });
+  }
+
+  if (allSolutions.length === 0 && ctx.deepest.depth >= 0) {
+    const failingVar = ctx.deepest.depth + 1 < ctx.variables.length ? ctx.variables[ctx.deepest.depth + 1] : null;
+    if (failingVar) {
+      errors.push({
+        type: 'error',
+        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") — ${failingVar.candidates.length} candidates all conflict`,
+        source: `${failingVar.portName}.${failingVar.channelName}`,
+      });
+    }
   }
 
   for (const sol of allSolutions) {

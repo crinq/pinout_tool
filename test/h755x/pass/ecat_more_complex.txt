@@ -1,0 +1,279 @@
+port clock:
+  channel IN
+  channel OUT
+  color "brown"
+  
+  config "XTAL":
+    IN = RCC_OSCIN
+    OUT = RCC_OSCOUT
+  
+port debug:
+  channel DIO
+  channel CLK
+  channel SWO
+  channel TX
+  channel RX
+  color "brown"
+
+  config "SWD":
+    DIO = *_SWDIO
+    CLK = *_SWCLK
+    SWO = *_SWO
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX, "USART")
+    
+port USB:
+  channel DP
+  channel DM
+  
+  config "USB":
+    DP = USB*_OTGFSDP
+    DM = USB*_OTGFSDM
+
+port MEM:
+  channel ROM_CLK
+  #channel RAM_NCS
+  #channel RAM_IO0
+  #channel RAM_IO1
+  #channel RAM_IO2 @ PE2
+  #channel RAM_IO3 @ PA1
+  channel ROM_NCS
+  channel ROM_IO0
+  channel ROM_IO1
+  channel ROM_IO2
+  channel ROM_IO3
+
+  config "MEM":
+    #RAM_CLK = QUADSPI_CLK
+    #RAM_NCS = QUADSPI_BK1NCS
+    #RAM_IO0 = QUADSPI_BK1IO0
+    #RAM_IO1 = QUADSPI_BK1IO1
+    #RAM_IO2 = QUADSPI_BK1IO2
+    #RAM_IO3 = QUADSPI_BK1IO3
+    ROM_CLK = QUADSPI_CLK
+    ROM_NCS = QUADSPI_BK2NCS
+    ROM_IO0 = QUADSPI_BK2IO0
+    ROM_IO1 = QUADSPI_BK2IO1
+    ROM_IO2 = QUADSPI_BK2IO2
+    ROM_IO3 = QUADSPI_BK2IO3
+
+port SAFETY:
+  channel TX
+  channel RX
+  
+  config "USART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX, "USART")
+
+port ECAT_GD:
+  channel mosi
+  channel miso
+  channel sck
+  channel cs_ecat
+  channel cs_gd
+  channel sda
+  channel scl
+  channel sync0
+  channel sync1
+  channel irq
+  color "red"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    cs_ecat = SPI*_NSS
+    cs_gd = OUT
+    sda = I2C*_SDA
+    scl = I2C*_SCL
+    sync0 = IN
+    sync1 = OUT
+    irq = IN
+    require same_instance(miso, mosi, sck, cs_ecat, "SPI")
+
+port ENC0:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en0
+  channel en1
+  channel en2
+  channel led_green
+  channel led_red
+  color "orange"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    cs = SPI*_NSS
+    en0 = OUT
+    en1 = OUT
+    en2 = OUT
+    led_green = OUT
+    led_red = OUT
+    require same_instance(miso, mosi, sck, cs, "SPI")
+  
+  config "TIM":
+    miso = TIM[1,2,3,4,5,8]_CH[1,2]
+    mosi = TIM*_CH[3,4]
+    sck = TIM*_CH[1,2]
+    require same_instance(miso, mosi, sck, "TIM")
+    
+  config "UART":
+    miso = USART*_RX
+    mosi = USART*_TX
+    require same_instance(miso, mosi, "USART")
+    
+port ENC1:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en0
+  channel en1
+  channel en2
+  channel led_green
+  channel led_red
+  color "green"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    cs = SPI*_NSS
+    en0 = OUT
+    en1 = OUT
+    en2 = OUT
+    led_green = OUT
+    led_red = OUT
+    require same_instance(miso, mosi, sck, cs, "SPI")
+  
+  config "TIM":
+    miso = TIM*_CH[1,2]
+    mosi = TIM*_CH[3,4]
+    sck = TIM*_CH[1,2]
+    require same_instance(miso, mosi, sck, "TIM")
+    
+  config "UART":
+    miso = USART*_RX
+    mosi = USART*_TX
+    require same_instance(miso, mosi, "USART")
+
+port ENC2:
+  channel miso
+  channel mosi
+  channel sck
+  channel cs
+  channel en0
+  channel en1
+  channel en2
+  channel led_green
+  channel led_red
+  color "red"
+
+  config "SPI":
+    miso = SPI*_MISO
+    mosi = SPI*_MOSI
+    sck = SPI*_SCK
+    cs = SPI*_NSS
+    en0 = OUT
+    en1 = OUT
+    en2 = OUT
+    led_green = OUT
+    led_red = OUT
+    require same_instance(miso, mosi, sck, cs, "SPI")
+    
+  config "TIM":
+    miso = TIM*_CH[1,2]
+    mosi = TIM*_CH[3,4]
+    sck = TIM*_CH[1,2]
+    require same_instance(miso, mosi, sck, "TIM")
+    
+  config "UART":
+    miso = USART*_RX
+    mosi = USART*_TX
+    require same_instance(miso, mosi, "USART")
+ 
+port MOT:
+  channel A
+  channel AN
+  channel B
+  channel BN
+  channel C
+  channel CN
+  channel BRAKE
+  channel FAN
+  channel STO0
+  channel STO1
+  channel IA
+  channel IB
+  channel IC
+  channel IDC
+  channel UA
+  channel UB
+  channel UC
+  channel UDC
+  channel IBRAKE
+  channel TBRAKE
+  channel TMOT_A
+  channel TMOT_B
+  channel TMOT_C
+  channel TFET
+  color "blue"
+
+  config "MOT":
+    # pwm
+    A = TIM[1,8]_CH1
+    AN = TIM[1,8]_CH1N
+    B = TIM[1,8]_CH2
+    BN = TIM[1,8]_CH2N
+    C = TIM[1,8]_CH3
+    CN = TIM[1,8]_CH3N
+    BRAKE = TIM[1,8]_CH4
+    FAN = TIM*_CH*
+    
+    # phase currents + voltages
+    IA = ADC1_INP[0-3]
+    IB = ADC2_INP[0-3]
+    IC = ADC3_INP[0-3]
+    UA = ADC1_INP[1-6]
+    UB = ADC2_INP[1-6]
+    UC = ADC3_INP[1-6]
+    
+    #dc current + voltage
+    IDC = ADC1_INP[7-18]
+    UDC = ADC2_INP[7-18]
+    
+    # brake current + temperature
+    IBRAKE = ADC3_INP[7-18]
+    TBRAKE = ADC3_INP[7-18]
+    
+    # motor + mosfet temperature
+    TMOT_A = ADC1_INP[7-18]
+    TMOT_B = ADC2_INP[7-18]
+    TMOT_C = ADC3_INP[7-18]
+    TFET = ADC3_INP[7-18]
+    
+    STO0 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2
+    STO1 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2
+    require same_instance(A, AN, B, BN, C, CN, STO0, STO1, BRAKE, "TIM")
+
+port IO:
+  channel sda
+  channel scl
+  channel LED_GREEN
+  channel LED_YELLOW
+  channel LED_RED
+  channel LED_RGB
+  
+  config "IO":
+    sda = I2C*_SDA
+    scl = I2C*_SCL
+    LED_GREEN = OUT
+    LED_YELLOW = OUT
+    LED_RED = OUT
+    LED_RGB = SPI*_MOSI

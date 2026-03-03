@@ -1,0 +1,10 @@
+port UART_DMA:
+  channel TX
+  channel RX
+
+  config "USART_DMA":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+    require dma(TX)
+    require dma(RX)

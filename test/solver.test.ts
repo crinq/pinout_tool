@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { parseMcuXml } from '../src/parser/mcu-xml-parser';
+import { parseDmaXml, isDmaXml } from '../src/parser/dma-xml-parser';
 import { parseConstraints } from '../src/parser/constraint-parser';
 import { solveConstraints, extractSharedPatterns, isSharedInstance } from '../src/solver/solver';
 import { solveTwoPhase } from '../src/solver/two-phase-solver';
@@ -37,8 +38,8 @@ function discoverTestCases(): TestCase[] {
   for (const folder of folders) {
     const folderPath = join(TEST_DIR, folder.name);
 
-    // Find the MCU XML file
-    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml'));
+    // Find the MCU XML file (skip DMA XML files)
+    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
     if (xmlFiles.length === 0) continue;
     const mcuFile = join(folderPath, xmlFiles[0]);
 
@@ -95,9 +96,10 @@ function extractInstance(signalName: string): string | null {
 
 /**
  * Check solution invariants:
- * 1. All signals are exclusive to one port
+ * 1. All peripheral signals are exclusive for one channel and one pin per config
  * 2. All peripheral instances are exclusive to one port (except shared)
- * 3. All pins are exclusive to one port
+ * 3. All pins are exclusive to one channel
+ * 4. All assigned DMA streams are exclusive for one port
  */
 function checkSolutionInvariants(
   solution: Solution,
@@ -107,33 +109,45 @@ function checkSolutionInvariants(
   const errors: string[] = [];
 
   for (const ca of solution.configAssignments) {
-    // Track signal -> port ownership
-    const signalOwner = new Map<string, string>();
+    // Track signal -> (port, channel) ownership — peripheral signals are exclusive per config
+    const signalOwner = new Map<string, { port: string; channel: string; pin: string }>();
     // Track instance -> port ownership
     const instanceOwner = new Map<string, string>();
-    // Track pin -> port ownership
-    const pinOwner = new Map<string, string>();
+    // Track pin -> (port, channel) ownership — a pin belongs to one channel
+    const pinOwner = new Map<string, { port: string; channel: string }>();
+    // Track DMA stream -> port ownership
+    const dmaStreamOwner = new Map<string, string>();
 
     for (const a of ca.assignments) {
       if (a.portName === '<pinned>') continue;
 
-      // Check signal exclusivity
-      const existingSignalOwner = signalOwner.get(a.signalName);
-      if (existingSignalOwner !== undefined && existingSignalOwner !== a.portName) {
-        errors.push(
-          `[sol ${solution.id}] Signal "${a.signalName}" assigned to both port "${existingSignalOwner}" and "${a.portName}"`
-        );
+      // Check peripheral signal exclusivity: one channel and one pin per config
+      if (a.signalName.includes('_')) {
+        const existing = signalOwner.get(a.signalName);
+        if (existing) {
+          if (existing.port !== a.portName || existing.channel !== a.channelName) {
+            errors.push(
+              `[sol ${solution.id}] Signal "${a.signalName}" assigned to ${existing.port}.${existing.channel}(${existing.pin}) and ${a.portName}.${a.channelName}(${a.pinName})`
+            );
+          }
+        }
+        signalOwner.set(a.signalName, { port: a.portName, channel: a.channelName, pin: a.pinName });
       }
-      signalOwner.set(a.signalName, a.portName);
 
-      // Check pin exclusivity across ports
-      const existingPinOwner = pinOwner.get(a.pinName);
-      if (existingPinOwner !== undefined && existingPinOwner !== a.portName) {
-        errors.push(
-          `[sol ${solution.id}] Pin "${a.pinName}" assigned to both port "${existingPinOwner}" and "${a.portName}"`
-        );
+      // Check pin exclusivity: a pin belongs to one channel
+      const existingPin = pinOwner.get(a.pinName);
+      if (existingPin) {
+        if (existingPin.port !== a.portName) {
+          errors.push(
+            `[sol ${solution.id}] Pin "${a.pinName}" assigned to both port "${existingPin.port}" and "${a.portName}"`
+          );
+        } else if (existingPin.channel !== a.channelName) {
+          errors.push(
+            `[sol ${solution.id}] Pin "${a.pinName}" assigned to both channel "${existingPin.channel}" and "${a.channelName}" in port "${a.portName}"`
+          );
+        }
       }
-      pinOwner.set(a.pinName, a.portName);
+      pinOwner.set(a.pinName, { port: a.portName, channel: a.channelName });
 
       // Check peripheral instance exclusivity (unless shared)
       const instance = extractInstance(a.signalName);
@@ -148,6 +162,24 @@ function checkSolutionInvariants(
           }
         }
         instanceOwner.set(instance, a.portName);
+      }
+    }
+
+    // Check DMA stream exclusivity: each stream belongs to one port
+    if (ca.dmaStreamAssignment) {
+      for (const [signalName, streamName] of ca.dmaStreamAssignment) {
+        // Find which port owns this signal
+        const sigInfo = signalOwner.get(signalName);
+        const port = sigInfo?.port;
+        if (!port) continue;
+
+        const existingPort = dmaStreamOwner.get(streamName);
+        if (existingPort !== undefined && existingPort !== port) {
+          errors.push(
+            `[sol ${solution.id}] DMA stream "${streamName}" assigned to both port "${existingPort}" and "${port}"`
+          );
+        }
+        dmaStreamOwner.set(streamName, port);
       }
     }
   }
@@ -322,6 +354,114 @@ function checkDiffInstanceConstraints(
   return errors;
 }
 
+/**
+ * Collect all dma() channel references from an AST's require statements.
+ * Returns a set of "portName\0channelName" keys that have dma() constraints.
+ */
+function collectDmaRequiredChannels(ast: ProgramNode): Set<string> {
+  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+  const result = new Set<string>();
+
+  function walkExpr(expr: import('../src/parser/constraint-ast').ConstraintExprNode, portName: string): void {
+    switch (expr.type) {
+      case 'function_call':
+        if (expr.name === 'dma' && expr.args.length >= 1 && expr.args[0].type === 'ident') {
+          result.add(`${portName}\0${expr.args[0].name}`);
+        }
+        for (const arg of expr.args) walkExpr(arg, portName);
+        break;
+      case 'binary_expr':
+        walkExpr(expr.left, portName);
+        walkExpr(expr.right, portName);
+        break;
+      case 'unary_expr':
+        walkExpr(expr.operand, portName);
+        break;
+    }
+  }
+
+  for (const stmt of expanded.statements) {
+    if (stmt.type !== 'port_decl') continue;
+    const port = stmt as PortDeclNode;
+    for (const config of port.configs) {
+      for (const item of config.body) {
+        if (item.type !== 'require') continue;
+        walkExpr((item as RequireNode).expression, port.name);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Check DMA assignment invariants:
+ * 1. Only channels with dma() requirement get DMA assignment
+ * 2. All channels with dma() requirement get DMA assignment
+ */
+function checkDmaAssignmentInvariants(
+  solution: Solution,
+  ast: ProgramNode,
+): string[] {
+  const errors: string[] = [];
+  const dmaRequiredChannels = collectDmaRequiredChannels(ast);
+
+  // If no dma() constraints exist, no DMA assignments should exist
+  if (dmaRequiredChannels.size === 0) {
+    for (const ca of solution.configAssignments) {
+      if (ca.dmaStreamAssignment && ca.dmaStreamAssignment.size > 0) {
+        errors.push(
+          `[sol ${solution.id}] DMA assignments present but no dma() constraints exist`
+        );
+      }
+    }
+    return errors;
+  }
+
+  for (const ca of solution.configAssignments) {
+    const dma = ca.dmaStreamAssignment ?? new Map<string, string>();
+
+    // Build lookup: signalName -> (portName, channelName)
+    const signalToPortChannel = new Map<string, { port: string; channel: string }>();
+    for (const a of ca.assignments) {
+      if (a.portName === '<pinned>') continue;
+      signalToPortChannel.set(a.signalName, { port: a.portName, channel: a.channelName });
+    }
+
+    // Check 1: Only channels with dma() requirement get DMA assignment
+    for (const [signalName] of dma) {
+      const info = signalToPortChannel.get(signalName);
+      if (!info) continue;
+      const key = `${info.port}\0${info.channel}`;
+      if (!dmaRequiredChannels.has(key)) {
+        errors.push(
+          `[sol ${solution.id}] Signal "${signalName}" (${info.port}.${info.channel}) has DMA assignment but no dma() requirement`
+        );
+      }
+    }
+
+    // Check 2: All channels with dma() requirement get DMA assignment
+    for (const key of dmaRequiredChannels) {
+      const [portName, channelName] = key.split('\0');
+      // Find the assignment for this port.channel in this config combo
+      const activeConfig = ca.activeConfigs.get(portName);
+      if (!activeConfig) continue;
+
+      const channelAssignment = ca.assignments.find(
+        a => a.portName === portName && a.channelName === channelName && a.configurationName === activeConfig
+      );
+      if (!channelAssignment) continue;
+
+      if (!dma.has(channelAssignment.signalName)) {
+        errors.push(
+          `[sol ${solution.id}] Channel ${portName}.${channelName} has dma() requirement but signal "${channelAssignment.signalName}" has no DMA assignment`
+        );
+      }
+    }
+  }
+
+  return errors;
+}
+
 // ============================================================
 // Solver definitions
 // ============================================================
@@ -400,7 +540,26 @@ describe('Solver integration tests', () => {
   function getMcu(mcuFile: string): Mcu {
     if (!mcuCache.has(mcuFile)) {
       const xmlString = readFileSync(mcuFile, 'utf-8');
-      mcuCache.set(mcuFile, parseMcuXml(xmlString));
+      const mcu = parseMcuXml(xmlString);
+
+      // Look for DMA XML files in the same directory
+      const mcuDir = mcuFile.substring(0, mcuFile.lastIndexOf('/'));
+      const dmaFiles = readdirSync(mcuDir).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'));
+      if (dmaFiles.length > 0) {
+        // Find matching DMA version from MCU peripheral list
+        const dmaPeripheral = mcu.peripherals.find(p => p.originalType === 'DMA');
+        if (dmaPeripheral) {
+          const matchingFile = dmaFiles.find(f => f.includes(dmaPeripheral.version));
+          if (matchingFile) {
+            const dmaXmlString = readFileSync(join(mcuDir, matchingFile), 'utf-8');
+            if (isDmaXml(dmaXmlString)) {
+              mcu.dma = parseDmaXml(dmaXmlString);
+            }
+          }
+        }
+      }
+
+      mcuCache.set(mcuFile, mcu);
     }
     return mcuCache.get(mcuFile)!;
   }
@@ -516,6 +675,19 @@ describe('Solver integration tests', () => {
               const allErrors: string[] = [];
               for (const sol of result.solutions) {
                 allErrors.push(...checkDiffInstanceConstraints(sol, parseResult.ast!));
+              }
+              expect(allErrors, allErrors.join('\n')).toHaveLength(0);
+            });
+
+            it('should satisfy DMA assignment invariants', () => {
+              if (!parseResult.ast) return;
+              const mcu = getMcu(tc.mcuFile);
+              const result = getResult(solver, parseResult.ast, mcu, cacheKey);
+              if (result.solutions.length === 0) return;
+
+              const allErrors: string[] = [];
+              for (const sol of result.solutions) {
+                allErrors.push(...checkDmaAssignmentInvariants(sol, parseResult.ast!));
               }
               expect(allErrors, allErrors.join('\n')).toHaveLength(0);
             });

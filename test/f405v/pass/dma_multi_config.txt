@@ -1,0 +1,16 @@
+port COMM:
+  channel TX
+  channel RX
+
+  config "USART1":
+    TX = USART[1,2,3]_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+    require dma(TX)
+    require dma(RX)
+
+  config "USART6":
+    TX = USART6_TX
+    RX = USART6_RX
+    require dma(TX)
+    require dma(RX)

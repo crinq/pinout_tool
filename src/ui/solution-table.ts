@@ -129,6 +129,7 @@ export class SolverSolutions implements Panel {
       const sol = this.getSelectedSolution();
       if (sol) {
         for (const cb of this.saveCallbacks) cb(sol);
+        this.tableWrapper.focus();
       }
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();

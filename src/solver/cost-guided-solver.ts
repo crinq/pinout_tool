@@ -7,13 +7,14 @@
 // usage, and pin proximity.
 // ============================================================
 
-import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
+import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { computeTotalCost, parseBgaPosition, parsePackagePinCount } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import {
   prepareSolverContext,
   evaluateAllConstraints, buildSolution, deduplicateSolutions,
+  validateGpioAvailability,
   canAssignPin, assignPin, unassignPin, evaluateExpr,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
@@ -40,7 +41,7 @@ export function solveCostGuided(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const ctx = prepareSolverContext(ast, mcu, errors);
+  const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
   if (!ctx) {
     return {
       mcuRef: mcu.refName,
@@ -64,7 +65,8 @@ export function solveCostGuided(
     ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
-    mcu, isBGA, totalPins, wSpread, wDebug, wProximity
+    mcu, isBGA, totalPins, wSpread, wDebug, wProximity,
+    ctx.dmaData
   );
 
   if (solutions.length >= cfg.maxSolutions) {
@@ -84,7 +86,8 @@ export function solveCostGuided(
   ctx.stats.solveTimeMs = performance.now() - startTime;
 
   const deduped = deduplicateSolutions(solutions);
-  return { mcuRef: mcu.refName, solutions: deduped, errors, statistics: ctx.stats };
+  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
 }
 
 function estimateCost(
@@ -185,7 +188,8 @@ function solveBacktrackCostGuided(
   totalPins: number,
   wSpread: number,
   wDebug: number,
-  wProximity: number
+  wProximity: number,
+  dmaData?: DmaData
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -197,12 +201,16 @@ function solveBacktrackCostGuided(
 
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
-    if (evaluateAllConstraints(current, configCombinations, ports)) {
+    const dmaOut: Map<string, string>[] = [];
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut)) {
       const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length
+        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );
       solutions.push(solution);
       stats.validSolutions++;
+      const elapsed = performance.now() - startTime;
+      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
+      stats.lastSolutionMs = elapsed;
     }
     return;
   }
@@ -222,9 +230,9 @@ function solveBacktrackCostGuided(
 
     const candidate = v.candidates[candidateIdx];
 
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance)) continue;
+    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance);
+    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
     current.push({ variable: v, candidate });
 
     // Eager constraint check
@@ -246,7 +254,7 @@ function solveBacktrackCostGuided(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
-          if (!evaluateExpr(req.expression, v.portName, channelInfo)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
             pruned = true;
             break;
           }
@@ -260,11 +268,12 @@ function solveBacktrackCostGuided(
         configCombinations, ports, pinnedAssignments,
         solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
         lastVarOfConfig, configRequiresMap,
-        mcu, isBGA, totalPins, wSpread, wDebug, wProximity
+        mcu, isBGA, totalPins, wSpread, wDebug, wProximity,
+        dmaData
       );
     }
 
     current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance);
+    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
   }
 }

@@ -375,22 +375,23 @@ class Parser {
     return result.trim();
   }
 
-  // reserve: pin_name (, pin_name)*
+  // reserve: pattern (, pattern)*
+  // pattern can be pin names (PA1, PB2) or peripheral patterns (ADC*, SPI[1,3], LPUART1)
   private parseReserveDecl(): ReserveDeclNode {
     const loc = this.loc();
     this.expectKeyword('reserve');
     this.expect('COLON');
 
-    const pins: string[] = [];
-    pins.push(this.parsePinName());
+    const patterns: PatternPart[] = [];
+    patterns.push(this.parsePatternPart());
 
     while (this.check('COMMA')) {
       this.advance();
-      pins.push(this.parsePinName());
+      patterns.push(this.parsePatternPart());
     }
 
     this.expectNewlineOrEnd();
-    return { type: 'reserve_decl', pins, loc };
+    return { type: 'reserve_decl', patterns, loc };
   }
 
   // shared: pattern (, pattern)*

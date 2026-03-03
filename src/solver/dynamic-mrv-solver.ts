@@ -6,12 +6,13 @@
 // each step. Combined with forward checking for effectiveness.
 // ============================================================
 
-import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
+import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
 import { computeTotalCost } from './cost-functions';
 import {
   prepareSolverContext,
   evaluateAllConstraints, buildSolution, deduplicateSolutions,
+  validateGpioAvailability,
   canAssignPin, assignPin, unassignPin, isSharedInstance, evaluateExpr,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
@@ -36,7 +37,7 @@ export function solveDynamicMRV(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const ctx = prepareSolverContext(ast, mcu, errors);
+  const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
   if (!ctx) {
     return {
       mcuRef: mcu.refName,
@@ -84,7 +85,8 @@ export function solveDynamicMRV(
     ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats,
     ctx.configRequiresMap, configVarIndices, 0, n,
-    pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns
+    pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
+    ctx.dmaData
   );
 
   if (solutions.length >= cfg.maxSolutions) {
@@ -104,7 +106,8 @@ export function solveDynamicMRV(
   ctx.stats.solveTimeMs = performance.now() - startTime;
 
   const deduped = deduplicateSolutions(solutions);
-  return { mcuRef: mcu.refName, solutions: deduped, errors, statistics: ctx.stats };
+  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
 }
 
 /**
@@ -115,7 +118,7 @@ export function solveDynamicMRV(
  * - All its variables are already assigned (fully resolved), OR
  * - All its unassigned variables have non-empty domains
  */
-function hasPortWipeout(
+export function hasPortWipeout(
   variables: SolverVariable[],
   domains: number[][],
   assigned: boolean[]
@@ -156,7 +159,7 @@ function hasPortWipeout(
 }
 
 /** Forward-check: remove conflicting candidates, return removed list or null on real wipeout */
-function propagate(
+export function propagate(
   candidate: import('./pattern-matcher').SignalCandidate,
   portName: string,
   variables: SolverVariable[],
@@ -208,7 +211,7 @@ function propagate(
   return removed;
 }
 
-function undoPropagate(
+export function undoPropagate(
   removed: Array<{ varIdx: number; candIdx: number }>,
   domains: number[][]
 ): void {
@@ -217,7 +220,7 @@ function undoPropagate(
   }
 }
 
-function solveBacktrackDynamic(
+export function solveBacktrackDynamic(
   variables: SolverVariable[],
   assigned: boolean[],
   domains: number[][],
@@ -237,7 +240,8 @@ function solveBacktrackDynamic(
   totalVars: number,
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[]
+  sharedPatterns: PatternPart[],
+  dmaData?: DmaData
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -245,12 +249,16 @@ function solveBacktrackDynamic(
   if (depth === totalVars) {
     // All variables assigned — check all config combinations
     stats.evaluatedCombinations++;
-    if (evaluateAllConstraints(current, configCombinations, ports)) {
+    const dmaOut1: Map<string, string>[] = [];
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1)) {
       const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length
+        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut1
       );
       solutions.push(solution);
       stats.validSolutions++;
+      const elapsed = performance.now() - startTime;
+      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
+      stats.lastSolutionMs = elapsed;
     }
     return;
   }
@@ -283,12 +291,16 @@ function solveBacktrackDynamic(
       if (!assigned[i]) { assigned[i] = true; skipped.push(i); }
     }
     stats.evaluatedCombinations++;
-    if (evaluateAllConstraints(current, configCombinations, ports)) {
+    const dmaOut2: Map<string, string>[] = [];
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut2)) {
       const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length
+        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut2
       );
       solutions.push(solution);
       stats.validSolutions++;
+      const elapsed2 = performance.now() - startTime;
+      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed2;
+      stats.lastSolutionMs = elapsed2;
     }
     for (const i of skipped) assigned[i] = false;
     return;
@@ -305,9 +317,9 @@ function solveBacktrackDynamic(
 
     const candidate = v.candidates[candidateIdx];
 
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance)) continue;
+    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance);
+    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
     current.push({ variable: v, candidate });
 
     // Eager constraint check: if all variables of this (port, config) are now assigned
@@ -330,7 +342,7 @@ function solveBacktrackDynamic(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
-          if (!evaluateExpr(req.expression, v.portName, channelInfo)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
             pruned = true;
             break;
           }
@@ -352,14 +364,15 @@ function solveBacktrackDynamic(
           configCombinations, ports, pinnedAssignments,
           solutions, maxSolutions, startTime, timeoutMs, stats,
           configRequiresMap, configVarIndices, depth + 1, totalVars,
-          pinToVarCandidates, instanceToVarCandidates, sharedPatterns
+          pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
+          dmaData
         );
         undoPropagate(removed, domains);
       }
     }
 
     current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance);
+    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
   }
 
   assigned[vi] = false;

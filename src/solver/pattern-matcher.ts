@@ -39,6 +39,17 @@ export function matchSignalPattern(pattern: SignalPatternNode, signal: Signal): 
          matchPart(pattern.functionPart, func, func, undefined);
 }
 
+/**
+ * Check if a pattern matches a peripheral instance name (e.g., "ADC1", "SPI3").
+ * Parses the instance name to extract type and number for matching.
+ */
+export function matchPatternToInstance(pattern: PatternPart, instanceName: string): boolean {
+  const match = instanceName.match(/^([A-Za-z_]+?)(\d+)$/);
+  const type = match ? match[1] : instanceName;
+  const num = match ? parseInt(match[2], 10) : undefined;
+  return matchPart(pattern, instanceName, type, num);
+}
+
 function matchPart(
   part: PatternPart,
   fullValue: string,      // e.g., "USART1" or "TX"

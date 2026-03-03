@@ -29,10 +29,10 @@ export interface McuDeclNode {
   loc: SourceLocation;
 }
 
-// reserve: PH0, PH1, PA13, PA14
+// reserve: PH0, PH1, ADC*, SPI[1,3]
 export interface ReserveDeclNode {
   type: 'reserve_decl';
-  pins: string[];
+  patterns: PatternPart[];
   loc: SourceLocation;
 }
 

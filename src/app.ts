@@ -6,14 +6,16 @@ import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
+import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
 import { getSolvers } from './solver/solver-registry';
-import type { Mcu, Assignment, Solution, SolverResult } from './types';
+import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
 import { serializeSolution, deserializeSolution, migrateProjectData } from './storage';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
+import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 
 export interface AppSettings {
   maxSolutions: number;
@@ -26,16 +28,18 @@ export interface AppSettings {
   minZoom: number;
   maxZoom: number;
   mouseZoomGain: number;
+  skipGpioMapping: boolean;
   dataInspector: boolean;
+  solverDebugOverlay: boolean;
   urlEncoding: 'none' | 'constraints' | 'constraints-mcu' | 'full';
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 7500,
-  solverTimeoutMs: 5000,
+  maxSolutions: 5000,
+  solverTimeoutMs: 2500,
   solverTypes: ['two-phase'],
-  maxGroups: 50,
-  maxSolutionsPerGroup: 50,
+  maxGroups: 100,
+  maxSolutionsPerGroup: 25,
   numRestarts: 25,
   costWeights: {
     pin_count: 1,
@@ -48,7 +52,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   minZoom: 0.5,
   maxZoom: 2,
   mouseZoomGain: 0.025,
+  skipGpioMapping: false,
   dataInspector: false,
+  solverDebugOverlay: false,
   urlEncoding: 'full',
 };
 
@@ -71,6 +77,7 @@ export class App {
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
+  private debugOverlay = new SolverDebugOverlay();
   private currentSolution: Solution | null = null;
   private currentProjectName: string | null = null;
   private projectSelect!: HTMLSelectElement;
@@ -145,8 +152,35 @@ export class App {
         seen.add(key);
         return true;
       });
+      // Merge DMA stream assignments from all config combinations
+      const dmaStreamAssignment = new Map<string, string>();
+      for (const ca of solution.configAssignments) {
+        if (ca.dmaStreamAssignment) {
+          for (const [sig, stream] of ca.dmaStreamAssignment) {
+            dmaStreamAssignment.set(sig, stream);
+          }
+        }
+      }
       const portColors = this.getPortColors();
-      this.layout.broadcastStateChange({ type: 'solution-selected', assignments, portColors });
+      const compatibility = this.checkSolutionCompatibility(assignments, solution.mcuRef);
+      this.layout.broadcastStateChange({
+        type: 'solution-selected', assignments, portColors,
+        gpioCount: solution.gpioCount,
+        dmaStreamAssignment: dmaStreamAssignment.size > 0 ? dmaStreamAssignment : undefined,
+        compatibility,
+      });
+      if (compatibility && compatibility.isCrossMcu) {
+        if (compatibility.isCompatible) {
+          this.showStatus(`Cross-MCU: all ${compatibility.totalCount} assignments compatible with ${this.currentMcu!.refName}`, 'success');
+        } else {
+          const missing = compatibility.missingPins.size;
+          const badSignals = compatibility.missingSignals.size;
+          const parts: string[] = [];
+          if (missing > 0) parts.push(`${missing} missing pin${missing > 1 ? 's' : ''}`);
+          if (badSignals > 0) parts.push(`${badSignals} unavailable signal${badSignals > 1 ? 's' : ''}`);
+          this.showStatus(`Cross-MCU: ${compatibility.validCount}/${compatibility.totalCount} assignments compatible (${parts.join(', ')})`, 'error');
+        }
+      }
       if (this.settings.urlEncoding === 'full') this.updateUrlHash();
     };
 
@@ -233,10 +267,14 @@ export class App {
     this.showStatus(label, 'info');
     this.setSolveButtonState(true);
 
-    const twoPhaseTypes = new Set(['two-phase', 'diverse-instances']);
+    const twoPhaseTypes = new Set(['two-phase', 'diverse-instances', 'priority-group', 'mrv-group', 'ratio-mrv-group']);
     const results: LabeledSolverResult[] = [];
     let completedCount = 0;
     const totalCount = solverTypes.length;
+
+    if (this.settings.solverDebugOverlay) {
+      this.debugOverlay.startRun(solverTypes);
+    }
 
     for (const solverType of solverTypes) {
       // Vite requires new Worker(new URL(...)) as a single static expression
@@ -251,7 +289,9 @@ export class App {
         : this.settings.maxGroups * this.settings.maxSolutionsPerGroup;
 
       worker.onmessage = (e) => {
-        results.push({ solverId: solverType, result: e.data as SolverResult });
+        const solverResult = e.data as SolverResult;
+        results.push({ solverId: solverType, result: solverResult });
+        this.debugOverlay.solverComplete(solverType, solverResult);
         completedCount++;
         if (totalCount > 1) {
           this.showStatus(`Solving... (${completedCount}/${totalCount} complete)`, 'info');
@@ -263,15 +303,14 @@ export class App {
 
       worker.onerror = (err) => {
         console.error(`Solver worker error (${solverType}):`, err);
-        results.push({
-          solverId: solverType,
-          result: {
-            mcuRef: this.currentMcu?.refName ?? '',
-            solutions: [],
-            errors: [{ type: 'error', message: `${solverType} crashed: ${err.message}` }],
-            statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-          },
-        });
+        const errorResult: SolverResult = {
+          mcuRef: this.currentMcu?.refName ?? '',
+          solutions: [],
+          errors: [{ type: 'error', message: `${solverType} crashed: ${err.message}` }],
+          statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+        };
+        results.push({ solverId: solverType, result: errorResult });
+        this.debugOverlay.solverComplete(solverType, errorResult);
         completedCount++;
         if (completedCount === totalCount) {
           this.onAllSolversComplete(results);
@@ -285,6 +324,7 @@ export class App {
           maxSolutions: effectiveMaxSolutions,
           timeoutMs: this.settings.solverTimeoutMs,
           costWeights: new Map(Object.entries(this.settings.costWeights)),
+          skipGpioMapping: this.settings.skipGpioMapping,
         },
         solverType,
         twoPhaseConfig: {
@@ -298,12 +338,19 @@ export class App {
     }
   }
 
-  private onAllSolversComplete(results: LabeledSolverResult[]): void {
-    for (const w of this.solverWorkers) w.terminate();
+  private terminateWorkers(): void {
+    for (const w of this.solverWorkers) {
+      try { w.terminate(); } catch { /* Vite module worker proxy may throw */ }
+    }
     this.solverWorkers = [];
+  }
+
+  private onAllSolversComplete(results: LabeledSolverResult[]): void {
+    this.terminateWorkers();
     this.setSolveButtonState(false);
 
     const result = mergeResults(results, this.settings.maxSolutions);
+    this.debugOverlay.finalize(result.solutions);
 
     this.layout.broadcastStateChange({ type: 'solver-complete', solverResult: result });
     this.hasSolverResult = result.solutions.length > 0;
@@ -355,9 +402,9 @@ export class App {
 
   private abortSolver(): void {
     if (this.solverWorkers.length > 0) {
-      for (const w of this.solverWorkers) w.terminate();
-      this.solverWorkers = [];
+      this.terminateWorkers();
       this.setSolveButtonState(false);
+      this.debugOverlay.stopRun();
       this.showStatus('Solver aborted', 'info');
     }
   }
@@ -412,7 +459,7 @@ export class App {
     fileInput.addEventListener('change', () => {
       if (fileInput.files) {
         for (const file of fileInput.files) {
-          this.loadMcuFile(file);
+          this.loadXmlFile(file);
         }
       }
       fileInput.value = '';
@@ -465,7 +512,7 @@ export class App {
     const footer = this.layout.getFooter();
     footer.innerHTML = `
       <div class="footer-content">
-        <span class="footer-hint">Drop STM32CubeMX XML files anywhere to load MCU data</span>
+        <span class="footer-hint">Drop STM32CubeMX XML files anywhere to load MCU or DMA data</span>
       </div>
     `;
   }
@@ -491,65 +538,148 @@ export class App {
       if (e.dataTransfer?.files) {
         for (const file of e.dataTransfer.files) {
           if (file.name.endsWith('.xml')) {
-            this.loadMcuFile(file);
+            this.loadXmlFile(file);
           }
         }
       }
     });
   }
 
-  private async loadMcuFile(file: File): Promise<void> {
+  private async loadXmlFile(file: File): Promise<void> {
     try {
       const xmlString = await file.text();
-      const mcu = parseMcuXml(xmlString);
-      const validation = validateMcu(mcu);
-
-      if (!validation.valid) {
-        console.error('MCU validation errors:', validation.errors);
-        this.showStatus(`Error loading ${file.name}: ${validation.errors.join(', ')}`, 'error');
-        return;
+      if (isDmaXml(xmlString)) {
+        this.loadDmaXml(xmlString, file.name);
+      } else {
+        this.loadMcuXml(xmlString, file.name);
       }
-
-      if (validation.warnings.length > 0) {
-        console.warn('MCU validation warnings:', validation.warnings);
-      }
-
-      this.currentMcu = mcu;
-
-      // Store raw XML and metadata for later re-loading
-      try {
-        localStorage.setItem(`mcu-xml:${mcu.refName}`, xmlString);
-        localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({ tags: ['PIN'] }));
-      } catch {
-        console.warn('Failed to store MCU XML (storage full?)');
-      }
-
-      // Update header
-      const mcuInfo = document.getElementById('mcu-info');
-      if (mcuInfo) {
-        mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.core} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
-      }
-
-      // Broadcast to all panels
-      this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
-
-      // Enable solve button if constraints are valid
-      const solveBtn = this.constraintEditor.getSolveButton();
-      if (solveBtn) {
-        const parseResult = this.constraintEditor.getParseResult();
-        (solveBtn as HTMLButtonElement).disabled = !parseResult || parseResult.errors.length > 0;
-      }
-
-      this.showStatus(`Loaded ${mcu.refName} (${mcu.pins.length} pins, ${mcu.peripherals.length} peripherals)`, 'success');
-
-      console.log('Loaded MCU:', mcu.refName);
-      console.log('  Pins:', mcu.pins.length);
-      console.log('  Assignable pins:', mcu.pins.filter(p => p.isAssignable).length);
-      console.log('  Peripherals:', mcu.peripherals.length);
-      console.log('  Signal mappings:', mcu.signalToPins.size);
     } catch (err) {
-      console.error('Failed to load MCU file:', err);
+      console.error('Failed to load XML file:', err);
       this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
+    }
+  }
+
+  private loadMcuXml(xmlString: string, fileName: string): void {
+    const mcu = parseMcuXml(xmlString);
+    const validation = validateMcu(mcu);
+
+    if (!validation.valid) {
+      console.error('MCU validation errors:', validation.errors);
+      this.showStatus(`Error loading ${fileName}: ${validation.errors.join(', ')}`, 'error');
+      return;
+    }
+
+    if (validation.warnings.length > 0) {
+      console.warn('MCU validation warnings:', validation.warnings);
+    }
+
+    // Try to attach DMA data from stored DMA XMLs
+    this.attachDmaData(mcu);
+
+    this.currentMcu = mcu;
+
+    // Build tag list based on available data
+    const tags = ['PIN'];
+    if (mcu.dma) tags.push('DMA');
+
+    // Store raw XML and metadata for later re-loading
+    try {
+      localStorage.setItem(`mcu-xml:${mcu.refName}`, xmlString);
+      localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({ tags }));
+    } catch {
+      console.warn('Failed to store MCU XML (storage full?)');
+    }
+
+    // Update header
+    const mcuInfo = document.getElementById('mcu-info');
+    if (mcuInfo) {
+      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.core} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+    }
+
+    // Broadcast to all panels
+    this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
+
+    // Enable solve button if constraints are valid
+    const solveBtn = this.constraintEditor.getSolveButton();
+    if (solveBtn) {
+      const parseResult = this.constraintEditor.getParseResult();
+      (solveBtn as HTMLButtonElement).disabled = !parseResult || parseResult.errors.length > 0;
+    }
+
+    const dmaInfo = mcu.dma ? `, ${mcu.dma.streams.length} DMA streams` : '';
+    this.showStatus(`Loaded ${mcu.refName} (${mcu.pins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
+
+    console.log('Loaded MCU:', mcu.refName);
+    console.log('  Pins:', mcu.pins.length);
+    console.log('  Assignable pins:', mcu.pins.filter(p => p.isAssignable).length);
+    console.log('  Peripherals:', mcu.peripherals.length);
+    console.log('  Signal mappings:', mcu.signalToPins.size);
+    if (mcu.dma) {
+      console.log('  DMA streams:', mcu.dma.streams.length);
+      console.log('  DMA signal mappings:', mcu.dma.signalToDmaStreams.size);
+    }
+  }
+
+  private loadDmaXml(xmlString: string, fileName: string): void {
+    const version = getDmaXmlVersion(xmlString);
+    if (!version) {
+      this.showStatus(`No version found in DMA XML ${fileName}`, 'error');
+      return;
+    }
+
+    // Parse to validate
+    const dmaData = parseDmaXml(xmlString);
+
+    // Store the raw DMA XML keyed by version
+    try {
+      localStorage.setItem(`dma-xml:${version}`, xmlString);
+    } catch {
+      console.warn('Failed to store DMA XML (storage full?)');
+    }
+
+    this.showStatus(`Loaded DMA data: ${version} (${dmaData.streams.length} streams)`, 'success');
+    console.log('Loaded DMA:', version);
+    console.log('  Streams:', dmaData.streams.length);
+    console.log('  Signal mappings:', dmaData.signalToDmaStreams.size);
+
+    // If we have a current MCU, try to attach DMA data to it
+    if (this.currentMcu && !this.currentMcu.dma) {
+      const mcu = this.currentMcu;
+      this.attachDmaData(mcu);
+      if (mcu.dma) {
+        // Update the stored MCU metadata tags
+        try {
+          const metaStr = localStorage.getItem(`mcu-meta:${mcu.refName}`);
+          const meta = metaStr ? JSON.parse(metaStr) : { tags: ['PIN'] };
+          if (!meta.tags.includes('DMA')) {
+            meta.tags.push('DMA');
+            localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify(meta));
+          }
+        } catch { /* ignore */ }
+
+        this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
+        this.showStatus(`Attached DMA data to ${mcu.refName} (${mcu.dma.streams.length} streams)`, 'success');
+      }
+    }
+  }
+
+  /**
+   * Find the DMA IP version in the MCU's peripherals and try to load
+   * matching DMA XML from localStorage.
+   */
+  private attachDmaData(mcu: Mcu): void {
+    // Find the DMA peripheral's version tag
+    const dmaPeripheral = mcu.peripherals.find(p => p.type === 'DMA' || p.originalType === 'DMA');
+    if (!dmaPeripheral?.version) return;
+
+    const dmaVersion = dmaPeripheral.version;
+    const dmaXml = localStorage.getItem(`dma-xml:${dmaVersion}`);
+    if (!dmaXml) return;
+
+    try {
+      mcu.dma = parseDmaXml(dmaXml);
+    } catch (err) {
+      console.warn(`Failed to parse stored DMA XML for version ${dmaVersion}:`, err);
     }
   }
 
@@ -1043,6 +1173,10 @@ export class App {
             <label>Timeout (ms)</label>
             <input type="number" class="settings-input" id="set-timeout" min="100" max="60000" step="100" value="${this.settings.solverTimeoutMs}">
           </div>
+          <div class="settings-row">
+            <label title="Skip pin assignment for IN/OUT (GPIO) channels; only verify enough free pins are available">Skip GPIO mapping</label>
+            <input type="checkbox" id="set-skip-gpio" ${this.settings.skipGpioMapping ? 'checked' : ''}>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -1091,6 +1225,10 @@ export class App {
             <label>Data inspector</label>
             <input type="checkbox" id="set-data-inspector" ${this.settings.dataInspector ? 'checked' : ''}>
           </div>
+          <div class="settings-row">
+            <label>Solver debug overlay</label>
+            <input type="checkbox" id="set-solver-debug" ${this.settings.solverDebugOverlay ? 'checked' : ''}>
+          </div>
         </section>
 
         <div class="settings-actions">
@@ -1127,7 +1265,9 @@ export class App {
         this.settings.costWeights[id] = parseFloat(input.value) || 0;
       });
 
+      this.settings.skipGpioMapping = (modal.querySelector('#set-skip-gpio') as HTMLInputElement).checked;
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
+      this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;
       this.settings.urlEncoding = (modal.querySelector('#set-url-encoding') as HTMLSelectElement).value as AppSettings['urlEncoding'];
 
       this.saveSettings();
@@ -1162,6 +1302,10 @@ export class App {
         this.showStatus(`Error loading ${refName}: ${validation.errors.join(', ')}`, 'error');
         return;
       }
+
+      // Attach DMA data if available
+      this.attachDmaData(mcu);
+
       this.currentMcu = mcu;
 
       const mcuInfo = document.getElementById('mcu-info');
@@ -1177,7 +1321,8 @@ export class App {
         (solveBtn as HTMLButtonElement).disabled = !parseResult || parseResult.errors.length > 0;
       }
 
-      this.showStatus(`Loaded ${mcu.refName} from storage`, 'success');
+      const dmaInfo = mcu.dma ? ` (+DMA)` : '';
+      this.showStatus(`Loaded ${mcu.refName} from storage${dmaInfo}`, 'success');
     } catch (err) {
       this.showStatus(`Failed to parse stored MCU "${refName}": ${err}`, 'error');
     }
@@ -1227,6 +1372,11 @@ export class App {
       const usedKB = (totalChars / 1024).toFixed(0);
       const limitKB = 5120; // ~10MB UTF-16 = ~5M chars
 
+      const hasMcu = this.currentMcu !== null;
+      const hasDma = this.currentMcu?.dma !== undefined;
+      const parseResult = this.constraintEditor.getParseResult();
+      const hasAst = parseResult?.ast !== null && parseResult?.ast !== undefined;
+
       modal.innerHTML = `
         <div class="settings-header">
           <strong>Data Manager</strong>
@@ -1234,6 +1384,18 @@ export class App {
           <button class="btn btn-small settings-close">Close</button>
         </div>
         <div class="settings-body">
+          <section class="settings-section">
+            <h3>Current Session</h3>
+            <div class="dm-list">
+              <div class="dm-row">
+                <span class="dm-name">MCU: ${hasMcu ? this.currentMcu!.refName : '(none)'}</span>
+                <button class="btn btn-small" data-action="export-current-mcu" ${hasMcu ? '' : 'disabled'}>Export MCU</button>
+                <button class="btn btn-small" data-action="export-current-dma" ${hasDma ? '' : 'disabled'}>Export DMA</button>
+                <button class="btn btn-small" data-action="export-current-ast" ${hasAst ? '' : 'disabled'}>Export AST</button>
+              </div>
+            </div>
+          </section>
+
           <section class="settings-section">
             <h3>Stored MCUs</h3>
             ${storedMcus.length === 0 ? '<p class="settings-hint">No MCUs stored. Import XML files to store them.</p>' : ''}
@@ -1244,6 +1406,7 @@ export class App {
                   <span class="dm-tags">${m.tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}</span>
                   <span class="dm-size">${(m.size / 1024).toFixed(0)}KB</span>
                   <button class="btn btn-small dm-load" data-action="load-mcu" data-name="${m.refName}">Load</button>
+                  <button class="btn btn-small" data-action="export-mcu" data-name="${m.refName}">Export</button>
                   <button class="btn btn-small dm-delete" data-action="delete-mcu" data-name="${m.refName}">Delete</button>
                 </div>
               `).join('')}
@@ -1261,6 +1424,7 @@ export class App {
                   <span class="dm-tags">${p.tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}${p.versionCount > 0 ? `<span class="dm-tag">v${p.versionCount}</span>` : ''}</span>
                   <span class="dm-size">${(p.size / 1024).toFixed(1)}KB</span>
                   <button class="btn btn-small dm-load" data-action="load-project" data-name="${p.name}">Load</button>
+                  <button class="btn btn-small" data-action="export-project" data-name="${p.name}">Export</button>
                   <button class="btn btn-small dm-delete" data-action="delete-project" data-name="${p.name}">Delete</button>
                 </div>
                 <div class="dm-version-list" data-version-list="${idx}" style="display:none"></div>
@@ -1281,6 +1445,18 @@ export class App {
               this.loadStoredMcu(name);
               overlay.remove();
               break;
+            case 'export-mcu':
+              this.exportMcuData(name);
+              break;
+            case 'export-current-mcu':
+              this.exportCurrentMcu();
+              break;
+            case 'export-current-dma':
+              this.exportCurrentDma();
+              break;
+            case 'export-current-ast':
+              this.exportCurrentAst();
+              break;
             case 'delete-mcu':
               localStorage.removeItem(`mcu-xml:${name}`);
               localStorage.removeItem(`mcu-meta:${name}`);
@@ -1289,6 +1465,9 @@ export class App {
             case 'load-project':
               this.loadProject(name);
               overlay.remove();
+              break;
+            case 'export-project':
+              this.exportProjectData(name);
               break;
             case 'delete-project':
               this.deleteProject(name);
@@ -1466,6 +1645,100 @@ export class App {
     } catch { /* ignore */ }
   }
 
+  private downloadJson(data: unknown, filename: string): void {
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private exportCurrentMcu(): void {
+    const mcu = this.currentMcu;
+    if (!mcu) return;
+    this.downloadJson(serializeMcu(mcu), `${mcu.refName}-mcu.json`);
+  }
+
+  private exportCurrentDma(): void {
+    const dma = this.currentMcu?.dma;
+    if (!dma) return;
+    this.downloadJson(serializeDma(dma), `${this.currentMcu!.refName}-dma.json`);
+  }
+
+  private exportCurrentAst(): void {
+    const parseResult = this.constraintEditor.getParseResult();
+    if (!parseResult?.ast) return;
+    const name = this.currentProjectName || 'constraints';
+    this.downloadJson(parseResult.ast, `${name}-ast.json`);
+  }
+
+  private exportMcuData(refName: string): void {
+    const mcuXml = localStorage.getItem(`mcu-xml:${refName}`);
+    if (!mcuXml) return;
+
+    const metaStr = localStorage.getItem(`mcu-meta:${refName}`);
+    const meta = metaStr ? JSON.parse(metaStr) : null;
+
+    // Find associated DMA XML by extracting the DMA version from MCU XML
+    let dmaXml: string | null = null;
+    let dmaVersion: string | null = null;
+    const dmaMatch = mcuXml.match(/Name="DMA"\s+Version="([^"]+)"/);
+    if (dmaMatch) {
+      dmaVersion = dmaMatch[1];
+      dmaXml = localStorage.getItem(`dma-xml:${dmaVersion}`);
+    }
+
+    const exportData: Record<string, unknown> = { refName, mcuXml };
+    if (meta) exportData.meta = meta;
+    if (dmaVersion) exportData.dmaVersion = dmaVersion;
+    if (dmaXml) exportData.dmaXml = dmaXml;
+
+    this.downloadJson(exportData, `${refName}.json`);
+  }
+
+  private exportProjectData(projectName: string): void {
+    const raw = localStorage.getItem(`project:${projectName}`);
+    if (!raw) return;
+    const projectData = migrateProjectData(JSON.parse(raw));
+    this.downloadJson(projectData, `${projectName}.json`);
+  }
+
+  private checkSolutionCompatibility(assignments: Assignment[], solutionMcuRef: string): CompatibilityResult | undefined {
+    const mcu = this.currentMcu;
+    if (!mcu) return undefined;
+    const isCrossMcu = solutionMcuRef !== mcu.refName;
+    if (!isCrossMcu) return undefined;
+
+    const missingPins = new Set<string>();
+    const missingSignals = new Map<string, string>();
+    let validCount = 0;
+
+    for (const a of assignments) {
+      const pin = mcu.pinByName.get(a.pinName);
+      if (!pin) {
+        missingPins.add(a.pinName);
+        continue;
+      }
+      if (!pin.signals.some(s => s.name === a.signalName)) {
+        missingSignals.set(a.pinName, a.signalName);
+        continue;
+      }
+      validCount++;
+    }
+
+    return {
+      isCompatible: missingPins.size === 0 && missingSignals.size === 0,
+      isCrossMcu: true,
+      missingPins,
+      missingSignals,
+      validCount,
+      totalCount: assignments.length,
+    };
+  }
+
   private showStatus(message: string, type: 'success' | 'error' | 'info'): void {
     const footer = this.layout.getFooter();
     const hint = footer.querySelector('.footer-hint');
@@ -1481,4 +1754,43 @@ export class App {
       }, 5000);
     }
   }
+}
+
+function mapToObj<V>(m: Map<string, V>): Record<string, V> {
+  const obj: Record<string, V> = {};
+  for (const [k, v] of m) obj[k] = v;
+  return obj;
+}
+
+function serializeMcu(mcu: Mcu): Record<string, unknown> {
+  return {
+    refName: mcu.refName,
+    family: mcu.family,
+    line: mcu.line,
+    package: mcu.package,
+    core: mcu.core,
+    frequency: mcu.frequency,
+    flash: mcu.flash,
+    ram: mcu.ram,
+    ccmRam: mcu.ccmRam,
+    ioCount: mcu.ioCount,
+    voltage: mcu.voltage,
+    temperature: mcu.temperature,
+    hasPowerPad: mcu.hasPowerPad,
+    peripherals: mcu.peripherals,
+    pins: mcu.pins,
+    typeToInstances: mapToObj(mcu.typeToInstances),
+    peripheralSignals: Object.fromEntries(
+      [...mcu.peripheralSignals].map(([k, v]) => [k, [...v]])
+    ),
+  };
+}
+
+function serializeDma(dma: DmaData): Record<string, unknown> {
+  return {
+    version: dma.version,
+    streams: dma.streams,
+    signalToDmaStreams: mapToObj(dma.signalToDmaStreams),
+    instanceToDmaStreams: mapToObj(dma.instanceToDmaStreams),
+  };
 }

@@ -1,9 +1,9 @@
 // ============================================================
-// Diverse Instances Solver
+// Priority Two-Phase Solver
 //
-// Enhances the two-phase solver's Phase 1 to find more diverse
-// peripheral instance groups by running multiple rounds with
-// shuffled instance candidate orderings.
+// Two-phase solver with port-priority variable ordering:
+// peripherals with fewer available pins are assigned first
+// in both Phase 1 (instance assignment) and Phase 2 (pin assignment).
 // ============================================================
 
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
@@ -25,30 +25,9 @@ import {
   groupFingerprint,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
+import { computePortPriority, sortByPortPriority } from './port-priority';
 
-const MAX_DIVERSITY_ROUNDS = 25;
-
-// Mulberry32 seeded PRNG
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = seed + 0x6D2B79F5 | 0;
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-function shuffleArray<T>(arr: T[], rng: () => number): T[] {
-  const result = [...arr];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-
-export function solveDiverseInstances(
+export function solvePriorityTwoPhase(
   ast: ProgramNode,
   mcu: Mcu,
   config: TwoPhaseConfig
@@ -115,8 +94,9 @@ export function solveDiverseInstances(
     errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
   }
 
-  // Build instance variables from non-GPIO solver variables only.
-  // GPIO variables don't have meaningful peripheral instances for Phase 1.
+  // Compute port priority from solver variables (pin counts per port)
+  const portPriority = computePortPriority(solveVars);
+
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
 
@@ -129,73 +109,53 @@ export function solveDiverseInstances(
     }
   }
 
-  // ========== Phase 1: Multi-round diverse instance assignment ==========
+  // ========== Phase 1: Instance Assignment per Config Combination ==========
   const groupFingerprints = new Set<string>();
   const groups: InstanceGroup[] = [];
   const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
 
-  for (let round = 0; round < MAX_DIVERSITY_ROUNDS; round++) {
+  for (const combo of configCombinations) {
     if (performance.now() - startTime > config.timeoutMs) break;
     if (groups.length >= config.maxGroups) break;
 
-    for (const combo of configCombinations) {
-      if (performance.now() - startTime > config.timeoutMs) break;
-      if (groups.length >= config.maxGroups) break;
+    const activeVars = allInstanceVars.filter(iv =>
+      combo.get(iv.portName) === iv.configName
+    );
 
-      // Filter to active variables
-      let activeVars = allInstanceVars.filter(iv =>
-        combo.get(iv.portName) === iv.configName
-      );
+    if (activeVars.length === 0) continue;
 
-      if (activeVars.length === 0) continue;
+    // Sort by port priority (most constrained first), then MRV tiebreaker
+    sortByPortPriority(activeVars, portPriority);
 
-      // For round > 0, shuffle each variable's instance domain
-      if (round > 0) {
-        const rng = mulberry32(round * 54321 + configCombinations.indexOf(combo) * 11);
-        activeVars = activeVars.map(iv => ({
-          ...iv,
-          domain: shuffleArray([...iv.domain], rng),
-        }));
-      }
-
-      // Sort by MRV
-      activeVars.sort((a, b) => a.domain.length - b.domain.length);
-
-      const lastVarOfConfig = new Map<string, number>();
-      for (let i = 0; i < activeVars.length; i++) {
-        const key = `${activeVars[i].portName}\0${activeVars[i].configName}`;
-        lastVarOfConfig.set(key, i);
-      }
-
-      const tracker: InstanceTracker = {
-        instanceOwner: new Map(),
-        instanceRefCount: new Map(),
-        sharedPatterns,
-      };
-
-      const remaining = config.maxGroups - groups.length;
-      const limit = Math.min(maxGroupsPerCombo, remaining);
-
-      const comboGroups: InstanceGroup[] = [];
-      solvePhase1(
-        activeVars, 0, tracker, [],
-        ports, comboGroups, limit,
-        startTime, config.timeoutMs,
-        lastVarOfConfig, configRequiresMap
-      );
-
-      for (const g of comboGroups) {
-        if (groups.length >= config.maxGroups) break;
-        const fp = groupFingerprint(g.assignments);
-        if (!groupFingerprints.has(fp)) {
-          groupFingerprints.add(fp);
-          groups.push(g);
-        }
-      }
+    const lastVarOfConfig = new Map<string, number>();
+    for (let i = 0; i < activeVars.length; i++) {
+      const key = `${activeVars[i].portName}\0${activeVars[i].configName}`;
+      lastVarOfConfig.set(key, i);
     }
 
-    // If round 0 already found enough groups, stop
-    if (round === 0 && groups.length >= config.maxGroups) break;
+    const tracker: InstanceTracker = {
+      instanceOwner: new Map(),
+      instanceRefCount: new Map(),
+      sharedPatterns,
+    };
+
+    const comboGroups: InstanceGroup[] = [];
+    solvePhase1(
+      activeVars, 0, tracker, [],
+      ports, comboGroups, maxGroupsPerCombo,
+      startTime, config.timeoutMs,
+      lastVarOfConfig, configRequiresMap,
+      dmaData
+    );
+
+    for (const g of comboGroups) {
+      if (groups.length >= config.maxGroups) break;
+      const fp = groupFingerprint(g.assignments);
+      if (!groupFingerprints.has(fp)) {
+        groupFingerprints.add(fp);
+        groups.push(g);
+      }
+    }
   }
 
   if (groups.length === 0) {
@@ -217,6 +177,12 @@ export function solveDiverseInstances(
 
   const solutions: Solution[] = [];
 
+  // Custom sort for Phase 2: port priority with MRV tiebreaker
+  const phase2Sort = (vars: typeof allVariables) => {
+    const p2Priority = computePortPriority(vars);
+    sortByPortPriority(vars, p2Priority);
+  };
+
   for (const group of groups) {
     if (performance.now() - startTime > config.timeoutMs) break;
 
@@ -224,7 +190,7 @@ export function solveDiverseInstances(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      undefined, dmaData
+      phase2Sort, dmaData
     );
     solutions.push(...groupSolutions);
   }

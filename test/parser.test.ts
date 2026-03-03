@@ -60,13 +60,30 @@ describe('Constraint parser', () => {
       const ast = parseOk('reserve: PA0');
       const res = ast.statements[0] as ReserveDeclNode;
       expect(res.type).toBe('reserve_decl');
-      expect(res.pins).toEqual(['PA0']);
+      expect(res.patterns).toEqual([{ type: 'literal', value: 'PA0' }]);
     });
 
     it('should parse multiple pins', () => {
       const ast = parseOk('reserve: PH0, PH1, PA13, PA14');
       const res = ast.statements[0] as ReserveDeclNode;
-      expect(res.pins).toEqual(['PH0', 'PH1', 'PA13', 'PA14']);
+      expect(res.patterns).toEqual([
+        { type: 'literal', value: 'PH0' },
+        { type: 'literal', value: 'PH1' },
+        { type: 'literal', value: 'PA13' },
+        { type: 'literal', value: 'PA14' },
+      ]);
+    });
+
+    it('should parse peripheral patterns', () => {
+      const ast = parseOk('reserve: PA1, ADC*, LPUART1, SPI[1,3], PB2');
+      const res = ast.statements[0] as ReserveDeclNode;
+      expect(res.patterns).toEqual([
+        { type: 'literal', value: 'PA1' },
+        { type: 'wildcard', prefix: 'ADC' },
+        { type: 'literal', value: 'LPUART1' },
+        { type: 'range', prefix: 'SPI', values: [1, 3] },
+        { type: 'literal', value: 'PB2' },
+      ]);
     });
   });
 

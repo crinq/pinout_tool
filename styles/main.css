@@ -455,6 +455,12 @@ body.splitter-dragging {
   font-weight: bold;
 }
 
+.tooltip-dma {
+  color: var(--text-secondary);
+  font-weight: normal;
+  font-size: 0.9em;
+}
+
 .tooltip-channel {
   color: var(--accent);
 }
@@ -467,6 +473,11 @@ body.splitter-dragging {
 .tooltip-none {
   color: var(--text-secondary);
   font-style: italic;
+}
+
+.tooltip-error {
+  color: var(--error);
+  font-weight: bold;
 }
 
 .tooltip-match {
@@ -817,6 +828,25 @@ body.splitter-dragging {
   font-style: italic;
 }
 
+.ps-unused {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.ps-unused-header {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.ps-unused-row {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 1px 0;
+  word-break: break-word;
+}
+
 /* ============================================================
    Version History (Data Manager)
    ============================================================ */
@@ -1033,6 +1063,15 @@ body.splitter-dragging {
   text-overflow: ellipsis;
 }
 
+.st-cell-mcu {
+  color: var(--text-secondary);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
 .st-row-selected .st-cell-name {
   color: inherit;
 }
@@ -1091,4 +1130,84 @@ body.splitter-dragging {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
+}
+
+/* ============================================================
+   Solver Debug Overlay
+   ============================================================ */
+
+.solver-debug-overlay {
+  position: fixed;
+  bottom: 8px;
+  right: 8px;
+  z-index: 900;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  max-height: 50vh;
+  overflow-y: auto;
+  min-width: 380px;
+}
+
+.sdo-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sdo-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.sdo-close:hover {
+  color: var(--text-primary);
+}
+
+.sdo-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sdo-table th,
+.sdo-table td {
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.sdo-table thead th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.sdo-cell-name {
+  text-align: left;
+}
+
+.sdo-cell-state {
+  text-align: center;
+  width: 24px;
+}
+
+.sdo-cell-num {
+  text-align: right;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11px;
 }
