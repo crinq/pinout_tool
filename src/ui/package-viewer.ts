@@ -91,7 +91,7 @@ export class PackageViewer implements Panel {
     this.searchInput.type = 'text';
     this.searchInput.className = 'pv-search-input';
     this.searchInput.placeholder = 'Search signals...';
-    this.searchInput.title = 'Search: TIM*_CH1, ADC*_IN[1-4], PA0';
+    this.searchInput.title = 'Search: TIM*_CH1, ADC*_IN[1-4], PA0, port:USB, port:ENC*, port:ENC*.miso';
     toolbar.appendChild(this.searchInput);
 
     this.searchInput.addEventListener('input', () => {
@@ -1067,6 +1067,30 @@ export class PackageViewer implements Panel {
 
     const trimmed = query.trim().toUpperCase();
 
+    // Tier 0: Port/channel filter (port:USB, port:ENC*, port:ENC*.miso)
+    const portMatch = trimmed.match(/^PORT:(\S+)$/);
+    if (portMatch) {
+      const portQuery = portMatch[1];
+      const dotIdx = portQuery.indexOf('.');
+      const portPattern = dotIdx >= 0 ? portQuery.substring(0, dotIdx) : portQuery;
+      const channelPattern = dotIdx >= 0 ? portQuery.substring(dotIdx + 1) : null;
+      const portRe = this.wildcardToRegex(portPattern);
+      const channelRe = channelPattern ? this.wildcardToRegex(channelPattern) : null;
+
+      for (const a of this.assignments) {
+        const matchesPort = portRe.test(a.portName.toUpperCase());
+        const matchesChannel = !channelRe || channelRe.test(a.channelName.toUpperCase());
+        if (matchesPort && matchesChannel) {
+          this.searchMatchPins.add(a.pinName);
+          this.searchMatchSignals.add(a.signalName);
+        }
+      }
+
+      this.updateAnimation();
+      if (this.searchMatchPins.size === 0) this.render();
+      return;
+    }
+
     // Tier 1: Exact pin name match (PA0, PB12, etc.)
     for (const pin of this.mcu.pins) {
       const gpioName = (pin.gpioPort && pin.gpioNumber !== undefined)
@@ -1145,6 +1169,13 @@ export class PackageViewer implements Panel {
   private isIncompatiblePin(pinName: string): boolean {
     if (!this.compatibility || this.compatibility.isCompatible) return false;
     return this.compatibility.missingPins.has(pinName) || this.compatibility.missingSignals.has(pinName);
+  }
+
+  /** Convert a glob pattern (with * and ?) to a RegExp anchored to the full string */
+  private wildcardToRegex(pattern: string): RegExp {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const re = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+    return new RegExp(`^${re}$`);
   }
 
   private getSearchHighlightColor(pinName: string): string | null {

@@ -17,7 +17,7 @@ import type {
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost } from './cost-functions';
+import { computeTotalCost, estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
   SolverVariable, VariableAssignment, PortSpec, PinnedAssignment,
@@ -28,7 +28,7 @@ import {
   generateConfigCombinations, validateConstraints,
   solveBacktrack, deduplicateSolutions, createPinTracker,
   partitionGpioVariables, validateGpioAvailability, isGpioVariable,
-  configsHaveDma,
+  configsHaveDma, buildPropagationContext,
 } from './solver';
 
 // ============================================================
@@ -165,7 +165,7 @@ export function solveTwoPhase(
   }
 
   if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
   }
 
   // Build instance variables from non-GPIO solver variables only.
@@ -173,6 +173,9 @@ export function solveTwoPhase(
   // and would explode Phase 1's search space.
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
+
+  // C3: Sort instance domains by ascending average pin cost
+  sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
 
   // Build requires map
   const configRequiresMap = new Map<string, RequireNode[]>();
@@ -264,6 +267,13 @@ export function solveTwoPhase(
     configCombinations: configCombinations.length,
   };
 
+  // C1: Cost-guided variable ordering for Phase 2
+  const costWeights = config.costWeights;
+  const phase2Sort = (vars: SolverVariable[]) => {
+    costGuidedPhase2Sort(vars, costWeights);
+  };
+
+  const domainCache = new Map<string, number[]>();
   for (const group of groups) {
     if (performance.now() - startTime > config.timeoutMs) break;
 
@@ -271,7 +281,7 @@ export function solveTwoPhase(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      undefined, dmaData
+      phase2Sort, dmaData, domainCache, mcu, costWeights
     );
     solutions.push(...groupSolutions);
   }
@@ -636,21 +646,36 @@ export function solvePhase2ForGroup(
   timeoutMs: number,
   stats: SolverStats,
   sortVariables?: (vars: SolverVariable[]) => void,
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  domainCache?: Map<string, number[]>,
+  mcu?: Mcu,
+  costWeights?: Map<string, number>
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
+  // S5: Use domain cache when available to avoid redundant filtering
   const filteredVars: SolverVariable[] = allVariables.map(sv => {
     const key = `${sv.portName}\0${sv.configName}\0${sv.channelName}\0${sv.exprIndex}`;
     const requiredInstance = group.assignments.get(key);
 
     if (!requiredInstance) {
-      // Variable not in instance assignments (from a different config combo) — keep full domain
       return { ...sv, domain: [...sv.domain] };
     }
 
-    const filteredDomain = sv.domain.filter(idx => {
-      return sv.candidates[idx].peripheralInstance === requiredInstance;
-    });
+    const cacheKey = `${key}\0${requiredInstance}`;
+    let filteredDomain: number[];
+
+    if (domainCache) {
+      const cached = domainCache.get(cacheKey);
+      if (cached) {
+        filteredDomain = [...cached]; // clone since domains are mutated
+      } else {
+        filteredDomain = sv.domain.filter(idx => sv.candidates[idx].peripheralInstance === requiredInstance);
+        domainCache.set(cacheKey, filteredDomain);
+        filteredDomain = [...filteredDomain];
+      }
+    } else {
+      filteredDomain = sv.domain.filter(idx => sv.candidates[idx].peripheralInstance === requiredInstance);
+    }
 
     return { ...sv, domain: filteredDomain };
   });
@@ -685,15 +710,77 @@ export function solvePhase2ForGroup(
   const solutions: Solution[] = [];
   const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
 
+  // Build forward checking propagation context
+  const propagationCtx = buildPropagationContext(filteredVars, sharedPatterns);
+
+  // C2: Create incremental cost tracker for pruning
+  const costTracker = mcu && costWeights
+    ? createIncrementalCostTracker(mcu, costWeights, maxSolutions)
+    : undefined;
+
   solveBacktrack(
     filteredVars, 0, tracker, [],
     configCombinations, ports, pinnedAssignments,
     solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
     lastVarOfConfig, configRequiresMap,
-    dmaData
+    dmaData, propagationCtx, costTracker
   );
 
   return solutions;
+}
+
+// ============================================================
+// Cost-Aware Instance Domain Ordering (C3)
+// ============================================================
+
+export function sortInstanceDomainsByCost(
+  instanceVars: InstanceVariable[],
+  costWeights: Map<string, number>
+): void {
+  for (const iv of instanceVars) {
+    const instanceCosts = new Map<string, number>();
+    for (const inst of iv.instanceCandidates) {
+      const matching = iv.originalVariable.domain
+        .map(ci => iv.originalVariable.candidates[ci])
+        .filter(c => c.peripheralInstance === inst);
+      if (matching.length === 0) continue;
+      const avgCost = matching.reduce((sum, c) =>
+        sum + estimateCandidateCost(c, costWeights), 0) / matching.length;
+      instanceCosts.set(inst, avgCost);
+    }
+    iv.domain.sort((a, b) =>
+      (instanceCosts.get(iv.instanceCandidates[a]) ?? 0) -
+      (instanceCosts.get(iv.instanceCandidates[b]) ?? 0)
+    );
+  }
+}
+
+// ============================================================
+// Cost-Guided Phase 2 Variable Ordering (C1)
+// ============================================================
+
+function costGuidedPhase2Sort(
+  vars: SolverVariable[],
+  costWeights: Map<string, number>
+): void {
+  // Compute min candidate cost per variable
+  const minCosts = new Map<SolverVariable, number>();
+  for (const v of vars) {
+    let minCost = Infinity;
+    for (const ci of v.domain) {
+      const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+      if (cost < minCost) minCost = cost;
+    }
+    minCosts.set(v, minCost);
+  }
+
+  // Primary: MRV (domain size), Secondary: higher min-cost first
+  // (assign expensive variables first to prune early)
+  vars.sort((a, b) => {
+    const sizeA = a.domain.length, sizeB = b.domain.length;
+    if (sizeA !== sizeB) return sizeA - sizeB;
+    return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+  });
 }
 
 // ============================================================
@@ -707,4 +794,200 @@ export function varKey(v: { portName: string; configName: string; channelName: s
 export function groupFingerprint(assignments: Map<string, string>): string {
   const entries = [...assignments.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   return entries.map(([k, v]) => `${k}=${v}`).join('|');
+}
+
+// ============================================================
+// Shared Phase 1 (A2)
+// ============================================================
+
+export interface SharedPhase1Result {
+  groups: InstanceGroup[];
+  solveVars: SolverVariable[];
+  ports: Map<string, PortSpec>;
+  reservedPins: string[];
+  pinnedAssignments: PinnedAssignment[];
+  sharedPatterns: PatternPart[];
+  configCombinations: Map<string, string>[];
+  gpioCountPerConfig: Map<string, number>;
+  gpioVarCount: number;
+  errors: SolverError[];
+  dmaData?: DmaData;
+}
+
+/**
+ * Run the common setup + Phase 1 instance assignment.
+ * Returns null if there's nothing to solve.
+ */
+export function runSharedPhase1(
+  ast: ProgramNode,
+  mcu: Mcu,
+  config: TwoPhaseConfig
+): SharedPhase1Result | null {
+  const startTime = performance.now();
+  const errors: SolverError[] = [];
+
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  for (const me of macroErrors) {
+    errors.push({ type: 'error', message: me.message, source: me.macroName });
+  }
+
+  const ports = extractPorts(expandedAst);
+  const reserved = resolveReservePatterns(expandedAst, mcu);
+  const pinnedAssignments = extractPinnedAssignments(expandedAst);
+  const sharedPatterns = extractSharedPatterns(expandedAst);
+
+  const reservedPinSet = new Set(reserved.pins);
+  for (const pa of pinnedAssignments) reservedPinSet.add(pa.pinName);
+  const reservedPeripheralSet = new Set(reserved.peripherals);
+
+  validateConstraints(ports, errors);
+
+  const configCombinations = generateConfigCombinations(ports);
+  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
+  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
+
+  if (allVariables.length === 0) return null;
+
+  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  if (emptyVar) {
+    errors.push({
+      type: 'error',
+      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
+      source: `${emptyVar.portName}.${emptyVar.channelName}`,
+    });
+    return { groups: [], solveVars: [], ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns, configCombinations, gpioCountPerConfig: new Map(), gpioVarCount: 0, errors, dmaData };
+  }
+
+  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+  if (solveVars.length === 0 && gpioVars.length === 0) return null;
+
+  if (gpioVars.length > 0) {
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
+  }
+
+  const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
+  const allInstanceVars = buildInstanceVariables(nonGpioVars);
+  sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
+
+  const configRequiresMap = new Map<string, RequireNode[]>();
+  for (const [portName, port] of ports) {
+    for (const c of port.configs) {
+      if (c.requires.length > 0) configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
+    }
+  }
+
+  // Phase 1: diverse multi-round instance assignment
+  const groupFingerprints = new Set<string>();
+  const groups: InstanceGroup[] = [];
+  const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
+
+  for (const combo of configCombinations) {
+    if (performance.now() - startTime > config.timeoutMs) break;
+    if (groups.length >= config.maxGroups) break;
+
+    const activeVars = allInstanceVars.filter(iv => combo.get(iv.portName) === iv.configName);
+    if (activeVars.length === 0) continue;
+
+    activeVars.sort((a, b) => a.domain.length - b.domain.length);
+
+    const lastVarOfConfig = new Map<string, number>();
+    for (let i = 0; i < activeVars.length; i++) {
+      lastVarOfConfig.set(`${activeVars[i].portName}\0${activeVars[i].configName}`, i);
+    }
+
+    const tracker: InstanceTracker = {
+      instanceOwner: new Map(),
+      instanceRefCount: new Map(),
+      sharedPatterns,
+    };
+
+    const comboGroups: InstanceGroup[] = [];
+    solvePhase1(
+      activeVars, 0, tracker, [],
+      ports, comboGroups, maxGroupsPerCombo,
+      startTime, config.timeoutMs,
+      lastVarOfConfig, configRequiresMap, dmaData
+    );
+
+    for (const g of comboGroups) {
+      if (groups.length >= config.maxGroups) break;
+      const fp = groupFingerprint(g.assignments);
+      if (!groupFingerprints.has(fp)) {
+        groupFingerprints.add(fp);
+        groups.push(g);
+      }
+    }
+  }
+
+  return {
+    groups, solveVars, ports, reservedPins: reserved.pins,
+    pinnedAssignments, sharedPatterns, configCombinations,
+    gpioCountPerConfig, gpioVarCount: gpioVars.length, errors, dmaData,
+  };
+}
+
+/**
+ * Run Phase 2 on pre-computed groups from shared Phase 1.
+ */
+export function runPhase2Only(
+  phase1: SharedPhase1Result,
+  mcu: Mcu,
+  config: TwoPhaseConfig,
+  startTime: number,
+  sortVariables?: (vars: SolverVariable[]) => void
+): SolverResult {
+  const errors = [...phase1.errors];
+
+  if (phase1.groups.length === 0) {
+    if (errors.every(e => e.type !== 'error')) {
+      errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
+    }
+    return {
+      mcuRef: mcu.refName, solutions: [], errors,
+      statistics: { totalCombinations: phase1.configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: phase1.configCombinations.length },
+    };
+  }
+
+  const stats: SolverStats = {
+    totalCombinations: phase1.configCombinations.length,
+    evaluatedCombinations: 0,
+    validSolutions: 0,
+    solveTimeMs: 0,
+    configCombinations: phase1.configCombinations.length,
+  };
+
+  const solutions: Solution[] = [];
+  const domainCache = new Map<string, number[]>();
+
+  for (const group of phase1.groups) {
+    if (performance.now() - startTime > config.timeoutMs) break;
+
+    const groupSolutions = solvePhase2ForGroup(
+      group, phase1.solveVars, phase1.ports, phase1.reservedPins,
+      phase1.pinnedAssignments, phase1.sharedPatterns, phase1.configCombinations,
+      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
+      sortVariables, phase1.dmaData, domainCache, mcu, config.costWeights
+    );
+    solutions.push(...groupSolutions);
+  }
+
+  if (solutions.length === 0 && phase1.groups.length > 0) {
+    errors.push({ type: 'warning', message: `Phase 1 found ${phase1.groups.length} instance groups but Phase 2 found no valid pin assignments` });
+  }
+  if (performance.now() - startTime > config.timeoutMs) {
+    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
+  }
+
+  for (const sol of solutions) {
+    sol.mcuRef = mcu.refName;
+    computeTotalCost(sol, mcu, config.costWeights);
+  }
+
+  solutions.sort((a, b) => a.totalCost - b.totalCost);
+  solutions.forEach((s, i) => s.id = i);
+  stats.solveTimeMs = performance.now() - startTime;
+
+  const deduped = deduplicateSolutions(solutions);
+  const filtered = validateGpioAvailability(deduped, phase1.gpioCountPerConfig, mcu, phase1.reservedPins, phase1.pinnedAssignments);
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
 }

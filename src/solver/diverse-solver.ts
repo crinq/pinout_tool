@@ -10,7 +10,7 @@ import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../t
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost } from './cost-functions';
+import { computeTotalCost, estimateCandidateCost } from './cost-functions';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
@@ -22,7 +22,7 @@ import {
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
-  groupFingerprint,
+  groupFingerprint, sortInstanceDomainsByCost,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
 
@@ -112,13 +112,16 @@ export function solveDiverseInstances(
   }
 
   if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
   }
 
   // Build instance variables from non-GPIO solver variables only.
   // GPIO variables don't have meaningful peripheral instances for Phase 1.
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
+
+  // C3: Sort instance domains by ascending average pin cost
+  sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
 
   const configRequiresMap = new Map<string, RequireNode[]>();
   for (const [portName, port] of ports) {
@@ -217,6 +220,26 @@ export function solveDiverseInstances(
 
   const solutions: Solution[] = [];
 
+  // C1: Cost-guided variable ordering for Phase 2
+  const costWeights = config.costWeights;
+  const phase2Sort = (vars: typeof solveVars) => {
+    const minCosts = new Map<typeof vars[0], number>();
+    for (const v of vars) {
+      let minCost = Infinity;
+      for (const ci of v.domain) {
+        const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+        if (cost < minCost) minCost = cost;
+      }
+      minCosts.set(v, minCost);
+    }
+    vars.sort((a, b) => {
+      const sizeA = a.domain.length, sizeB = b.domain.length;
+      if (sizeA !== sizeB) return sizeA - sizeB;
+      return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+    });
+  };
+
+  const domainCache = new Map<string, number[]>();
   for (const group of groups) {
     if (performance.now() - startTime > config.timeoutMs) break;
 
@@ -224,7 +247,7 @@ export function solveDiverseInstances(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      undefined, dmaData
+      phase2Sort, dmaData, domainCache, mcu, costWeights
     );
     solutions.push(...groupSolutions);
   }

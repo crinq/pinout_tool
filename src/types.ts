@@ -169,6 +169,7 @@ export interface Solution {
   costs: Map<string, number>;
   totalCost: number;
   gpioCount: number;
+  clusterSize?: number;
 }
 
 export interface ConfigCombinationAssignment {

@@ -1,5 +1,53 @@
 import type { Solver } from './solver-interface';
 
+// ============================================================
+// Solver Tier Classification (A1)
+// ============================================================
+
+const SOLVER_TIERS: Record<string, 'simple' | 'two-phase' | 'group'> = {
+  'backtracking': 'simple',
+  'cost-guided': 'simple',
+  'ac3': 'simple',
+  'dynamic-mrv': 'simple',
+  'priority-backtracking': 'simple',
+  'randomized-restarts': 'simple',
+  'two-phase': 'two-phase',
+  'diverse-instances': 'two-phase',
+  'priority-two-phase': 'two-phase',
+  'priority-diverse': 'two-phase',
+  'priority-group': 'group',
+  'mrv-group': 'group',
+  'ratio-mrv-group': 'group',
+};
+
+export function getSolverResourceMultiplier(
+  solverId: string,
+  complexity: 'easy' | 'medium' | 'hard' | 'very-hard'
+): { timeoutMultiplier: number; groupsMultiplier: number } {
+  const tier = SOLVER_TIERS[solverId] ?? 'simple';
+
+  switch (complexity) {
+    case 'easy':
+      return tier === 'group' ? { timeoutMultiplier: 0.5, groupsMultiplier: 0.5 }
+        : tier === 'two-phase' ? { timeoutMultiplier: 0.7, groupsMultiplier: 0.5 }
+        : { timeoutMultiplier: 1.0, groupsMultiplier: 1.0 };
+    case 'medium':
+      return { timeoutMultiplier: 1.0, groupsMultiplier: 1.0 };
+    case 'hard':
+      return tier === 'group' ? { timeoutMultiplier: 1.5, groupsMultiplier: 1.5 }
+        : tier === 'two-phase' ? { timeoutMultiplier: 1.0, groupsMultiplier: 1.0 }
+        : { timeoutMultiplier: 0.5, groupsMultiplier: 1.0 };
+    case 'very-hard':
+      return tier === 'group' ? { timeoutMultiplier: 2.0, groupsMultiplier: 2.0 }
+        : tier === 'two-phase' ? { timeoutMultiplier: 1.0, groupsMultiplier: 1.0 }
+        : { timeoutMultiplier: 0.3, groupsMultiplier: 1.0 };
+  }
+}
+
+// ============================================================
+// Solver Registry
+// ============================================================
+
 const solvers: Solver[] = [];
 
 export function registerSolver(solver: Solver): void {

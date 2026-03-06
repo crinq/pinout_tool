@@ -10,7 +10,7 @@ import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../t
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost } from './cost-functions';
+import { computeTotalCost, estimateCandidateCost } from './cost-functions';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
@@ -22,7 +22,7 @@ import {
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
-  groupFingerprint,
+  groupFingerprint, sortInstanceDomainsByCost,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
 import { computePortPriority, sortByPortPriority } from './port-priority';
@@ -91,7 +91,7 @@ export function solvePriorityTwoPhase(
   }
 
   if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
   }
 
   // Compute port priority from solver variables (pin counts per port)
@@ -99,6 +99,9 @@ export function solvePriorityTwoPhase(
 
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
+
+  // C3: Sort instance domains by ascending average pin cost
+  sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
 
   const configRequiresMap = new Map<string, RequireNode[]>();
   for (const [portName, port] of ports) {
@@ -177,12 +180,32 @@ export function solvePriorityTwoPhase(
 
   const solutions: Solution[] = [];
 
-  // Custom sort for Phase 2: port priority with MRV tiebreaker
+  // Custom sort for Phase 2: port priority with MRV + cost tiebreaker (C1)
+  const costWeights = config.costWeights;
   const phase2Sort = (vars: typeof allVariables) => {
     const p2Priority = computePortPriority(vars);
-    sortByPortPriority(vars, p2Priority);
+    // Compute min candidate cost per variable
+    const minCosts = new Map<typeof vars[0], number>();
+    for (const v of vars) {
+      let minCost = Infinity;
+      for (const ci of v.domain) {
+        const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+        if (cost < minCost) minCost = cost;
+      }
+      minCosts.set(v, minCost);
+    }
+    // Primary: port priority, Secondary: MRV, Tertiary: higher cost first
+    vars.sort((a, b) => {
+      const pa = p2Priority.get(a.portName) ?? 0;
+      const pb = p2Priority.get(b.portName) ?? 0;
+      if (pa !== pb) return pb - pa; // higher priority first
+      const sizeA = a.domain.length, sizeB = b.domain.length;
+      if (sizeA !== sizeB) return sizeA - sizeB;
+      return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+    });
   };
 
+  const domainCache = new Map<string, number[]>();
   for (const group of groups) {
     if (performance.now() - startTime > config.timeoutMs) break;
 
@@ -190,7 +213,7 @@ export function solvePriorityTwoPhase(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData
+      phase2Sort, dmaData, domainCache, mcu, config.costWeights
     );
     solutions.push(...groupSolutions);
   }

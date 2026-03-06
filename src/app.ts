@@ -270,28 +270,54 @@ export class App {
     const twoPhaseTypes = new Set(['two-phase', 'diverse-instances', 'priority-group', 'mrv-group', 'ratio-mrv-group']);
     const results: LabeledSolverResult[] = [];
     let completedCount = 0;
-    const totalCount = solverTypes.length;
 
     if (this.settings.solverDebugOverlay) {
       this.debugOverlay.startRun(solverTypes);
     }
 
-    for (const solverType of solverTypes) {
-      // Vite requires new Worker(new URL(...)) as a single static expression
+    // A2: Group shared-Phase-1 solvers into one worker
+    const sharedPhase1Set = new Set(['two-phase', 'diverse-instances', 'priority-two-phase', 'priority-group']);
+    const sharedSolvers = solverTypes.filter(s => sharedPhase1Set.has(s));
+    const individualSolvers = solverTypes.filter(s => !sharedPhase1Set.has(s));
+
+    // Workers: one for shared Phase 1 group (if ≥2), plus one per individual solver
+    const workerJobs: Array<{ types: string[]; useShared: boolean }> = [];
+    if (sharedSolvers.length >= 2) {
+      workerJobs.push({ types: sharedSolvers, useShared: true });
+      for (const st of individualSolvers) {
+        workerJobs.push({ types: [st], useShared: false });
+      }
+    } else {
+      // Not enough to share — run all individually
+      for (const st of solverTypes) {
+        workerJobs.push({ types: [st], useShared: false });
+      }
+    }
+
+    const totalCount = workerJobs.length;
+
+    const baseConfig = {
+      maxSolutions: this.settings.maxSolutions,
+      timeoutMs: this.settings.solverTimeoutMs,
+      costWeights: new Map(Object.entries(this.settings.costWeights)),
+      skipGpioMapping: this.settings.skipGpioMapping,
+    };
+
+    for (const job of workerJobs) {
       const worker = new Worker(
         new URL('./solver/solver-worker.ts', import.meta.url),
         { type: 'module' }
       );
       this.solverWorkers.push(worker);
 
-      const effectiveMaxSolutions = twoPhaseTypes.has(solverType)
-        ? this.settings.maxSolutions
-        : this.settings.maxGroups * this.settings.maxSolutionsPerGroup;
+      const jobLabel = job.types.join('+');
 
       worker.onmessage = (e) => {
         const solverResult = e.data as SolverResult;
-        results.push({ solverId: solverType, result: solverResult });
-        this.debugOverlay.solverComplete(solverType, solverResult);
+        results.push({ solverId: jobLabel, result: solverResult });
+        for (const st of job.types) {
+          this.debugOverlay.solverComplete(st, solverResult);
+        }
         completedCount++;
         if (totalCount > 1) {
           this.showStatus(`Solving... (${completedCount}/${totalCount} complete)`, 'info');
@@ -302,39 +328,54 @@ export class App {
       };
 
       worker.onerror = (err) => {
-        console.error(`Solver worker error (${solverType}):`, err);
+        console.error(`Solver worker error (${jobLabel}):`, err);
         const errorResult: SolverResult = {
           mcuRef: this.currentMcu?.refName ?? '',
           solutions: [],
-          errors: [{ type: 'error', message: `${solverType} crashed: ${err.message}` }],
+          errors: [{ type: 'error', message: `${jobLabel} crashed: ${err.message}` }],
           statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
         };
-        results.push({ solverId: solverType, result: errorResult });
-        this.debugOverlay.solverComplete(solverType, errorResult);
+        results.push({ solverId: jobLabel, result: errorResult });
+        for (const st of job.types) {
+          this.debugOverlay.solverComplete(st, errorResult);
+        }
         completedCount++;
         if (completedCount === totalCount) {
           this.onAllSolversComplete(results);
         }
       };
 
-      worker.postMessage({
-        ast: parseResult.ast,
-        mcu: this.currentMcu,
-        config: {
-          maxSolutions: effectiveMaxSolutions,
-          timeoutMs: this.settings.solverTimeoutMs,
-          costWeights: new Map(Object.entries(this.settings.costWeights)),
-          skipGpioMapping: this.settings.skipGpioMapping,
-        },
-        solverType,
-        twoPhaseConfig: {
-          maxGroups: this.settings.maxGroups,
-          maxSolutionsPerGroup: this.settings.maxSolutionsPerGroup,
-        },
-        randomizedConfig: {
-          numRestarts: this.settings.numRestarts,
-        },
-      });
+      if (job.useShared) {
+        // A2: Send multiple solver types to one worker for shared Phase 1
+        worker.postMessage({
+          ast: parseResult.ast,
+          mcu: this.currentMcu,
+          config: baseConfig,
+          solverTypes: job.types,
+          twoPhaseConfig: {
+            maxGroups: this.settings.maxGroups,
+            maxSolutionsPerGroup: this.settings.maxSolutionsPerGroup,
+          },
+          randomizedConfig: { numRestarts: this.settings.numRestarts },
+        });
+      } else {
+        const solverType = job.types[0];
+        const effectiveMaxSolutions = twoPhaseTypes.has(solverType)
+          ? this.settings.maxSolutions
+          : this.settings.maxGroups * this.settings.maxSolutionsPerGroup;
+
+        worker.postMessage({
+          ast: parseResult.ast,
+          mcu: this.currentMcu,
+          config: { ...baseConfig, maxSolutions: effectiveMaxSolutions },
+          solverType,
+          twoPhaseConfig: {
+            maxGroups: this.settings.maxGroups,
+            maxSolutionsPerGroup: this.settings.maxSolutionsPerGroup,
+          },
+          randomizedConfig: { numRestarts: this.settings.numRestarts },
+        });
+      }
     }
   }
 

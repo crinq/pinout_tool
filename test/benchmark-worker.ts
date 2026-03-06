@@ -7,6 +7,7 @@ import { JSDOM } from 'jsdom';
 (globalThis as any).DOMParser = new JSDOM().window.DOMParser;
 
 import { parseMcuXml } from '../src/parser/mcu-xml-parser';
+import { parseDmaXml, isDmaXml } from '../src/parser/dma-xml-parser';
 import { parseConstraints } from '../src/parser/constraint-parser';
 import { solveConstraints } from '../src/solver/solver';
 import { solveTwoPhase } from '../src/solver/two-phase-solver';
@@ -21,7 +22,8 @@ import { solvePriorityDiverse } from '../src/solver/priority-diverse-solver';
 import { solvePriorityGroup } from '../src/solver/priority-group-solver';
 import { solveMrvGroup } from '../src/solver/mrv-group-solver';
 import { solveRatioMrvGroup } from '../src/solver/ratio-mrv-group-solver';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
+import { join, dirname } from 'path';
 import type { SolverResult } from '../src/types';
 
 interface WorkerInput {
@@ -54,6 +56,23 @@ process.on('message', (input: WorkerInput) => {
     };
 
     const mcu = parseMcuXml(readFileSync(input.mcuFile, 'utf-8'));
+
+    // Load DMA data if available
+    const mcuDir = dirname(input.mcuFile);
+    const dmaFiles = readdirSync(mcuDir).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'));
+    if (dmaFiles.length > 0) {
+      const dmaPeripheral = mcu.peripherals.find(p => p.originalType === 'DMA');
+      if (dmaPeripheral) {
+        const matchingFile = dmaFiles.find(f => f.includes(dmaPeripheral.version));
+        if (matchingFile) {
+          const dmaXmlString = readFileSync(join(mcuDir, matchingFile), 'utf-8');
+          if (isDmaXml(dmaXmlString)) {
+            mcu.dma = parseDmaXml(dmaXmlString);
+          }
+        }
+      }
+    }
+
     const constraintText = readFileSync(input.constraintFile, 'utf-8');
     const { ast } = parseConstraints(constraintText);
     if (!ast) {

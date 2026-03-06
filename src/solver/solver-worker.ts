@@ -1,6 +1,6 @@
-import { solveConstraints } from './solver';
+import { solveConstraints, estimateComplexity } from './solver';
 import type { SolverConfig } from './solver';
-import { solveTwoPhase } from './two-phase-solver';
+import { solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import { solveRandomizedRestarts } from './randomized-solver';
 import { solveCostGuided } from './cost-guided-solver';
@@ -13,100 +13,186 @@ import { solvePriorityDiverse } from './priority-diverse-solver';
 import { solvePriorityGroup } from './priority-group-solver';
 import { solveMrvGroup } from './mrv-group-solver';
 import { solveRatioMrvGroup } from './ratio-mrv-group-solver';
-import type { Mcu } from '../types';
+import { getSolverResourceMultiplier } from './solver-registry';
+import { mergeResults } from './result-merger';
+import { computePortPriority } from './port-priority';
+import { estimateCandidateCost } from './cost-functions';
+import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
+import type { SolverVariable } from './solver';
 
 export interface SolverWorkerRequest {
   ast: ProgramNode;
   mcu: Mcu;
   config: Partial<SolverConfig>;
   solverType?: string;
+  solverTypes?: string[];  // A2: multiple solvers in one worker
   twoPhaseConfig?: { maxGroups: number; maxSolutionsPerGroup: number };
   randomizedConfig?: { numRestarts: number };
 }
 
+// A2: Solvers that can share Phase 1 (use solvePhase2ForGroup)
+const SHARED_PHASE1_SOLVERS = new Set(['two-phase', 'diverse-instances', 'priority-two-phase', 'priority-group']);
+
+function getPhase2SortFn(
+  solverId: string,
+  costWeights: Map<string, number>
+): ((vars: SolverVariable[]) => void) | undefined {
+  switch (solverId) {
+    case 'priority-two-phase':
+    case 'priority-group':
+      return (vars: SolverVariable[]) => {
+        const p2Priority = computePortPriority(vars);
+        const minCosts = new Map<SolverVariable, number>();
+        for (const v of vars) {
+          let minCost = Infinity;
+          for (const ci of v.domain) {
+            const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+            if (cost < minCost) minCost = cost;
+          }
+          minCosts.set(v, minCost);
+        }
+        vars.sort((a, b) => {
+          const pa = p2Priority.get(a.portName) ?? 0;
+          const pb = p2Priority.get(b.portName) ?? 0;
+          if (pa !== pb) return pb - pa;
+          const sizeA = a.domain.length, sizeB = b.domain.length;
+          if (sizeA !== sizeB) return sizeA - sizeB;
+          return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+        });
+      };
+    default:
+      // MRV + cost (C1)
+      return (vars: SolverVariable[]) => {
+        const minCosts = new Map<SolverVariable, number>();
+        for (const v of vars) {
+          let minCost = Infinity;
+          for (const ci of v.domain) {
+            const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+            if (cost < minCost) minCost = cost;
+          }
+          minCosts.set(v, minCost);
+        }
+        vars.sort((a, b) => {
+          const sizeA = a.domain.length, sizeB = b.domain.length;
+          if (sizeA !== sizeB) return sizeA - sizeB;
+          return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+        });
+      };
+  }
+}
+
+function runSingleSolver(
+  st: string,
+  ast: ProgramNode,
+  mcu: Mcu,
+  config: Partial<SolverConfig>,
+  twoPhaseConfig: { maxGroups: number; maxSolutionsPerGroup: number } | undefined,
+  randomizedConfig: { numRestarts: number } | undefined,
+  complexity: 'easy' | 'medium' | 'hard' | 'very-hard'
+): SolverResult {
+  const multiplier = getSolverResourceMultiplier(st, complexity);
+  const effectiveTimeoutMs = Math.round((config.timeoutMs ?? 5000) * multiplier.timeoutMultiplier);
+  const effectiveMaxGroups = Math.max(1, Math.round((twoPhaseConfig?.maxGroups ?? 50) * multiplier.groupsMultiplier));
+  const adjustedConfig = { ...config, timeoutMs: effectiveTimeoutMs };
+
+  const buildTP = (): TwoPhaseConfig => ({
+    maxGroups: effectiveMaxGroups,
+    maxSolutionsPerGroup: twoPhaseConfig?.maxSolutionsPerGroup ?? 10,
+    timeoutMs: effectiveTimeoutMs,
+    costWeights: config.costWeights ?? new Map(),
+    skipGpioMapping: config.skipGpioMapping,
+  });
+
+  switch (st) {
+    case 'two-phase': return solveTwoPhase(ast, mcu, buildTP());
+    case 'randomized-restarts': return solveRandomizedRestarts(ast, mcu, {
+      numRestarts: randomizedConfig?.numRestarts ?? 5,
+      maxSolutions: config.maxSolutions ?? 100, timeoutMs: effectiveTimeoutMs,
+      costWeights: config.costWeights ?? new Map(), skipGpioMapping: config.skipGpioMapping,
+    });
+    case 'cost-guided': return solveCostGuided(ast, mcu, adjustedConfig);
+    case 'diverse-instances': return solveDiverseInstances(ast, mcu, buildTP());
+    case 'ac3': return solveAC3(ast, mcu, adjustedConfig);
+    case 'dynamic-mrv': return solveDynamicMRV(ast, mcu, adjustedConfig);
+    case 'priority-backtracking': return solvePriorityBacktracking(ast, mcu, adjustedConfig);
+    case 'priority-two-phase': return solvePriorityTwoPhase(ast, mcu, buildTP());
+    case 'priority-diverse': return solvePriorityDiverse(ast, mcu, {
+      numRestarts: randomizedConfig?.numRestarts ?? 25,
+      maxSolutions: config.maxSolutions ?? 100, timeoutMs: effectiveTimeoutMs,
+      costWeights: config.costWeights ?? new Map(), skipGpioMapping: config.skipGpioMapping,
+    });
+    case 'priority-group': return solvePriorityGroup(ast, mcu, buildTP());
+    case 'mrv-group': return solveMrvGroup(ast, mcu, buildTP());
+    case 'ratio-mrv-group': return solveRatioMrvGroup(ast, mcu, buildTP());
+    default: return solveConstraints(ast, mcu, adjustedConfig);
+  }
+}
+
 self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
   try {
-    const { ast, mcu, config, solverType, twoPhaseConfig, randomizedConfig } = e.data;
+    const { ast, mcu, config, solverType, solverTypes, twoPhaseConfig, randomizedConfig } = e.data;
+    const complexity = estimateComplexity(ast, mcu);
 
-    const buildTwoPhaseConfig = (): TwoPhaseConfig => ({
-      maxGroups: twoPhaseConfig?.maxGroups ?? 50,
-      maxSolutionsPerGroup: twoPhaseConfig?.maxSolutionsPerGroup ?? 10,
-      timeoutMs: config.timeoutMs ?? 5000,
-      costWeights: config.costWeights ?? new Map(),
-      skipGpioMapping: config.skipGpioMapping,
-    });
+    // A2: Multi-solver mode — shared Phase 1 for two-phase solvers
+    if (solverTypes && solverTypes.length > 0) {
+      const sharedTypes = solverTypes.filter(s => SHARED_PHASE1_SOLVERS.has(s));
+      const otherTypes = solverTypes.filter(s => !SHARED_PHASE1_SOLVERS.has(s));
 
-    let result;
-    switch (solverType) {
-      case 'two-phase':
-        result = solveTwoPhase(ast, mcu, buildTwoPhaseConfig());
-        break;
+      const labeled: Array<{ solverId: string; result: SolverResult }> = [];
 
-      case 'randomized-restarts':
-        result = solveRandomizedRestarts(ast, mcu, {
-          numRestarts: randomizedConfig?.numRestarts ?? 5,
-          maxSolutions: config.maxSolutions ?? 100,
-          timeoutMs: config.timeoutMs ?? 5000,
+      // Run shared Phase 1 once for all two-phase solvers
+      if (sharedTypes.length > 0) {
+        const multiplier = getSolverResourceMultiplier(sharedTypes[0], complexity);
+        const tpConfig: TwoPhaseConfig = {
+          maxGroups: Math.max(1, Math.round((twoPhaseConfig?.maxGroups ?? 50) * multiplier.groupsMultiplier)),
+          maxSolutionsPerGroup: twoPhaseConfig?.maxSolutionsPerGroup ?? 10,
+          timeoutMs: Math.round((config.timeoutMs ?? 5000) * multiplier.timeoutMultiplier),
           costWeights: config.costWeights ?? new Map(),
           skipGpioMapping: config.skipGpioMapping,
-        });
-        break;
+        };
 
-      case 'cost-guided':
-        result = solveCostGuided(ast, mcu, config);
-        break;
+        const phase1 = runSharedPhase1(ast, mcu, tpConfig);
 
-      case 'diverse-instances':
-        result = solveDiverseInstances(ast, mcu, buildTwoPhaseConfig());
-        break;
+        if (phase1 && phase1.groups.length > 0) {
+          const costWeights = config.costWeights ?? new Map<string, number>();
+          for (const st of sharedTypes) {
+            const startTime = performance.now();
+            const sortFn = getPhase2SortFn(st, costWeights);
+            const result = runPhase2Only(phase1, mcu, tpConfig, startTime, sortFn);
+            labeled.push({ solverId: st, result });
+          }
+        } else {
+          // Phase 1 failed — report error for each solver
+          const emptyResult: SolverResult = {
+            mcuRef: mcu.refName, solutions: [],
+            errors: phase1?.errors ?? [{ type: 'error', message: 'Phase 1: No valid assignments' }],
+            statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+          };
+          for (const st of sharedTypes) {
+            labeled.push({ solverId: st, result: emptyResult });
+          }
+        }
+      }
 
-      case 'ac3':
-        result = solveAC3(ast, mcu, config);
-        break;
+      // Run other solvers independently
+      for (const st of otherTypes) {
+        const result = runSingleSolver(st, ast, mcu, config, twoPhaseConfig, randomizedConfig, complexity);
+        labeled.push({ solverId: st, result });
+      }
 
-      case 'dynamic-mrv':
-        result = solveDynamicMRV(ast, mcu, config);
-        break;
-
-      case 'priority-backtracking':
-        result = solvePriorityBacktracking(ast, mcu, config);
-        break;
-
-      case 'priority-two-phase':
-        result = solvePriorityTwoPhase(ast, mcu, buildTwoPhaseConfig());
-        break;
-
-      case 'priority-diverse':
-        result = solvePriorityDiverse(ast, mcu, {
-          numRestarts: randomizedConfig?.numRestarts ?? 25,
-          maxSolutions: config.maxSolutions ?? 100,
-          timeoutMs: config.timeoutMs ?? 5000,
-          costWeights: config.costWeights ?? new Map(),
-          skipGpioMapping: config.skipGpioMapping,
-        });
-        break;
-
-      case 'priority-group':
-        result = solvePriorityGroup(ast, mcu, buildTwoPhaseConfig());
-        break;
-
-      case 'mrv-group':
-        result = solveMrvGroup(ast, mcu, buildTwoPhaseConfig());
-        break;
-
-      case 'ratio-mrv-group':
-        result = solveRatioMrvGroup(ast, mcu, buildTwoPhaseConfig());
-        break;
-
-      default:
-        result = solveConstraints(ast, mcu, config);
-        break;
+      const merged = mergeResults(labeled, config.maxSolutions ?? 100);
+      self.postMessage(merged);
+      return;
     }
 
+    // Single solver mode
+    const result = runSingleSolver(
+      solverType ?? 'backtracking', ast, mcu, config,
+      twoPhaseConfig, randomizedConfig, complexity
+    );
     self.postMessage(result);
   } catch (err) {
-    // Send error back as a solver result so the UI can display it
     self.postMessage({
       mcuRef: '',
       solutions: [],

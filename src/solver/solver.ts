@@ -24,7 +24,10 @@ import type {
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
 import { expandPatternToCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
-import { computeTotalCost } from './cost-functions';
+import {
+  computeTotalCost, type IncrementalCostTracker,
+  incrementCost, decrementCost, updateCostThreshold,
+} from './cost-functions';
 
 // ============================================================
 // Solver Configuration
@@ -93,6 +96,149 @@ export interface SolverVariable {
 export interface VariableAssignment {
   variable: SolverVariable;
   candidate: SignalCandidate;
+}
+
+// ============================================================
+// Forward Checking / Propagation Context (shared by all solvers)
+// ============================================================
+
+export interface PropagationContext {
+  domains: number[][];
+  assigned: boolean[];
+  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>;
+  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>;
+  sharedPatterns: PatternPart[];
+  removedStack: Array<Array<{ varIdx: number; candIdx: number }>>;
+}
+
+export function buildPropagationContext(
+  variables: SolverVariable[],
+  sharedPatterns: PatternPart[]
+): PropagationContext {
+  const domains = variables.map(v => [...v.domain]);
+  const assigned = new Array(variables.length).fill(false);
+
+  const pinToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
+  const instanceToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
+
+  for (let vi = 0; vi < variables.length; vi++) {
+    const v = variables[vi];
+    for (const ci of v.domain) {
+      const c = v.candidates[ci];
+      const pinName = c.pin.name;
+      if (!pinToVarCandidates.has(pinName)) pinToVarCandidates.set(pinName, []);
+      pinToVarCandidates.get(pinName)!.push({ varIdx: vi, candIdx: ci });
+
+      if (c.peripheralInstance) {
+        if (!instanceToVarCandidates.has(c.peripheralInstance)) instanceToVarCandidates.set(c.peripheralInstance, []);
+        instanceToVarCandidates.get(c.peripheralInstance)!.push({ varIdx: vi, candIdx: ci });
+      }
+    }
+  }
+
+  return { domains, assigned, pinToVarCandidates, instanceToVarCandidates, sharedPatterns, removedStack: [] };
+}
+
+/** Check if any port has ALL its configs blocked (every config has at least one unassigned variable with empty domain) */
+export function hasPortWipeout(
+  variables: SolverVariable[],
+  domains: number[][],
+  assigned: boolean[]
+): boolean {
+  const emptyVarPorts = new Set<string>();
+  for (let i = 0; i < variables.length; i++) {
+    if (!assigned[i] && domains[i].length === 0) {
+      emptyVarPorts.add(variables[i].portName);
+    }
+  }
+  if (emptyVarPorts.size === 0) return false;
+
+  for (const port of emptyVarPorts) {
+    const configHasUnassigned = new Map<string, boolean>();
+    const configHasEmpty = new Map<string, boolean>();
+    for (let i = 0; i < variables.length; i++) {
+      if (variables[i].portName !== port) continue;
+      const cfg = variables[i].configName;
+      if (!configHasUnassigned.has(cfg)) {
+        configHasUnassigned.set(cfg, false);
+        configHasEmpty.set(cfg, false);
+      }
+      if (!assigned[i]) {
+        configHasUnassigned.set(cfg, true);
+        if (domains[i].length === 0) configHasEmpty.set(cfg, true);
+      }
+    }
+    let anyViable = false;
+    for (const [cfg, hasUnassigned] of configHasUnassigned) {
+      if (!hasUnassigned || !configHasEmpty.get(cfg)) {
+        anyViable = true;
+        break;
+      }
+    }
+    if (!anyViable) return true;
+  }
+  return false;
+}
+
+/** Forward-check: remove conflicting candidates, return removed list or null on real wipeout */
+export function propagateShared(
+  candidate: SignalCandidate,
+  portName: string,
+  variables: SolverVariable[],
+  domains: number[][],
+  assigned: boolean[],
+  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
+  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
+  sharedPatterns: PatternPart[]
+): Array<{ varIdx: number; candIdx: number }> | null {
+  const removed: Array<{ varIdx: number; candIdx: number }> = [];
+
+  // Pin exclusivity across ports
+  const pinEntries = pinToVarCandidates.get(candidate.pin.name);
+  if (pinEntries) {
+    for (const entry of pinEntries) {
+      if (assigned[entry.varIdx]) continue;
+      if (variables[entry.varIdx].portName === portName) continue;
+      const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
+      if (domIdx !== -1) {
+        domains[entry.varIdx].splice(domIdx, 1);
+        removed.push(entry);
+      }
+    }
+  }
+
+  // Instance exclusivity across ports
+  if (candidate.peripheralInstance && !isSharedInstance(candidate.peripheralInstance, sharedPatterns)) {
+    const instEntries = instanceToVarCandidates.get(candidate.peripheralInstance);
+    if (instEntries) {
+      for (const entry of instEntries) {
+        if (assigned[entry.varIdx]) continue;
+        if (variables[entry.varIdx].portName === portName) continue;
+        const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
+        if (domIdx !== -1) {
+          domains[entry.varIdx].splice(domIdx, 1);
+          removed.push(entry);
+        }
+      }
+    }
+  }
+
+  // Check for real wipeout
+  if (hasPortWipeout(variables, domains, assigned)) {
+    undoPropagateShared(removed, domains);
+    return null;
+  }
+
+  return removed;
+}
+
+export function undoPropagateShared(
+  removed: Array<{ varIdx: number; candIdx: number }>,
+  domains: number[][]
+): void {
+  for (const entry of removed) {
+    domains[entry.varIdx].push(entry.candIdx);
+  }
 }
 
 // ============================================================
@@ -474,6 +620,28 @@ export interface GpioPartitionResult {
   gpioCountPerConfig: Map<string, number>;
 }
 
+// ============================================================
+// Problem Complexity Estimation (A1)
+// ============================================================
+
+export function estimateComplexity(ast: ProgramNode, mcu: Mcu): 'easy' | 'medium' | 'hard' | 'very-hard' {
+  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros());
+  const ports = extractPorts(expandedAst);
+  const reserved = resolveReservePatterns(expandedAst, mcu);
+  const reservedPinSet = new Set(reserved.pins);
+  const reservedPeripheralSet = new Set(reserved.peripherals);
+  const allVars = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
+  const configCombos = generateConfigCombinations(ports);
+
+  const varCount = allVars.length;
+  const comboCount = configCombos.length;
+
+  if (varCount < 10 && comboCount < 5) return 'easy';
+  if (varCount < 30 && comboCount < 20) return 'medium';
+  if (varCount < 80) return 'hard';
+  return 'very-hard';
+}
+
 /** Partition variables into solvable and GPIO-only (availability check). */
 export function partitionGpioVariables(
   variables: SolverVariable[],
@@ -690,7 +858,7 @@ export function prepareSolverContext(
   if (gpioVars.length > 0) {
     errors.push({
       type: 'warning',
-      message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only`,
+      message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only`,
     });
   }
 
@@ -820,7 +988,7 @@ export function solveConstraints(
   if (gpioVars.length > 0) {
     errors.push({
       type: 'warning',
-      message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only`,
+      message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only`,
     });
   }
 
@@ -935,88 +1103,192 @@ export function solveBacktrack(
   deepest: { depth: number; assignments: VariableAssignment[] },
   lastVarOfConfig: Map<string, number>,
   configRequiresMap: Map<string, RequireNode[]>,
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  propagationCtx?: PropagationContext,
+  costTracker?: IncrementalCostTracker
 ): void {
-  if (performance.now() - startTime > timeoutMs) return;
-  if (solutions.length >= maxSolutions) return;
+  // Iterative backtracking with explicit stack (avoids stack overflow on large problems)
+  const totalVars = variables.length;
 
-  // Track deepest partial solution for conflict reporting
-  if (varIndex > deepest.depth) {
-    deepest.depth = varIndex;
-    deepest.assignments = [...current];
-  }
+  // Stack frames: [varIdx, domainPosition, assignedCandidate (or -1 if entering)]
+  // We use parallel arrays for performance
+  const stackVarIdx: number[] = [];
+  const stackDomPos: number[] = [];
+  // Track which candidate was assigned at each level for undo
+  const stackAssigned: number[] = []; // index into candidates, -1 = not yet assigned
 
-  if (varIndex === variables.length) {
-    // All variables assigned — check require constraints for ALL config combinations
-    stats.evaluatedCombinations++;
-    const dmaAssignmentsOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut)) {
-      const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaAssignmentsOut
-      );
-      solutions.push(solution);
-      stats.validSolutions++;
-      const elapsed = performance.now() - startTime;
-      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
-      stats.lastSolutionMs = elapsed;
-    }
-    return;
-  }
+  stackVarIdx.push(varIndex);
+  stackDomPos.push(0);
+  stackAssigned.push(-1);
 
-  const v = variables[varIndex];
-
-  for (const candidateIdx of v.domain) {
-    if (solutions.length >= maxSolutions) return;
+  while (stackVarIdx.length > 0) {
     if (performance.now() - startTime > timeoutMs) return;
+    if (solutions.length >= maxSolutions) return;
 
-    const candidate = v.candidates[candidateIdx];
+    const sp = stackVarIdx.length - 1;
+    const vi = stackVarIdx[sp];
 
-    // Port-aware pin uniqueness check (includes channel and peripheral instance exclusivity)
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
+    // Track deepest for conflict reporting
+    if (vi > deepest.depth) {
+      deepest.depth = vi;
+      deepest.assignments = [...current];
+    }
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
-    current.push({ variable: v, candidate });
-
-    // Eager constraint check: when all variables of a (port, config) are assigned,
-    // immediately check that config's requires to prune early
-    let pruned = false;
-    const configKey = `${v.portName}\0${v.configName}`;
-    if (lastVarOfConfig.get(configKey) === varIndex) {
-      const requires = configRequiresMap.get(configKey);
-      if (requires) {
-        // Build channelInfo for just this (port, config)
-        const portChannels = new Map<string, VariableAssignment[]>();
-        for (const va of current) {
-          if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
-            if (!portChannels.has(va.variable.channelName)) {
-              portChannels.set(va.variable.channelName, []);
-            }
-            portChannels.get(va.variable.channelName)!.push(va);
-          }
+    // All variables assigned — evaluate constraints
+    if (vi === totalVars) {
+      stats.evaluatedCombinations++;
+      const dmaAssignmentsOut: Map<string, string>[] = [];
+      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut)) {
+        const solution = buildSolution(
+          current, configCombinations, ports, pinnedAssignments, solutions.length, dmaAssignmentsOut
+        );
+        // C2: compute cost immediately and update pruning threshold
+        if (costTracker) {
+          computeTotalCost(solution, costTracker.mcu, costTracker.costWeights);
+          updateCostThreshold(costTracker, solution.totalCost);
         }
-        const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-        channelInfo.set(v.portName, portChannels);
+        solutions.push(solution);
+        stats.validSolutions++;
+        const elapsed = performance.now() - startTime;
+        if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
+        stats.lastSolutionMs = elapsed;
+      }
+      // Pop this leaf frame and backtrack
+      stackVarIdx.length = sp;
+      stackDomPos.length = sp;
+      stackAssigned.length = sp;
+      // Undo the assignment from the parent frame
+      if (sp > 0) {
+        const parentSp = sp - 1;
+        const parentVi = stackVarIdx[parentSp];
+        const parentCandIdx = stackAssigned[parentSp];
+        if (parentCandIdx >= 0) {
+          const pv = variables[parentVi];
+          const pc = pv.candidates[parentCandIdx];
+          current.pop();
+          if (costTracker) decrementCost(costTracker, pc);
+          if (propagationCtx) {
+            undoPropagateShared(propagationCtx.removedStack[propagationCtx.removedStack.length - 1], propagationCtx.domains);
+            propagationCtx.removedStack.length--;
+            propagationCtx.assigned[parentVi] = false;
+          }
+          unassignPin(tracker, pc.pin.name, pv.portName, pv.configName, pc.peripheralInstance, pc.signalName);
+          stackAssigned[parentSp] = -1;
+        }
+      }
+      continue;
+    }
 
-        for (const req of requires) {
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
-            pruned = true;
-            break;
+    const v = variables[vi];
+    const domain = propagationCtx ? propagationCtx.domains[vi] : v.domain;
+
+    // If we had a previous assignment, undo it before trying next candidate
+    if (stackAssigned[sp] >= 0) {
+      const prevCandIdx = stackAssigned[sp];
+      const prevCand = v.candidates[prevCandIdx];
+      current.pop();
+      if (costTracker) decrementCost(costTracker, prevCand);
+      if (propagationCtx) {
+        undoPropagateShared(propagationCtx.removedStack[propagationCtx.removedStack.length - 1], propagationCtx.domains);
+        propagationCtx.removedStack.length--;
+        propagationCtx.assigned[vi] = false;
+      }
+      unassignPin(tracker, prevCand.pin.name, v.portName, v.configName, prevCand.peripheralInstance, prevCand.signalName);
+      stackAssigned[sp] = -1;
+    }
+
+    // Try candidates from current domain position
+    let found = false;
+    const domLen = domain.length;
+    for (let dpos = stackDomPos[sp]; dpos < domLen; dpos++) {
+      if (solutions.length >= maxSolutions) return;
+      if (performance.now() - startTime > timeoutMs) return;
+
+      const candidateIdx = domain[dpos];
+      const candidate = v.candidates[candidateIdx];
+
+      if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
+
+      assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
+      current.push({ variable: v, candidate });
+
+      // C2: Incremental cost tracking and pruning
+      let pruned = false;
+      if (costTracker) {
+        incrementCost(costTracker, candidate);
+        if (costTracker.partialCost > costTracker.topKThreshold) {
+          pruned = true;
+        }
+      }
+
+      // Eager constraint check
+      if (!pruned) {
+        const configKey = `${v.portName}\0${v.configName}`;
+        if (lastVarOfConfig.get(configKey) === vi) {
+          const requires = configRequiresMap.get(configKey);
+          if (requires) {
+            const portChannels = new Map<string, VariableAssignment[]>();
+            for (const va of current) {
+              if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
+                if (!portChannels.has(va.variable.channelName)) {
+                  portChannels.set(va.variable.channelName, []);
+                }
+                portChannels.get(va.variable.channelName)!.push(va);
+              }
+            }
+            const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
+            channelInfo.set(v.portName, portChannels);
+            for (const req of requires) {
+              if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+                pruned = true;
+                break;
+              }
+            }
           }
         }
       }
+
+      // Forward checking propagation (if enabled)
+      if (!pruned && propagationCtx) {
+        propagationCtx.assigned[vi] = true;
+        const removed = propagateShared(
+          candidate, v.portName,
+          variables, propagationCtx.domains, propagationCtx.assigned,
+          propagationCtx.pinToVarCandidates, propagationCtx.instanceToVarCandidates,
+          propagationCtx.sharedPatterns
+        );
+        if (removed === null) {
+          pruned = true;
+          propagationCtx.assigned[vi] = false;
+        } else {
+          propagationCtx.removedStack.push(removed);
+        }
+      }
+
+      if (!pruned) {
+        // Record this assignment and advance
+        stackAssigned[sp] = candidateIdx;
+        stackDomPos[sp] = dpos + 1; // resume here on backtrack
+        // Push next variable frame
+        stackVarIdx.push(vi + 1);
+        stackDomPos.push(0);
+        stackAssigned.push(-1);
+        found = true;
+        break;
+      }
+
+      // Pruned — undo and try next candidate
+      current.pop();
+      if (costTracker) decrementCost(costTracker, candidate);
+      unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
     }
 
-    if (!pruned) {
-      solveBacktrack(
-        variables, varIndex + 1, tracker, current,
-        configCombinations, ports, pinnedAssignments,
-        solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
-        lastVarOfConfig, configRequiresMap, dmaData
-      );
+    if (!found) {
+      // No more candidates — backtrack: pop this frame
+      stackVarIdx.length = sp;
+      stackDomPos.length = sp;
+      stackAssigned.length = sp;
     }
-
-    current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
   }
 }
 
@@ -1617,6 +1889,40 @@ export function deduplicateSolutions(solutions: Solution[]): Solution[] {
   // Re-number
   result.forEach((s, i) => s.id = i);
   return result;
+}
+
+// ============================================================
+// Solution Clustering (D5)
+// ============================================================
+
+/** Group solutions by peripheral fingerprint (port→peripherals, ignoring pin names).
+ *  Sets clusterSize on each solution and returns one representative per cluster (lowest cost). */
+export function clusterSolutions(solutions: Solution[]): Solution[] {
+  if (solutions.length === 0) return solutions;
+
+  const clusters = new Map<string, Solution[]>();
+  for (const sol of solutions) {
+    // Build fingerprint from portPeripherals (ignoring pin-level details)
+    const parts: string[] = [];
+    for (const [port, peripherals] of sol.portPeripherals) {
+      parts.push(`${port}:[${[...peripherals].sort().join(',')}]`);
+    }
+    const fp = parts.sort().join('|');
+    if (!clusters.has(fp)) clusters.set(fp, []);
+    clusters.get(fp)!.push(sol);
+  }
+
+  const representatives: Solution[] = [];
+  for (const group of clusters.values()) {
+    group.sort((a, b) => a.totalCost - b.totalCost);
+    const best = group[0];
+    best.clusterSize = group.length;
+    representatives.push(best);
+  }
+
+  representatives.sort((a, b) => a.totalCost - b.totalCost);
+  representatives.forEach((s, i) => s.id = i);
+  return representatives;
 }
 
 // ============================================================

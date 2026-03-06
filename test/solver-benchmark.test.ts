@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 // ============================================================
 
 const MAX_SOLUTIONS = 5000;
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 5_000;
 
 const COST_WEIGHTS: [string, number][] = [
   ['pin_count', 1],
@@ -62,7 +62,7 @@ function discoverPassCases(): TestCase[] {
 
   for (const folder of folders) {
     const folderPath = join(TEST_DIR, folder.name);
-    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml'));
+    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
     if (xmlFiles.length === 0) continue;
     const mcuFile = join(folderPath, xmlFiles[0]);
 

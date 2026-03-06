@@ -477,13 +477,13 @@ const COST_WEIGHTS = new Map([
 const TWO_PHASE_CONFIG = {
   maxGroups: 20,
   maxSolutionsPerGroup: 5,
-  timeoutMs: 10000,
+  timeoutMs: 5000,
   costWeights: COST_WEIGHTS,
 };
 
 const BASIC_CONFIG = {
   maxSolutions: 50,
-  timeoutMs: 10000,
+  timeoutMs: 5000,
 };
 
 interface SolverDef {
@@ -505,7 +505,7 @@ const solvers: SolverDef[] = [
     run: (ast, mcu) => solveRandomizedRestarts(ast, mcu, {
       numRestarts: 3,
       maxSolutions: 50,
-      timeoutMs: 10000,
+      timeoutMs: 5000,
       costWeights: COST_WEIGHTS,
     }),
   },

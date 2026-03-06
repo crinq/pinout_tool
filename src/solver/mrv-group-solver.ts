@@ -37,7 +37,8 @@ import { solveBacktrackDynamic } from './dynamic-mrv-solver';
 // Config
 // ============================================================
 
-const DIVERSITY_ROUNDS = 10;
+const MAX_DIVERSITY_ROUNDS = 20;
+const STALE_ROUNDS_LIMIT = 3;
 const MAX_PERMUTED_GROUPS = 200;
 const MAX_PERMS_PER_GROUP = 50;
 
@@ -198,10 +199,9 @@ function generatePermutedGroups(
     }
   }
 
-  const combos = cartesianProduct(clusterPerms, maxPerGroup, rng);
-
   const newGroups: InstanceGroup[] = [];
-  for (const combo of combos) {
+
+  const tryAddCombo = (combo: string[][]) => {
     let allIdentity = true;
     for (let c = 0; c < clusters.length; c++) {
       if (combo[c] !== clusterPerms[c][0]) {
@@ -209,7 +209,7 @@ function generatePermutedGroups(
         break;
       }
     }
-    if (allIdentity) continue;
+    if (allIdentity) return;
 
     const newAssignments = new Map(sourceGroup.assignments);
     for (let c = 0; c < clusters.length; c++) {
@@ -225,6 +225,29 @@ function generatePermutedGroups(
     if (!fingerprints.has(fp)) {
       fingerprints.add(fp);
       newGroups.push({ assignments: newAssignments });
+    }
+  };
+
+  // Phase A: Stratified single-cluster permutations
+  // Each cluster gets a fair share of the budget for solo permutations
+  const perCluster = Math.max(1, Math.floor(maxPerGroup / (clusters.length + 1)));
+  for (let c = 0; c < clusters.length; c++) {
+    const nonIdentity = clusterPerms[c].slice(1);
+    const selected = nonIdentity.slice(0, perCluster);
+    for (const perm of selected) {
+      if (newGroups.length >= maxPerGroup) break;
+      const combo = clusterPerms.map((cp, i) => i === c ? perm : cp[0]);
+      tryAddCombo(combo);
+    }
+  }
+
+  // Phase B: Multi-cluster combos with remaining budget
+  const remaining = maxPerGroup - newGroups.length;
+  if (remaining > 0 && clusters.length > 1) {
+    const combos = cartesianProduct(clusterPerms, remaining, rng);
+    for (const combo of combos) {
+      if (newGroups.length >= maxPerGroup) break;
+      tryAddCombo(combo);
     }
   }
 
@@ -259,6 +282,47 @@ function cartesianProduct<T>(arrays: T[][], maxResults: number, rng: () => numbe
     }
   }
   return results;
+}
+
+// ============================================================
+// Diversity-Aware Group Ordering (farthest-point sampling)
+// ============================================================
+
+function orderByDiversity(groups: InstanceGroup[]): InstanceGroup[] {
+  if (groups.length <= 2) return [...groups];
+
+  const n = groups.length;
+  const selected: InstanceGroup[] = [groups[0]];
+  const used = new Uint8Array(n);
+  used[0] = 1;
+  // minDist[i] = minimum distance from group i to any already-selected group
+  const minDist = new Float64Array(n).fill(Infinity);
+
+  for (let iter = 1; iter < n; iter++) {
+    const last = selected[selected.length - 1];
+    let bestIdx = -1;
+    let bestDist = -1;
+
+    for (let i = 0; i < n; i++) {
+      if (used[i]) continue;
+      // Hamming distance: count differing instance assignments
+      let d = 0;
+      for (const [k, v] of last.assignments) {
+        if (groups[i].assignments.get(k) !== v) d++;
+      }
+      minDist[i] = Math.min(minDist[i], d);
+      if (minDist[i] > bestDist) {
+        bestDist = minDist[i];
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx === -1) break;
+    selected.push(groups[bestIdx]);
+    used[bestIdx] = 1;
+  }
+
+  return selected;
 }
 
 // ============================================================
@@ -426,7 +490,7 @@ export function solveMrvGroup(
   }
 
   if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) — verified pin availability only` });
+    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
   }
 
   const portPriority = computePriority(solveVars);
@@ -447,14 +511,30 @@ export function solveMrvGroup(
   const discoveredGroups: InstanceGroup[] = [];
   const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
 
-  for (let round = 0; round < DIVERSITY_ROUNDS; round++) {
+  // D4: Instance coverage tracking — which instances have been seen per variable
+  const instanceCoverage = new Map<string, Set<string>>();
+  // D2: Track groups discovered per combo index for fair scheduling
+  const groupsPerCombo = new Map<number, number>();
+
+  let staleRounds = 0;
+  for (let round = 0; round < MAX_DIVERSITY_ROUNDS; round++) {
     if (performance.now() - startTime > config.timeoutMs) break;
     if (discoveredGroups.length >= config.maxGroups) break;
 
-    for (const combo of configCombinations) {
+    const groupsBefore = discoveredGroups.length;
+
+    // D2: In later rounds, prioritize combos with fewer discovered groups
+    const comboIndices = [...configCombinations.keys()];
+    if (round > 0) {
+      comboIndices.sort((a, b) =>
+        (groupsPerCombo.get(a) ?? 0) - (groupsPerCombo.get(b) ?? 0));
+    }
+
+    for (const comboIdx of comboIndices) {
       if (performance.now() - startTime > config.timeoutMs) break;
       if (discoveredGroups.length >= config.maxGroups) break;
 
+      const combo = configCombinations[comboIdx];
       let activeVars = allInstanceVars.filter(iv =>
         combo.get(iv.portName) === iv.configName
       );
@@ -464,11 +544,21 @@ export function solveMrvGroup(
       if (round === 0) {
         sortByPortPriority(activeVars, portPriority);
       } else {
-        const rng = mulberry32(round * 54321 + configCombinations.indexOf(combo) * 11);
-        activeVars = activeVars.map(iv => ({
-          ...iv,
-          domain: shuffleArray([...iv.domain], rng),
-        }));
+        const rng = mulberry32(round * 54321 + comboIdx * 11);
+        // D4: Bias domain ordering to prefer uncovered instances
+        activeVars = activeVars.map(iv => {
+          const shuffled = shuffleArray([...iv.domain], rng);
+          const coverage = instanceCoverage.get(varKey(iv));
+          if (coverage && coverage.size > 0) {
+            // Sort: uncovered instances first, then covered, preserving shuffle within each group
+            shuffled.sort((a, b) => {
+              const covA = coverage.has(iv.instanceCandidates[a]) ? 1 : 0;
+              const covB = coverage.has(iv.instanceCandidates[b]) ? 1 : 0;
+              return covA - covB;
+            });
+          }
+          return { ...iv, domain: shuffled };
+        });
         activeVars.sort((a, b) => a.domain.length - b.domain.length);
       }
 
@@ -496,16 +586,36 @@ export function solveMrvGroup(
         dmaData
       );
 
+      let comboNewCount = 0;
       for (const g of comboGroups) {
         if (discoveredGroups.length >= config.maxGroups) break;
         const fp = groupFingerprint(g.assignments);
         if (!groupFingerprints.has(fp)) {
           groupFingerprints.add(fp);
           discoveredGroups.push(g);
+          comboNewCount++;
         }
+      }
+      // D2: Track per-combo discovery count
+      groupsPerCombo.set(comboIdx, (groupsPerCombo.get(comboIdx) ?? 0) + comboNewCount);
+    }
+
+    // D4: Update instance coverage from newly discovered groups
+    const newGroupCount = discoveredGroups.length - groupsBefore;
+    for (let gi = groupsBefore; gi < discoveredGroups.length; gi++) {
+      for (const [vk, inst] of discoveredGroups[gi].assignments) {
+        if (!instanceCoverage.has(vk)) instanceCoverage.set(vk, new Set());
+        instanceCoverage.get(vk)!.add(inst);
       }
     }
 
+    // Adaptive termination: stop after consecutive stale rounds
+    if (newGroupCount === 0) {
+      staleRounds++;
+      if (staleRounds >= STALE_ROUNDS_LIMIT) break;
+    } else {
+      staleRounds = 0;
+    }
     if (round === 0 && discoveredGroups.length >= config.maxGroups) break;
   }
 
@@ -528,16 +638,10 @@ export function solveMrvGroup(
     }
   }
 
-  // Interleave permuted groups (diverse instance assignments) with
-  // discovered groups so Phase 2 processes diverse groups early,
-  // before the timeout expires on shallow Phase 1 variations.
-  const allGroups: InstanceGroup[] = [];
-  const dLen = discoveredGroups.length, pLen = permutedGroups.length;
-  const maxIdx = Math.max(dLen, pLen);
-  for (let i = 0; i < maxIdx; i++) {
-    if (i < pLen) allGroups.push(permutedGroups[i]);
-    if (i < dLen) allGroups.push(discoveredGroups[i]);
-  }
+  // Order all groups (discovered + permuted) by diversity using farthest-point sampling
+  // This ensures Phase 2 processes maximally diverse groups first, before timeout
+  const combinedGroups = [...discoveredGroups, ...permutedGroups];
+  const allGroups = orderByDiversity(combinedGroups);
 
   if (allGroups.length === 0) {
     errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
