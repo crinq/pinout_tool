@@ -37,10 +37,10 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   maxSolutions: 5000,
   solverTimeoutMs: 2500,
-  solverTypes: ['two-phase'],
-  maxGroups: 100,
-  maxSolutionsPerGroup: 25,
-  numRestarts: 25,
+  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid'],
+  maxGroups: 500,
+  maxSolutionsPerGroup: 100,
+  numRestarts: 150,
   costWeights: {
     pin_count: 1,
     port_spread: 0.2,
@@ -52,7 +52,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   minZoom: 0.5,
   maxZoom: 2,
   mouseZoomGain: 0.025,
-  skipGpioMapping: false,
+  skipGpioMapping: true,
   dataInspector: false,
   solverDebugOverlay: false,
   urlEncoding: 'full',
@@ -288,7 +288,7 @@ export class App {
         workerJobs.push({ types: [st], useShared: false });
       }
     } else {
-      // Not enough to share — run all individually
+      // Not enough to share - run all individually
       for (const st of solverTypes) {
         workerJobs.push({ types: [st], useShared: false });
       }
@@ -841,7 +841,7 @@ export class App {
     try {
       localStorage.setItem(`project:${name}`, json);
     } catch {
-      // Quota exceeded — try trimming old versions (keep latest 2)
+      // Quota exceeded - try trimming old versions (keep latest 2)
       if (projectData.versions.length > 2) {
         projectData.versions = projectData.versions.slice(-2);
         projectData.versions.forEach((v, i) => v.id = i);
@@ -855,18 +855,18 @@ export class App {
         } catch { /* still too large */ }
       }
 
-      // Still too large — save without solutions
+      // Still too large - save without solutions
       const liteVersion: ProjectVersion = { ...version, solutions: [] };
       const liteData: ProjectData = { name, versions: [liteVersion] };
       try {
         localStorage.setItem(`project:${name}`, JSON.stringify(liteData));
-        this.showStatus(`Storage full — saved without solutions (${(json.length / 1024).toFixed(0)}KB needed)`, 'error');
+        this.showStatus(`Storage full - saved without solutions (${(json.length / 1024).toFixed(0)}KB needed)`, 'error');
         this.currentProjectName = name;
         localStorage.setItem('current-project', name);
         this.refreshProjectList();
         return;
       } catch {
-        this.showStatus(`Storage full — cannot save (${(json.length / 1024).toFixed(0)}KB needed). Free space in Data Manager.`, 'error');
+        this.showStatus(`Storage full - cannot save (${(json.length / 1024).toFixed(0)}KB needed). Free space in Data Manager.`, 'error');
         return;
       }
     }
@@ -1004,7 +1004,7 @@ export class App {
 
   private getPortColors(): Map<string, string> {
     const colors = new Map<string, string>();
-    // Always parse current text — the cached parseResult may be stale
+    // Always parse current text - the cached parseResult may be stale
     // (e.g. during project load before the debounced parse fires)
     const ast = parseConstraints(this.constraintEditor.getText()).ast;
     if (ast) {
@@ -1634,7 +1634,7 @@ export class App {
         const format = sol.assignments ? 'compact' : 'legacy';
 
         rows.push(`<div class="dm-inspect-row dm-inspect-sub">
-          <span class="dm-inspect-key">solution #${sol.id}${sol.name ? ` — ${sol.name}` : ''}</span>
+          <span class="dm-inspect-key">solution #${sol.id}${sol.name ? ` - ${sol.name}` : ''}</span>
           <span class="dm-inspect-size">${fmtKB(solSize)}</span>
           <span class="dm-inspect-bar-cell">${pct(solSize, totalSize)}</span>
         </div>`);

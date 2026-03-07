@@ -257,7 +257,7 @@ export function parseMcuXml(xmlString: string): Mcu {
       }
     }
 
-    // _C pins don't get GPIO association — they share the pad with the base pin
+    // _C pins don't get GPIO association - they share the pad with the base pin
     const gpio = isCPin ? null : parseGpioName(name);
 
     // Add synthetic GPIO signal (e.g., PA3 → GPIO1_3)

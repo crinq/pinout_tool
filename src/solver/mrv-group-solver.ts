@@ -28,10 +28,13 @@ import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1,
   groupFingerprint, varKey,
-  type InstanceGroup, type InstanceTracker, type InstanceVariable,
+  type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
 import { computePortPriority, sortByPortPriority, type PriorityFn } from './port-priority';
 import { solveBacktrackDynamic } from './dynamic-mrv-solver';
+import { mulberry32, shuffleArray, diversifyDomain } from './solver-utils';
+import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
+import { generatePermutedGroups } from './group-permutation';
 
 // ============================================================
 // Config
@@ -41,248 +44,6 @@ const MAX_DIVERSITY_ROUNDS = 20;
 const STALE_ROUNDS_LIMIT = 3;
 const MAX_PERMUTED_GROUPS = 200;
 const MAX_PERMS_PER_GROUP = 50;
-
-// ============================================================
-// PRNG utilities (same as priority-group-solver)
-// ============================================================
-
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = seed + 0x6D2B79F5 | 0;
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-function shuffleArray<T>(arr: T[], rng: () => number): T[] {
-  const result = [...arr];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-
-// ============================================================
-// Permutation generation (same as priority-group-solver)
-// ============================================================
-
-interface SubGroup {
-  varKeys: string[];
-  originalInstance: string;
-}
-
-interface Cluster {
-  peripheralType: string;
-  subGroups: SubGroup[];
-  instances: string[];
-}
-
-function allPermutations<T>(items: T[]): T[][] {
-  const result: T[][] = [];
-  const arr = [...items];
-  const n = arr.length;
-  const c = new Array(n).fill(0);
-  result.push([...arr]);
-  let i = 0;
-  while (i < n) {
-    if (c[i] < i) {
-      if (i % 2 === 0) [arr[0], arr[i]] = [arr[i], arr[0]];
-      else [arr[c[i]], arr[i]] = [arr[i], arr[c[i]]];
-      result.push([...arr]);
-      c[i]++;
-      i = 0;
-    } else {
-      c[i] = 0;
-      i++;
-    }
-  }
-  return result;
-}
-
-function samplePermutations<T>(items: T[], count: number, rng: () => number): T[][] {
-  const results: T[][] = [];
-  const seen = new Set<string>();
-  for (let attempt = 0; attempt < count * 5 && results.length < count; attempt++) {
-    const perm = shuffleArray(items, rng);
-    const key = perm.map(String).join(',');
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push(perm);
-    }
-  }
-  return results;
-}
-
-function factorial(n: number): number {
-  let r = 1;
-  for (let i = 2; i <= n; i++) {
-    r *= i;
-    if (r > 1e8) return Infinity;
-  }
-  return r;
-}
-
-function generatePermutedGroups(
-  sourceGroup: InstanceGroup,
-  allInstanceVars: InstanceVariable[],
-  fingerprints: Set<string>,
-  maxPerGroup: number,
-  rng: () => number,
-): InstanceGroup[] {
-  const varLookup = new Map<string, InstanceVariable>();
-  for (const iv of allInstanceVars) {
-    varLookup.set(varKey(iv), iv);
-  }
-
-  const instanceType = new Map<string, string>();
-  for (const [vk, inst] of sourceGroup.assignments) {
-    const iv = varLookup.get(vk);
-    if (iv) {
-      const type = iv.candidateTypes.get(inst);
-      if (type) instanceType.set(inst, type);
-    }
-  }
-
-  const instanceVarKeys = new Map<string, string[]>();
-  for (const [vk, inst] of sourceGroup.assignments) {
-    if (!instanceVarKeys.has(inst)) instanceVarKeys.set(inst, []);
-    instanceVarKeys.get(inst)!.push(vk);
-  }
-
-  const typeInstances = new Map<string, string[]>();
-  for (const [inst, type] of instanceType) {
-    if (!typeInstances.has(type)) typeInstances.set(type, []);
-    typeInstances.get(type)!.push(inst);
-  }
-
-  const clusters: Cluster[] = [];
-  for (const [type, instances] of typeInstances) {
-    if (instances.length < 2) continue;
-    const subGroups = instances.map(inst => ({
-      varKeys: instanceVarKeys.get(inst) || [],
-      originalInstance: inst,
-    }));
-    clusters.push({ peripheralType: type, subGroups, instances });
-  }
-
-  if (clusters.length === 0) return [];
-
-  const clusterPerms: string[][][] = [];
-
-  for (const cluster of clusters) {
-    const n = cluster.instances.length;
-    const perms = factorial(n) <= maxPerGroup
-      ? allPermutations(cluster.instances)
-      : samplePermutations(cluster.instances, maxPerGroup, rng);
-
-    const validNonIdentity = perms.filter(perm => {
-      let isIdentity = true;
-      for (let i = 0; i < perm.length; i++) {
-        if (perm[i] !== cluster.instances[i]) {
-          isIdentity = false;
-          for (const vk of cluster.subGroups[i].varKeys) {
-            const iv = varLookup.get(vk);
-            if (!iv || !iv.instanceCandidates.includes(perm[i])) return false;
-          }
-        }
-      }
-      return !isIdentity;
-    });
-
-    if (validNonIdentity.length === 0) {
-      clusterPerms.push([cluster.instances]);
-    } else {
-      clusterPerms.push([cluster.instances, ...validNonIdentity]);
-    }
-  }
-
-  const newGroups: InstanceGroup[] = [];
-
-  const tryAddCombo = (combo: string[][]) => {
-    let allIdentity = true;
-    for (let c = 0; c < clusters.length; c++) {
-      if (combo[c] !== clusterPerms[c][0]) {
-        allIdentity = false;
-        break;
-      }
-    }
-    if (allIdentity) return;
-
-    const newAssignments = new Map(sourceGroup.assignments);
-    for (let c = 0; c < clusters.length; c++) {
-      const perm = combo[c];
-      for (let i = 0; i < clusters[c].subGroups.length; i++) {
-        for (const vk of clusters[c].subGroups[i].varKeys) {
-          newAssignments.set(vk, perm[i]);
-        }
-      }
-    }
-
-    const fp = groupFingerprint(newAssignments);
-    if (!fingerprints.has(fp)) {
-      fingerprints.add(fp);
-      newGroups.push({ assignments: newAssignments });
-    }
-  };
-
-  // Phase A: Stratified single-cluster permutations
-  // Each cluster gets a fair share of the budget for solo permutations
-  const perCluster = Math.max(1, Math.floor(maxPerGroup / (clusters.length + 1)));
-  for (let c = 0; c < clusters.length; c++) {
-    const nonIdentity = clusterPerms[c].slice(1);
-    const selected = nonIdentity.slice(0, perCluster);
-    for (const perm of selected) {
-      if (newGroups.length >= maxPerGroup) break;
-      const combo = clusterPerms.map((cp, i) => i === c ? perm : cp[0]);
-      tryAddCombo(combo);
-    }
-  }
-
-  // Phase B: Multi-cluster combos with remaining budget
-  const remaining = maxPerGroup - newGroups.length;
-  if (remaining > 0 && clusters.length > 1) {
-    const combos = cartesianProduct(clusterPerms, remaining, rng);
-    for (const combo of combos) {
-      if (newGroups.length >= maxPerGroup) break;
-      tryAddCombo(combo);
-    }
-  }
-
-  return newGroups;
-}
-
-function cartesianProduct<T>(arrays: T[][], maxResults: number, rng: () => number): T[][] {
-  const totalSize = arrays.reduce((acc, arr) => acc * arr.length, 1);
-
-  if (totalSize <= maxResults) {
-    let result: T[][] = [[]];
-    for (const arr of arrays) {
-      const next: T[][] = [];
-      for (const prev of result) {
-        for (const item of arr) {
-          next.push([...prev, item]);
-        }
-      }
-      result = next;
-    }
-    return result;
-  }
-
-  const results: T[][] = [];
-  const seen = new Set<string>();
-  for (let attempt = 0; attempt < maxResults * 5 && results.length < maxResults; attempt++) {
-    const combo = arrays.map(arr => arr[Math.floor(rng() * arr.length)]);
-    const key = combo.map((_, i) => arrays[i].indexOf(combo[i])).join(',');
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push(combo);
-    }
-  }
-  return results;
-}
 
 // ============================================================
 // Diversity-Aware Group Ordering (farthest-point sampling)
@@ -342,6 +103,8 @@ function solvePhase2MRV(
   timeoutMs: number,
   stats: SolverStats,
   dmaData?: DmaData,
+  shuffleSeed?: number,
+  pinUsageCount?: Map<string, number>,
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
   const filteredVars: SolverVariable[] = allVariables.map(sv => {
@@ -363,6 +126,23 @@ function solvePhase2MRV(
   // that belongs to at least one active config
   const emptyVar = filteredVars.find(v => v.domain.length === 0);
   if (emptyVar) return [];
+
+  // D6: Randomized candidate ordering within each variable's domain
+  if (shuffleSeed && shuffleSeed > 0) {
+    const rng = mulberry32(shuffleSeed);
+    for (const v of filteredVars) {
+      v.domain = shuffleArray(v.domain, rng);
+    }
+  }
+
+  // D9: Anti-correlated pin sampling — prefer less-used pins
+  if (pinUsageCount && pinUsageCount.size > 0) {
+    for (const v of filteredVars) {
+      v.domain.sort((a, b) =>
+        (pinUsageCount.get(v.candidates[a].pin.name) ?? 0) -
+        (pinUsageCount.get(v.candidates[b].pin.name) ?? 0));
+    }
+  }
 
   const n = filteredVars.length;
 
@@ -511,7 +291,7 @@ export function solveMrvGroup(
   const discoveredGroups: InstanceGroup[] = [];
   const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
 
-  // D4: Instance coverage tracking — which instances have been seen per variable
+  // D4: Instance coverage tracking - which instances have been seen per variable
   const instanceCoverage = new Map<string, Set<string>>();
   // D2: Track groups discovered per combo index for fair scheduling
   const groupsPerCombo = new Map<number, number>();
@@ -544,20 +324,19 @@ export function solveMrvGroup(
       if (round === 0) {
         sortByPortPriority(activeVars, portPriority);
       } else {
-        const rng = mulberry32(round * 54321 + comboIdx * 11);
-        // D4: Bias domain ordering to prefer uncovered instances
+        // Deterministic domain diversification
         activeVars = activeVars.map(iv => {
-          const shuffled = shuffleArray([...iv.domain], rng);
+          const diversified = diversifyDomain(iv.domain, round, round * 54321 + comboIdx * 11);
+          // D4: Coverage bias only after deterministic rounds exhausted
           const coverage = instanceCoverage.get(varKey(iv));
-          if (coverage && coverage.size > 0) {
-            // Sort: uncovered instances first, then covered, preserving shuffle within each group
-            shuffled.sort((a, b) => {
+          if (coverage && coverage.size > 0 && round > iv.domain.length + 1) {
+            diversified.sort((a, b) => {
               const covA = coverage.has(iv.instanceCandidates[a]) ? 1 : 0;
               const covB = coverage.has(iv.instanceCandidates[b]) ? 1 : 0;
               return covA - covB;
             });
           }
-          return { ...iv, domain: shuffled };
+          return { ...iv, domain: diversified };
         });
         activeVars.sort((a, b) => a.domain.length - b.domain.length);
       }
@@ -619,31 +398,7 @@ export function solveMrvGroup(
     if (round === 0 && discoveredGroups.length >= config.maxGroups) break;
   }
 
-  // ========== Phase 1.5: Instance Permutation ==========
-  const permutedGroups: InstanceGroup[] = [];
-  const permRng = mulberry32(42);
-
-  for (const group of discoveredGroups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-    if (permutedGroups.length >= MAX_PERMUTED_GROUPS) break;
-
-    const newGroups = generatePermutedGroups(
-      group, allInstanceVars, groupFingerprints,
-      MAX_PERMS_PER_GROUP, permRng
-    );
-
-    for (const g of newGroups) {
-      if (permutedGroups.length >= MAX_PERMUTED_GROUPS) break;
-      permutedGroups.push(g);
-    }
-  }
-
-  // Order all groups (discovered + permuted) by diversity using farthest-point sampling
-  // This ensures Phase 2 processes maximally diverse groups first, before timeout
-  const combinedGroups = [...discoveredGroups, ...permutedGroups];
-  const allGroups = orderByDiversity(combinedGroups);
-
-  if (allGroups.length === 0) {
+  if (discoveredGroups.length === 0) {
     errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
     return {
       mcuRef: mcu.refName, solutions: [], errors,
@@ -651,7 +406,7 @@ export function solveMrvGroup(
     };
   }
 
-  // ========== Phase 2: Dynamic MRV Pin Assignment ==========
+  // ========== Phase 2a: MRV Pin Assignment on Discovered Groups ==========
   const stats: SolverStats = {
     totalCombinations: configCombinations.length,
     evaluatedCombinations: 0,
@@ -661,20 +416,68 @@ export function solveMrvGroup(
   };
 
   const solutions: Solution[] = [];
-
-  for (const group of allGroups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-
-    const groupSolutions = solvePhase2MRV(
+  const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
+    solvePhase2MRV(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      dmaData,
+      maxSol, startTime, config.timeoutMs, stats,
+      dmaData, seed, pinUsage
     );
-    solutions.push(...groupSolutions);
+
+  const orderedDiscovered = orderByDiversity(discoveredGroups);
+  // Track per-group feasibility for D10 feedback
+  const discoveredSolutionCount = new Map<InstanceGroup, number>();
+  {
+    const discoveredSolutions = runPhase2Diverse(orderedDiscovered, (group, maxSol, seed, pinUsage) => {
+      const sols = solveGroup(group, maxSol, seed, pinUsage);
+      discoveredSolutionCount.set(group, (discoveredSolutionCount.get(group) ?? 0) + sols.length);
+      return sols;
+    }, {
+      maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+      solutionsPerRound,
+      timeoutMs: config.timeoutMs,
+      startTime,
+    });
+    solutions.push(...discoveredSolutions);
   }
 
-  if (solutions.length === 0 && allGroups.length > 0) {
+  // ========== Phase 1.5: Instance Permutation (D10: skip failed groups) ==========
+  const permutedGroups: InstanceGroup[] = [];
+  if (performance.now() - startTime < config.timeoutMs) {
+    const permRng = mulberry32(42);
+
+    for (const group of discoveredGroups) {
+      if (performance.now() - startTime > config.timeoutMs) break;
+      if (permutedGroups.length >= MAX_PERMUTED_GROUPS) break;
+
+      // D10: Skip permutations of groups that produced 0 Phase 2 solutions
+      if ((discoveredSolutionCount.get(group) ?? 0) === 0) continue;
+
+      const newGroups = generatePermutedGroups(
+        group, allInstanceVars, groupFingerprints,
+        MAX_PERMS_PER_GROUP, permRng
+      );
+
+      for (const g of newGroups) {
+        if (permutedGroups.length >= MAX_PERMUTED_GROUPS) break;
+        permutedGroups.push(g);
+      }
+    }
+
+    // ========== Phase 2b: MRV Pin Assignment on Permuted Groups ==========
+    if (permutedGroups.length > 0) {
+      const orderedPermuted = orderByDiversity(permutedGroups);
+      solutions.push(...runPhase2Diverse(orderedPermuted, solveGroup, {
+        maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+        solutionsPerRound,
+        timeoutMs: config.timeoutMs,
+        startTime,
+      }));
+    }
+  }
+
+  if (solutions.length === 0 && discoveredGroups.length > 0) {
     errors.push({
       type: 'warning',
       message: `Phase 1 found ${discoveredGroups.length} groups (+${permutedGroups.length} permuted) but Phase 2 found no valid pin assignments`,

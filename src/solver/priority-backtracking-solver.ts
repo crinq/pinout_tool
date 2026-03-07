@@ -87,7 +87,7 @@ export function solvePriorityBacktracking(
     if (failingVar) {
       errors.push({
         type: 'error',
-        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") — ${failingVar.candidates.length} candidates all conflict`,
+        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
         source: `${failingVar.portName}.${failingVar.channelName}`,
         partialSolution: partialAssignments,
       });

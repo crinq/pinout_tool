@@ -18,6 +18,7 @@ const SOLVER_TIERS: Record<string, 'simple' | 'two-phase' | 'group'> = {
   'priority-group': 'group',
   'mrv-group': 'group',
   'ratio-mrv-group': 'group',
+  'hybrid': 'group',
 };
 
 export function getSolverResourceMultiplier(
@@ -96,7 +97,7 @@ registerSolver({
 registerSolver({
   id: 'ac3',
   name: 'AC-3 Forward Checking',
-  description: 'Backtracking with forward checking — propagates pin/instance exclusivity to prune domains',
+  description: 'Backtracking with forward checking - propagates pin/instance exclusivity to prune domains',
 });
 
 registerSolver({
@@ -139,4 +140,10 @@ registerSolver({
   id: 'ratio-mrv-group',
   name: 'Ratio MRV Group',
   description: 'MRV Group with normalized priority (candidates per signal ratio instead of raw pin count)',
+});
+
+registerSolver({
+  id: 'hybrid',
+  name: 'Hybrid (Single-Phase + Two-Phase)',
+  description: 'Runs priority-backtracking, extracts instance groups from solutions, permutes symmetric ports, then runs Phase 2',
 });

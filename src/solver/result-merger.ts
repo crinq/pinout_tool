@@ -19,7 +19,7 @@ export function mergeResults(
     };
   }
 
-  // Single result — fast path (just tag origins)
+  // Single result - fast path (just tag origins)
   if (labeled.length === 1) {
     const { solverId, result } = labeled[0];
     for (const sol of result.solutions) {

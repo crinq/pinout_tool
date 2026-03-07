@@ -256,7 +256,7 @@ export const TYPE_ALIASES: Record<string, string> = {
 export function normalizePeripheralType(type: string): string {
   // Try exact match first (handles "TIM1_8" → "TIM", "UART" → "USART", etc.)
   if (TYPE_ALIASES[type] !== undefined) return TYPE_ALIASES[type];
-  // Handle compound types like "USART_RX", "SPI_TX" — extract base type before underscore
+  // Handle compound types like "USART_RX", "SPI_TX" - extract base type before underscore
   if (type.includes('_')) {
     const base = type.substring(0, type.indexOf('_'));
     return TYPE_ALIASES[base] ?? base;

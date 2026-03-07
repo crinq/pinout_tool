@@ -523,7 +523,7 @@ export class PackageViewer implements Panel {
           const signals = [...new Set(nonPinned.map(a => a.signalName))];
           label = `${gpio} ${portChannel} ${signals.join(' ')}`;
         } else {
-          // Pinned assignments — show all unique signal names
+          // Pinned assignments - show all unique signal names
           const signals = [...new Set(pinAssignments.map(a => a.signalName))];
           label = `${gpio} ${signals.join(' ')}`;
         }

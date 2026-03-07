@@ -780,7 +780,7 @@ function validateExpr(
       break;
 
     case 'dot_access':
-      // Cross-port reference — we'd need the other port's channels to validate
+      // Cross-port reference - we'd need the other port's channels to validate
       break;
 
     case 'string_literal':
@@ -1057,7 +1057,7 @@ export function solveConstraints(
     if (failingVar) {
       errors.push({
         type: 'error',
-        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") — ${failingVar.candidates.length} candidates all conflict`,
+        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
         source: `${failingVar.portName}.${failingVar.channelName}`,
         partialSolution: partialAssignments,
       });
@@ -1134,7 +1134,7 @@ export function solveBacktrack(
       deepest.assignments = [...current];
     }
 
-    // All variables assigned — evaluate constraints
+    // All variables assigned - evaluate constraints
     if (vi === totalVars) {
       stats.evaluatedCombinations++;
       const dmaAssignmentsOut: Map<string, string>[] = [];
@@ -1277,14 +1277,14 @@ export function solveBacktrack(
         break;
       }
 
-      // Pruned — undo and try next candidate
+      // Pruned - undo and try next candidate
       current.pop();
       if (costTracker) decrementCost(costTracker, candidate);
       unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
     }
 
     if (!found) {
-      // No more candidates — backtrack: pop this frame
+      // No more candidates - backtrack: pop this frame
       stackVarIdx.length = sp;
       stackDomPos.length = sp;
       stackAssigned.length = sp;
@@ -1772,10 +1772,10 @@ function assignDmaStreams(
   for (const stream of req.availableStreams) {
     const claimedBy = usedStreams.get(stream.name);
     if (claimedBy !== undefined) {
-      // Stream already claimed — check if it's the same port but different channel
+      // Stream already claimed - check if it's the same port but different channel
       const claimedPort = claimedBy.split('\0')[0];
       if (claimedPort !== req.portName) continue; // cross-port conflict
-      // Same port, different channel in same config — conflict
+      // Same port, different channel in same config - conflict
       continue;
     }
 

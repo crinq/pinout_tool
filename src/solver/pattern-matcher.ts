@@ -64,7 +64,7 @@ function matchPart(
       return true;
 
     case 'wildcard': {
-      // prefix* — match if the value starts with the prefix (after type normalization)
+      // prefix* - match if the value starts with the prefix (after type normalization)
       // For instance part: USART* should match USART1, UART4 (via normalization), etc.
       // For function part: CH* should match CH1, CH2, etc.
       const prefix = part.prefix;
@@ -84,7 +84,7 @@ function matchPart(
     }
 
     case 'range': {
-      // prefix[values] — match if the type matches and number is in values
+      // prefix[values] - match if the type matches and number is in values
       // Must be an exact match: CH[1,2] matches CH1 but NOT CH1N
       const prefix = part.prefix;
       // Direct match: type matches prefix and number is in range

@@ -109,11 +109,11 @@ function checkSolutionInvariants(
   const errors: string[] = [];
 
   for (const ca of solution.configAssignments) {
-    // Track signal -> (port, channel) ownership — peripheral signals are exclusive per config
+    // Track signal -> (port, channel) ownership - peripheral signals are exclusive per config
     const signalOwner = new Map<string, { port: string; channel: string; pin: string }>();
     // Track instance -> port ownership
     const instanceOwner = new Map<string, string>();
-    // Track pin -> (port, channel) ownership — a pin belongs to one channel
+    // Track pin -> (port, channel) ownership - a pin belongs to one channel
     const pinOwner = new Map<string, { port: string; channel: string }>();
     // Track DMA stream -> port ownership
     const dmaStreamOwner = new Map<string, string>();
@@ -603,7 +603,7 @@ describe('Solver integration tests', () => {
               if (!parseResult.ast) return;
               const mcu = getMcu(tc.mcuFile);
               const result = getResult(solver, parseResult.ast, mcu, cacheKey);
-              // If solver timed out, result is inconclusive — skip
+              // If solver timed out, result is inconclusive - skip
               const timedOut = result.errors.some(e => e.message.includes('timeout'));
               if (timedOut && result.solutions.length === 0) return;
               const solverErrors = result.errors.filter(e => e.type === 'error');

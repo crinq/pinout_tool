@@ -22,6 +22,7 @@ import { solvePriorityDiverse } from '../src/solver/priority-diverse-solver';
 import { solvePriorityGroup } from '../src/solver/priority-group-solver';
 import { solveMrvGroup } from '../src/solver/mrv-group-solver';
 import { solveRatioMrvGroup } from '../src/solver/ratio-mrv-group-solver';
+import { solveHybrid } from '../src/solver/hybrid-solver';
 import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import type { SolverResult } from '../src/types';
@@ -133,11 +134,14 @@ process.on('message', (input: WorkerInput) => {
       case 'ratio-mrv-group':
         result = solveRatioMrvGroup(ast, mcu, twoPhaseConfig);
         break;
+      case 'hybrid':
+        result = solveHybrid(ast, mcu, twoPhaseConfig);
+        break;
       default:
         result = solveConstraints(ast, mcu, basicConfig);
     }
 
-    // Serialize — Maps aren't transferable over IPC
+    // Serialize - Maps aren't transferable over IPC
     const serializable = {
       solutions: result.solutions.map(s => ({
         totalCost: s.totalCost,

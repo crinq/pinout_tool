@@ -9,11 +9,11 @@ import { tmpdir } from 'os';
 // ============================================================
 
 const MAX_SOLUTIONS = 5000;
-const TIMEOUT_MS = 5_000;
+const TIMEOUT_MS = 5000;
 
 const COST_WEIGHTS: [string, number][] = [
   ['pin_count', 1],
-  ['port_spread', 0.5],
+  ['port_spread', 0.2],
   ['peripheral_count', 0.5],
   ['debug_pin_penalty', 0],
   ['pin_clustering', 0.0],
@@ -22,7 +22,7 @@ const COST_WEIGHTS: [string, number][] = [
 
 const TWO_PHASE_CONFIG = {
   maxGroups: 500,
-  maxSolutionsPerGroup: 200,
+  maxSolutionsPerGroup: 100,
 };
 
 const NUM_RESTARTS = 150;
@@ -41,6 +41,7 @@ const SOLVER_IDS = [
   'priority-group',
   'mrv-group',
   'ratio-mrv-group',
+  'hybrid',
 ];
 
 // ============================================================
@@ -159,6 +160,7 @@ function runSolverInProcess(solverId: string, tc: TestCase): Promise<WorkerResul
       costWeights: COST_WEIGHTS,
       twoPhaseConfig: TWO_PHASE_CONFIG,
       numRestarts: NUM_RESTARTS,
+      skipGpioMapping: true,
     });
   });
 }
@@ -287,7 +289,7 @@ function generateReport(rows: BenchmarkRow[]): string {
 }
 
 // ============================================================
-// Benchmark test — all solvers in parallel per test case
+// Benchmark test - all solvers in parallel per test case
 // ============================================================
 
 describe('Solver benchmark', () => {

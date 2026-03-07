@@ -13,6 +13,7 @@ import { solvePriorityDiverse } from './priority-diverse-solver';
 import { solvePriorityGroup } from './priority-group-solver';
 import { solveMrvGroup } from './mrv-group-solver';
 import { solveRatioMrvGroup } from './ratio-mrv-group-solver';
+import { solveHybrid } from './hybrid-solver';
 import { getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { computePortPriority } from './port-priority';
@@ -125,6 +126,7 @@ function runSingleSolver(
     case 'priority-group': return solvePriorityGroup(ast, mcu, buildTP());
     case 'mrv-group': return solveMrvGroup(ast, mcu, buildTP());
     case 'ratio-mrv-group': return solveRatioMrvGroup(ast, mcu, buildTP());
+    case 'hybrid': return solveHybrid(ast, mcu, buildTP());
     default: return solveConstraints(ast, mcu, adjustedConfig);
   }
 }
@@ -134,7 +136,7 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
     const { ast, mcu, config, solverType, solverTypes, twoPhaseConfig, randomizedConfig } = e.data;
     const complexity = estimateComplexity(ast, mcu);
 
-    // A2: Multi-solver mode — shared Phase 1 for two-phase solvers
+    // A2: Multi-solver mode - shared Phase 1 for two-phase solvers
     if (solverTypes && solverTypes.length > 0) {
       const sharedTypes = solverTypes.filter(s => SHARED_PHASE1_SOLVERS.has(s));
       const otherTypes = solverTypes.filter(s => !SHARED_PHASE1_SOLVERS.has(s));
@@ -163,7 +165,7 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
             labeled.push({ solverId: st, result });
           }
         } else {
-          // Phase 1 failed — report error for each solver
+          // Phase 1 failed - report error for each solver
           const emptyResult: SolverResult = {
             mcuRef: mcu.refName, solutions: [],
             errors: phase1?.errors ?? [{ type: 'error', message: 'Phase 1: No valid assignments' }],

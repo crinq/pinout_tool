@@ -111,7 +111,7 @@ export function solveAC3(
 /**
  * Check if any port has ALL its configs blocked (every config has at least
  * one unassigned variable with an empty domain). If so, no valid config
- * combination exists for that port — a true dead end.
+ * combination exists for that port - a true dead end.
  *
  * A config is viable if:
  * - All its variables are already assigned (fully resolved), OR
@@ -328,7 +328,7 @@ function solveBacktrackAC3(
       );
 
       if (removed !== null) {
-        // No domain wipeout — recurse
+        // No domain wipeout - recurse
         solveBacktrackAC3(
           variables, varIndex + 1, tracker, current,
           configCombinations, ports, pinnedAssignments,

@@ -10,7 +10,7 @@ interface SolutionGroup {
   solutions: Solution[];
 }
 
-/** A visible row — either a group header or a solution row */
+/** A visible row - either a group header or a solution row */
 type FlatItem =
   | { type: 'group'; group: SolutionGroup; groupNum: number }
   | { type: 'solution'; solution: Solution; group: SolutionGroup };

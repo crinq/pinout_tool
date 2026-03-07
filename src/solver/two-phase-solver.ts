@@ -2,7 +2,7 @@
 // Two-Phase Solver
 //
 // Phase 1: For each config combination, assign peripheral instances
-//          to ports (lightweight CSP, no pin checking — only instance
+//          to ports (lightweight CSP, no pin checking - only instance
 //          exclusivity and require constraints).
 // Phase 2: For each instance group, filter variable domains to
 //          matching instances and run pin-level backtracking.
@@ -30,6 +30,8 @@ import {
   partitionGpioVariables, validateGpioAvailability, isGpioVariable,
   configsHaveDma, buildPropagationContext,
 } from './solver';
+import { mulberry32, shuffleArray } from './solver-utils';
+import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
 // ============================================================
 // Two-Phase Config
@@ -274,17 +276,20 @@ export function solveTwoPhase(
   };
 
   const domainCache = new Map<string, number[]>();
-  for (const group of groups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-
-    const groupSolutions = solvePhase2ForGroup(
+  const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
+    solvePhase2ForGroup(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, costWeights
+      maxSol, startTime, config.timeoutMs, stats,
+      phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage
     );
-    solutions.push(...groupSolutions);
-  }
+  solutions.push(...runPhase2Diverse(groups, solveGroup, {
+    maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+    solutionsPerRound,
+    timeoutMs: config.timeoutMs,
+    startTime,
+  }));
 
   if (solutions.length === 0 && groups.length > 0) {
     errors.push({
@@ -387,7 +392,7 @@ export function solvePhase1(
   if (groups.length >= maxGroups) return;
 
   if (varIndex === variables.length) {
-    // All instance variables assigned — build group
+    // All instance variables assigned - build group
     const assignments = new Map<string, string>();
     for (const ia of current) {
       assignments.set(varKey(ia.variable), ia.instance);
@@ -613,7 +618,7 @@ function evaluateFunctionCallPhase1(
             // Check instance-level DMA (ADC, DAC, etc.)
             const instStreams = dmaData.instanceToDmaStreams.get(inst);
             if (instStreams && instStreams.length > 0) return true;
-            // Check signal-level DMA (USART, SPI, etc.) — any signal from this instance
+            // Check signal-level DMA (USART, SPI, etc.) - any signal from this instance
             for (const [sigName, streams] of dmaData.signalToDmaStreams) {
               if (sigName.startsWith(inst + '_') && streams.length > 0) return true;
             }
@@ -649,7 +654,9 @@ export function solvePhase2ForGroup(
   dmaData?: DmaData,
   domainCache?: Map<string, number[]>,
   mcu?: Mcu,
-  costWeights?: Map<string, number>
+  costWeights?: Map<string, number>,
+  shuffleSeed?: number,
+  pinUsageCount?: Map<string, number>
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
   // S5: Use domain cache when available to avoid redundant filtering
@@ -689,6 +696,23 @@ export function solvePhase2ForGroup(
     sortVariables(filteredVars);
   } else {
     filteredVars.sort((a, b) => a.domain.length - b.domain.length);
+  }
+
+  // D6: Randomized candidate ordering within each variable's domain
+  if (shuffleSeed && shuffleSeed > 0) {
+    const rng = mulberry32(shuffleSeed);
+    for (const v of filteredVars) {
+      v.domain = shuffleArray(v.domain, rng);
+    }
+  }
+
+  // D9: Anti-correlated pin sampling — prefer less-used pins
+  if (pinUsageCount && pinUsageCount.size > 0) {
+    for (const v of filteredVars) {
+      v.domain.sort((a, b) =>
+        (pinUsageCount.get(v.candidates[a].pin.name) ?? 0) -
+        (pinUsageCount.get(v.candidates[b].pin.name) ?? 0));
+    }
   }
 
   // Build eager-check structures
@@ -956,20 +980,21 @@ export function runPhase2Only(
     configCombinations: phase1.configCombinations.length,
   };
 
-  const solutions: Solution[] = [];
   const domainCache = new Map<string, number[]>();
-
-  for (const group of phase1.groups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-
-    const groupSolutions = solvePhase2ForGroup(
+  const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
+    solvePhase2ForGroup(
       group, phase1.solveVars, phase1.ports, phase1.reservedPins,
       phase1.pinnedAssignments, phase1.sharedPatterns, phase1.configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      sortVariables, phase1.dmaData, domainCache, mcu, config.costWeights
+      maxSol, startTime, config.timeoutMs, stats,
+      sortVariables, phase1.dmaData, domainCache, mcu, config.costWeights, seed, pinUsage
     );
-    solutions.push(...groupSolutions);
-  }
+  const solutions = runPhase2Diverse(phase1.groups, solveGroup, {
+    maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+    solutionsPerRound,
+    timeoutMs: config.timeoutMs,
+    startTime,
+  });
 
   if (solutions.length === 0 && phase1.groups.length > 0) {
     errors.push({ type: 'warning', message: `Phase 1 found ${phase1.groups.length} instance groups but Phase 2 found no valid pin assignments` });

@@ -247,7 +247,7 @@ export function solveBacktrackDynamic(
   if (solutions.length >= maxSolutions) return;
 
   if (depth === totalVars) {
-    // All variables assigned — check all config combinations
+    // All variables assigned - check all config combinations
     stats.evaluatedCombinations++;
     const dmaOut1: Map<string, string>[] = [];
     if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1)) {
@@ -264,7 +264,7 @@ export function solveBacktrackDynamic(
   }
 
   // Dynamic MRV: pick unassigned variable with smallest non-empty domain
-  // Variables with empty domains are for inactive configs — skip them
+  // Variables with empty domains are for inactive configs - skip them
   let bestVar = -1;
   let bestSize = Infinity;
   let unassignedCount = 0;
@@ -279,10 +279,10 @@ export function solveBacktrackDynamic(
 
   if (bestVar === -1) {
     if (unassignedCount === 0) {
-      // All assigned — this shouldn't happen (depth check above catches it)
+      // All assigned - this shouldn't happen (depth check above catches it)
       return;
     }
-    // All unassigned variables have empty domains — check if it's a real wipeout
+    // All unassigned variables have empty domains - check if it's a real wipeout
     // or if they're all for inactive configs. Either way, we can't proceed with
     // normal assignment. Try to complete the solution with remaining vars "skipped".
     // Mark all empty-domain vars as assigned and try to evaluate.

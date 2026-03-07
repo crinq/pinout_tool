@@ -26,6 +26,7 @@ import {
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
 import { computePortPriority, sortByPortPriority } from './port-priority';
+import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
 export function solvePriorityTwoPhase(
   ast: ProgramNode,
@@ -206,17 +207,20 @@ export function solvePriorityTwoPhase(
   };
 
   const domainCache = new Map<string, number[]>();
-  for (const group of groups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-
-    const groupSolutions = solvePhase2ForGroup(
+  const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
+    solvePhase2ForGroup(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, config.costWeights
+      maxSol, startTime, config.timeoutMs, stats,
+      phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage
     );
-    solutions.push(...groupSolutions);
-  }
+  solutions.push(...runPhase2Diverse(groups, solveGroup, {
+    maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+    solutionsPerRound,
+    timeoutMs: config.timeoutMs,
+    startTime,
+  }));
 
   if (solutions.length === 0 && groups.length > 0) {
     errors.push({

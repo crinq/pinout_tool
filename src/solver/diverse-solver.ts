@@ -25,28 +25,10 @@ import {
   groupFingerprint, sortInstanceDomainsByCost,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
+import { diversifyDomain } from './solver-utils';
+import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
 const MAX_DIVERSITY_ROUNDS = 25;
-
-// Mulberry32 seeded PRNG
-function mulberry32(seed: number): () => number {
-  return () => {
-    seed |= 0;
-    seed = seed + 0x6D2B79F5 | 0;
-    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
-function shuffleArray<T>(arr: T[], rng: () => number): T[] {
-  const result = [...arr];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
 
 export function solveDiverseInstances(
   ast: ProgramNode,
@@ -152,12 +134,12 @@ export function solveDiverseInstances(
 
       if (activeVars.length === 0) continue;
 
-      // For round > 0, shuffle each variable's instance domain
+      // For round > 0, diversify each variable's instance domain
       if (round > 0) {
-        const rng = mulberry32(round * 54321 + configCombinations.indexOf(combo) * 11);
+        const comboIdx = configCombinations.indexOf(combo);
         activeVars = activeVars.map(iv => ({
           ...iv,
-          domain: shuffleArray([...iv.domain], rng),
+          domain: diversifyDomain(iv.domain, round, round * 54321 + comboIdx * 11),
         }));
       }
 
@@ -240,17 +222,20 @@ export function solveDiverseInstances(
   };
 
   const domainCache = new Map<string, number[]>();
-  for (const group of groups) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-
-    const groupSolutions = solvePhase2ForGroup(
+  const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
+    solvePhase2ForGroup(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
-      config.maxSolutionsPerGroup, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, costWeights
+      maxSol, startTime, config.timeoutMs, stats,
+      phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage
     );
-    solutions.push(...groupSolutions);
-  }
+  solutions.push(...runPhase2Diverse(groups, solveGroup, {
+    maxSolutionsPerGroup: config.maxSolutionsPerGroup,
+    solutionsPerRound,
+    timeoutMs: config.timeoutMs,
+    startTime,
+  }));
 
   if (solutions.length === 0 && groups.length > 0) {
     errors.push({

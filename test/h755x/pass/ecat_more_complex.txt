@@ -32,12 +32,45 @@ port USB:
     DM = USB*_OTGFSDM
 
 port MEM:
+  channel RAM_A0
+  channel RAM_A1
+  channel RAM_A2
+  channel RAM_A3
+  channel RAM_A4
+  channel RAM_A5
+  channel RAM_A6
+  channel RAM_A7
+  channel RAM_A8
+  channel RAM_A9
+  channel RAM_A10
+  channel RAM_A11
+  channel RAM_A12
+  channel RAM_BA0
+  channel RAM_BA1
+  channel RAM_D0
+  channel RAM_D1
+  channel RAM_D2
+  channel RAM_D3
+  channel RAM_D4
+  channel RAM_D5
+  channel RAM_D6
+  channel RAM_D7
+  channel RAM_D8
+  channel RAM_D9
+  channel RAM_D10
+  channel RAM_D11
+  channel RAM_D12
+  channel RAM_D13
+  channel RAM_D14
+  channel RAM_D15
+  channel RAM_SDCKE0
+  channel RAM_SDCLK
+  channel RAM_SDNCAS
+  channel RAM_SDNE0
+  channel RAM_SDNRAS
+  channel RAM_SDNWE
+  
   channel ROM_CLK
-  #channel RAM_NCS
-  #channel RAM_IO0
-  #channel RAM_IO1
-  #channel RAM_IO2 @ PE2
-  #channel RAM_IO3 @ PA1
   channel ROM_NCS
   channel ROM_IO0
   channel ROM_IO1
@@ -45,6 +78,44 @@ port MEM:
   channel ROM_IO3
 
   config "MEM":
+    RAM_A0 = FMC_A0
+    RAM_A1 = FMC_A1
+    RAM_A2 = FMC_A2
+    RAM_A3 = FMC_A3
+    RAM_A4 = FMC_A4
+    RAM_A5 = FMC_A5
+    RAM_A6 = FMC_A6
+    RAM_A7 = FMC_A7
+    RAM_A8 = FMC_A8
+    RAM_A9 = FMC_A9
+    RAM_A10 = FMC_A10
+    RAM_A11 = FMC_A11
+    #RAM_A12 = FMC_A12
+    RAM_BA0 = FMC_BA0
+    RAM_BA1 = FMC_BA1
+    RAM_D0 = FMC_D0
+    RAM_D1 = FMC_D1
+    RAM_D2 = FMC_D2
+    RAM_D3 = FMC_D3
+    RAM_D4 = FMC_D4
+    RAM_D5 = FMC_D5
+    RAM_D6 = FMC_D6
+    RAM_D7 = FMC_D7
+    RAM_D8 = FMC_D8
+    RAM_D9 = FMC_D9
+    RAM_D10 = FMC_D10
+    RAM_D11 = FMC_D11
+    RAM_D12 = FMC_D12
+    RAM_D13 = FMC_D13   
+    RAM_D14 = FMC_D14
+    RAM_D15 = FMC_D15
+    RAM_SDCKE0 = FMC_SDCKE0
+    RAM_SDCLK = FMC_SDCLK
+    RAM_SDNCAS = FMC_SDNCAS
+    RAM_SDNE0 = FMC_SDNE0
+    RAM_SDNRAS = FMC_SDNRAS
+    RAM_SDNWE = FMC_SDNWE
+    
     #RAM_CLK = QUADSPI_CLK
     #RAM_NCS = QUADSPI_BK1NCS
     #RAM_IO0 = QUADSPI_BK1IO0
@@ -117,11 +188,11 @@ port ENC0:
     led_red = OUT
     require same_instance(miso, mosi, sck, cs, "SPI")
   
-  config "TIM":
-    miso = TIM[1,2,3,4,5,8]_CH[1,2]
-    mosi = TIM*_CH[3,4]
-    sck = TIM*_CH[1,2]
-    require same_instance(miso, mosi, sck, "TIM")
+  #config "TIM":
+  #  miso = TIM[1,2,3,4,5,8]_CH[1,2]
+  #  mosi = TIM*_CH[3,4]
+  #  sck = TIM*_CH[1,2]
+  #  require same_instance(miso, mosi, sck, "TIM")
     
   config "UART":
     miso = USART*_RX
@@ -152,11 +223,11 @@ port ENC1:
     led_red = OUT
     require same_instance(miso, mosi, sck, cs, "SPI")
   
-  config "TIM":
-    miso = TIM*_CH[1,2]
-    mosi = TIM*_CH[3,4]
-    sck = TIM*_CH[1,2]
-    require same_instance(miso, mosi, sck, "TIM")
+  #config "TIM":
+  #  miso = TIM*_CH[1,2]
+  #  mosi = TIM*_CH[3,4]
+  #  sck = TIM*_CH[1,2]
+  #  require same_instance(miso, mosi, sck, "TIM")
     
   config "UART":
     miso = USART*_RX
@@ -187,11 +258,11 @@ port ENC2:
     led_red = OUT
     require same_instance(miso, mosi, sck, cs, "SPI")
     
-  config "TIM":
-    miso = TIM*_CH[1,2]
-    mosi = TIM*_CH[3,4]
-    sck = TIM*_CH[1,2]
-    require same_instance(miso, mosi, sck, "TIM")
+  #config "TIM":
+  #  miso = TIM*_CH[1,2]
+  #  mosi = TIM*_CH[3,4]
+  #  sck = TIM*_CH[1,2]
+  #  require same_instance(miso, mosi, sck, "TIM")
     
   config "UART":
     miso = USART*_RX
@@ -223,6 +294,7 @@ port MOT:
   channel TMOT_B
   channel TMOT_C
   channel TFET
+  channel THEAT
   color "blue"
 
   config "MOT":
@@ -256,7 +328,8 @@ port MOT:
     TMOT_A = ADC1_INP[7-18]
     TMOT_B = ADC2_INP[7-18]
     TMOT_C = ADC3_INP[7-18]
-    TFET = ADC3_INP[7-18]
+    TFET = ADC1_INP[7-18]
+    THEAT = ADC2_INP[7-18]
     
     STO0 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2
     STO1 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2
