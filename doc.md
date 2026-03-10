@@ -29,7 +29,7 @@
 
 The STM32 Pinout Tool is a browser-based application for finding optimal pin assignments on STM32 microcontrollers. You describe your hardware requirements using a constraint language -- which peripherals you need, how they relate to each other -- and the solver finds all valid assignments, ranked by cost.
 
-Seven solver algorithms are available (backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, and diverse instances). Multiple solvers can run in parallel using separate Web Workers, with results automatically merged, deduplicated, and ranked.
+14 solver algorithms are available, ranging from simple single-phase backtracking to advanced three-phase solvers with instance permutation and a hybrid solver that combines single-phase and two-phase strategies. Multiple solvers can run in parallel using separate Web Workers, with results automatically merged, deduplicated, and ranked.
 
 The tool works entirely in the browser. MCU data is loaded from STM32CubeMX XML files and stored in localStorage.
 
@@ -47,6 +47,16 @@ The tool needs MCU pin/peripheral data from STM32CubeMX XML files:
 4. Drag and drop the file onto the app, or use **Import XML**
 
 Imported MCUs are stored in localStorage and can be reloaded from the **Data** manager.
+
+### Loading DMA Data (optional)
+
+To enable DMA stream constraints, load the corresponding DMA modes XML file:
+
+1. In the CubeMX installation folder, navigate to `db/mcu/IP/`
+2. Find the DMA file matching your MCU family (e.g., `DMA-STM32F417_dma_v2_0_Modes.xml`)
+3. Drag and drop the DMA file onto the app (it will be auto-detected)
+
+The tool matches DMA files to MCUs automatically via the DMA IP version tag. Once loaded, a **DMA** tag appears in the Data manager next to the MCU. DMA data persists in localStorage alongside MCU data.
 
 ### First Constraint
 
@@ -268,8 +278,26 @@ port DEBUG:
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
 | `gpio_port(ch, "TYPE")` | 1 channel + type | string | GPIO port filtered by signal type |
 | `version(ch)` | 1 channel | string | Peripheral version string |
+| `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
+| `dma(ch, "TYPE")` | 1 channel + type | boolean | DMA check filtered by peripheral type |
 
 **GPIO port mapping:** A=GPIO1, B=GPIO2, C=GPIO3, D=GPIO4, etc.
+
+#### DMA constraints
+
+The `dma()` function checks that the signal assigned to a channel has a DMA stream available on the MCU. This requires loading both the MCU XML and its corresponding DMA modes XML file.
+
+```
+require dma(TX)                  # TX signal must have a DMA stream
+require dma(RX, "USART")        # RX must have DMA, only considering USART signals
+```
+
+**DMA stream exclusivity rules:**
+- A DMA stream is exclusive to one port (no two ports can share a stream)
+- Within a configuration, each channel requires its own DMA stream
+- Different configurations of the same port may reuse a stream (since configs are mutually exclusive)
+
+The solver automatically verifies that a consistent DMA stream assignment exists across all channels that require DMA.
 
 ### Macros
 
@@ -413,6 +441,23 @@ port STATUS color "#f59e0b":
     require gpio_port(LED_G) == gpio_port(LED_B)
 ```
 
+### UART with DMA
+
+A UART port requiring DMA support for both TX and RX. Requires the DMA modes XML to be loaded alongside the MCU XML.
+
+```
+port CMD color "#2563eb":
+  channel TX
+  channel RX
+
+  config "UART with DMA":
+    uart_port(TX, RX)
+    require dma(TX)
+    require dma(RX)
+```
+
+The solver will only select USART instances whose TX and RX signals have available DMA streams, and ensures the two channels get different DMA streams.
+
 ### Multiple UARTs on Different Instances
 
 ```
@@ -498,6 +543,13 @@ Each solver runs in a separate **Web Worker** to keep the UI responsive. Multipl
 | **Diverse Instances** | Two-phase solver with multi-round shuffled instance exploration for diverse peripheral groupings. |
 | **AC-3 Forward Checking** | Backtracking with forward checking -- propagates pin/instance exclusivity to prune domains early. |
 | **Dynamic MRV** | Dynamically picks the most constrained variable at each step with forward checking. |
+| **Priority Backtracking** | Backtracking that maps constrained peripherals first (fewer available pins = higher priority). |
+| **Priority Two-Phase** | Two-phase solver that maps constrained peripherals first in both phases. |
+| **Priority Diverse** | Priority ordering round 0 (fast initial solve) + shuffled MRV rounds for diversity. |
+| **Priority Group** | Three-phase: diverse instance discovery + instance permutation + priority-ordered pin assignment. |
+| **MRV Group** | Three-phase with dynamic MRV + forward checking in Phase 2. Most robust for complex problems. |
+| **Ratio MRV Group** | MRV Group with normalized priority (candidates per signal ratio instead of raw pin count). |
+| **Hybrid** | Runs priority-backtracking, extracts instance groups from solutions, permutes symmetric ports, then runs Phase 2. Best when two-phase Phase 1 finds infeasible groups but single-phase solvers succeed. |
 
 ### Parallel Multi-Solver
 

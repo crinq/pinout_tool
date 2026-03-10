@@ -1211,3 +1211,70 @@ body.splitter-dragging {
   font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
   font-size: 11px;
 }
+
+/* ============================================================
+   Tutorial
+   ============================================================ */
+
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 2000;
+  transition: clip-path 0.3s ease;
+}
+
+.tutorial-tooltip {
+  position: fixed;
+  z-index: 2001;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tutorial-tooltip-title {
+  padding: 10px 14px 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tutorial-tooltip-body {
+  padding: 0 14px 10px;
+  color: var(--text-secondary);
+}
+
+.tutorial-tooltip-body code {
+  background: var(--bg-secondary);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 11px;
+}
+
+.tutorial-tooltip-body pre {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.tutorial-tooltip-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.tutorial-tooltip-progress {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.tutorial-tooltip-buttons {
+  display: flex;
+  gap: 6px;
+}

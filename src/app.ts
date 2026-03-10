@@ -7,6 +7,7 @@ import { ProjectSolutions } from './ui/project-solutions';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
+import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
 import { getSolvers } from './solver/solver-registry';
 import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
@@ -16,6 +17,7 @@ import { serializeSolution, deserializeSolution, migrateProjectData } from './st
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
+import { startTutorial, shouldShowTutorial } from './ui/tutorial';
 
 export interface AppSettings {
   maxSolutions: number;
@@ -133,6 +135,11 @@ export class App {
 
     // Restore constraint text from URL hash or localStorage
     this.restoreState();
+
+    // Show tutorial for first-time users
+    if (shouldShowTutorial()) {
+      requestAnimationFrame(() => startTutorial());
+    }
   }
 
   private wireEvents(): void {
@@ -480,7 +487,7 @@ export class App {
         <button class="btn btn-small" id="btn-project-save-as" title="Save as new project">Save As</button>
       </div>
       <div class="header-right">
-        <button class="btn btn-small" id="btn-import-xml">Import XML</button>
+        <button class="btn btn-small" id="btn-import-xml">Import</button>
         <button class="btn btn-small" id="btn-data-manager">Data</button>
         <button class="btn btn-small" id="btn-settings">Settings</button>
         <button class="btn btn-small" id="btn-theme-toggle" title="Toggle dark mode">Light</button>
@@ -491,7 +498,7 @@ export class App {
     const importBtn = header.querySelector('#btn-import-xml')!;
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
-    fileInput.accept = '.xml';
+    fileInput.accept = '.xml,.ioc';
     fileInput.multiple = true;
     fileInput.style.display = 'none';
     header.appendChild(fileInput);
@@ -500,7 +507,11 @@ export class App {
     fileInput.addEventListener('change', () => {
       if (fileInput.files) {
         for (const file of fileInput.files) {
-          this.loadXmlFile(file);
+          if (file.name.endsWith('.ioc')) {
+            this.loadIocFile(file);
+          } else {
+            this.loadXmlFile(file);
+          }
         }
       }
       fileInput.value = '';
@@ -553,7 +564,7 @@ export class App {
     const footer = this.layout.getFooter();
     footer.innerHTML = `
       <div class="footer-content">
-        <span class="footer-hint">Drop STM32CubeMX XML files anywhere to load MCU or DMA data</span>
+        <span class="footer-hint">Drop STM32CubeMX XML or .ioc files anywhere to load MCU data or import pin assignments</span>
       </div>
     `;
   }
@@ -580,6 +591,8 @@ export class App {
         for (const file of e.dataTransfer.files) {
           if (file.name.endsWith('.xml')) {
             this.loadXmlFile(file);
+          } else if (file.name.endsWith('.ioc')) {
+            this.loadIocFile(file);
           }
         }
       }
@@ -588,14 +601,16 @@ export class App {
 
   private async loadXmlFile(file: File): Promise<void> {
     try {
-      const xmlString = await file.text();
-      if (isDmaXml(xmlString)) {
-        this.loadDmaXml(xmlString, file.name);
+      const text = await file.text();
+      if (isIocFile(text)) {
+        this.loadIocData(text, file.name);
+      } else if (isDmaXml(text)) {
+        this.loadDmaXml(text, file.name);
       } else {
-        this.loadMcuXml(xmlString, file.name);
+        this.loadMcuXml(text, file.name);
       }
     } catch (err) {
-      console.error('Failed to load XML file:', err);
+      console.error('Failed to load file:', err);
       this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
     }
   }
@@ -722,6 +737,53 @@ export class App {
     } catch (err) {
       console.warn(`Failed to parse stored DMA XML for version ${dmaVersion}:`, err);
     }
+  }
+
+  // ---- CubeMX .ioc import ----
+
+  private async loadIocFile(file: File): Promise<void> {
+    try {
+      const text = await file.text();
+      this.loadIocData(text, file.name);
+    } catch (err) {
+      console.error('Failed to load .ioc file:', err);
+      this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
+    }
+  }
+
+  private loadIocData(text: string, fileName: string): void {
+    const ioc = parseIocFile(text);
+
+    if (!ioc.mcuName) {
+      this.showStatus(`No MCU name found in ${fileName}`, 'error');
+      return;
+    }
+
+    // Try to load matching MCU from localStorage
+    if (!this.currentMcu || this.currentMcu.refName !== ioc.mcuName) {
+      const storedXml = localStorage.getItem(`mcu-xml:${ioc.mcuName}`);
+      if (storedXml) {
+        this.loadMcuXml(storedXml, `${ioc.mcuName} (from storage)`);
+      } else {
+        this.showStatus(`MCU ${ioc.mcuName} not found in storage. Import the MCU XML first, then re-import the .ioc file.`, 'error');
+        return;
+      }
+    }
+
+    if (ioc.assignments.length === 0) {
+      this.showStatus(`No pin assignments found in ${fileName}`, 'error');
+      return;
+    }
+
+    // Generate pin declaration lines
+    const pinLines = ioc.assignments.map(a => `pin ${a.pinName} = ${a.signalName}`);
+
+    // Append to existing constraint text
+    const existing = this.constraintEditor.getText().trimEnd();
+    const separator = existing ? '\n\n# Imported from ' + fileName + '\n' : '# Imported from ' + fileName + '\n';
+    this.constraintEditor.setText(existing + separator + pinLines.join('\n') + '\n');
+
+    this.showStatus(`Added ${ioc.assignments.length} pin assignments from ${fileName} (${ioc.mcuName})`, 'success');
   }
 
   // ---- Project management ----
@@ -1274,6 +1336,7 @@ export class App {
 
         <div class="settings-actions">
           <button class="btn btn-small" id="set-reset-defaults">Reset Defaults</button>
+          <button class="btn btn-small" id="set-show-tutorial">Tutorial</button>
           <button class="btn btn-primary btn-small" id="set-apply">Apply</button>
         </div>
       </div>
@@ -1286,6 +1349,11 @@ export class App {
     });
     modal.querySelector('#solver-select-none')!.addEventListener('click', () => {
       modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]').forEach(cb => cb.checked = false);
+    });
+
+    modal.querySelector('#set-show-tutorial')!.addEventListener('click', () => {
+      overlay.remove();
+      startTutorial();
     });
 
     modal.querySelector('#set-apply')!.addEventListener('click', () => {
