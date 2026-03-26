@@ -642,19 +642,35 @@ export class App {
     // Settings button
     header.querySelector('#btn-settings')!.addEventListener('click', () => this.showSettingsModal());
 
-    // Theme toggle
+    // Theme toggle (light → dark → auto → light …)
     const themeBtn = header.querySelector('#btn-theme-toggle')!;
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    document.documentElement.setAttribute('data-theme', savedTheme);
-    themeBtn.textContent = savedTheme === 'dark' ? 'Dark' : 'Light';
+    const themeModes = ['light', 'dark', 'auto'] as const;
+    const themeLabels: Record<string, string> = { light: 'Light', dark: 'Dark', auto: 'Auto' };
+
+    const applyTheme = (mode: string): void => {
+      let effective = mode;
+      if (mode === 'auto') {
+        effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', effective);
+      themeBtn.textContent = themeLabels[mode] || mode;
+      this.layout.broadcastStateChange({ type: 'theme-changed' });
+    };
+
+    const savedTheme = localStorage.getItem('theme') || 'auto';
+    applyTheme(savedTheme);
+
+    // Listen for system theme changes when in auto mode
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (localStorage.getItem('theme') === 'auto') applyTheme('auto');
+    });
 
     themeBtn.addEventListener('click', () => {
-      const current = document.documentElement.getAttribute('data-theme');
-      const next = current === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', next);
+      const current = localStorage.getItem('theme') || 'auto';
+      const idx = themeModes.indexOf(current as typeof themeModes[number]);
+      const next = themeModes[(idx + 1) % themeModes.length];
       localStorage.setItem('theme', next);
-      themeBtn.textContent = next === 'dark' ? 'Dark' : 'Light';
-      this.layout.broadcastStateChange({ type: 'theme-changed' });
+      applyTheme(next);
     });
   }
 
