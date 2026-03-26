@@ -13,11 +13,104 @@ import { getSolvers } from './solver/solver-registry';
 import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport } from './storage';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
+import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { startTutorial, shouldShowTutorial } from './ui/tutorial';
+
+// ============================================================
+// Simple JS syntax highlighter for the export function editor
+// ============================================================
+
+const JS_KEYWORDS = new Set([
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default',
+  'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'function',
+  'if', 'import', 'in', 'instanceof', 'let', 'new', 'of', 'return', 'switch',
+  'throw', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield',
+  'true', 'false', 'null', 'undefined', 'this',
+]);
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function highlightJs(code: string): string {
+  const out: string[] = [];
+  let i = 0;
+  const n = code.length;
+
+  while (i < n) {
+    const ch = code[i];
+
+    // Line comment
+    if (ch === '/' && code[i + 1] === '/') {
+      const end = code.indexOf('\n', i);
+      const slice = end === -1 ? code.substring(i) : code.substring(i, end);
+      out.push(`<span class="hl-comment">${escHtml(slice)}</span>`);
+      i += slice.length;
+      continue;
+    }
+
+    // Block comment
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const slice = end === -1 ? code.substring(i) : code.substring(i, end + 2);
+      out.push(`<span class="hl-comment">${escHtml(slice)}</span>`);
+      i += slice.length;
+      continue;
+    }
+
+    // String (single, double, backtick)
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let j = i + 1;
+      while (j < n && code[j] !== ch) {
+        if (code[j] === '\\') j++; // skip escaped char
+        j++;
+      }
+      if (j < n) j++; // include closing quote
+      const slice = code.substring(i, j);
+      out.push(`<span class="hl-string">${escHtml(slice)}</span>`);
+      i = j;
+      continue;
+    }
+
+    // Number
+    if ((ch >= '0' && ch <= '9') || (ch === '.' && i + 1 < n && code[i + 1] >= '0' && code[i + 1] <= '9')) {
+      let j = i;
+      if (ch === '0' && (code[i + 1] === 'x' || code[i + 1] === 'X')) {
+        j += 2;
+        while (j < n && /[0-9a-fA-F]/.test(code[j])) j++;
+      } else {
+        while (j < n && ((code[j] >= '0' && code[j] <= '9') || code[j] === '.')) j++;
+      }
+      out.push(`<span class="hl-number">${escHtml(code.substring(i, j))}</span>`);
+      i = j;
+      continue;
+    }
+
+    // Word (identifier or keyword)
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_' || ch === '$') {
+      let j = i + 1;
+      while (j < n && ((code[j] >= 'a' && code[j] <= 'z') || (code[j] >= 'A' && code[j] <= 'Z') || (code[j] >= '0' && code[j] <= '9') || code[j] === '_' || code[j] === '$')) j++;
+      const word = code.substring(i, j);
+      if (JS_KEYWORDS.has(word)) {
+        out.push(`<span class="hl-keyword">${escHtml(word)}</span>`);
+      } else {
+        out.push(escHtml(word));
+      }
+      i = j;
+      continue;
+    }
+
+    // Default: single character
+    out.push(escHtml(ch));
+    i++;
+  }
+
+  return out.join('');
+}
 
 export interface AppSettings {
   maxSolutions: number;
@@ -136,9 +229,12 @@ export class App {
     // Restore constraint text from URL hash or localStorage
     this.restoreState();
 
+    // Seed default custom export functions
+    seedDefaultExports();
+
     // Show tutorial for first-time users
     if (shouldShowTutorial()) {
-      requestAnimationFrame(() => startTutorial());
+      requestAnimationFrame(() => startTutorial(() => this.loadTutorialExample()));
     }
   }
 
@@ -674,6 +770,40 @@ export class App {
       console.log('  DMA streams:', mcu.dma.streams.length);
       console.log('  DMA signal mappings:', mcu.dma.signalToDmaStreams.size);
     }
+  }
+
+  private loadTutorialExample(): void {
+    // Skip if MCU already loaded
+    if (this.currentMcu) return;
+
+    // Try loading from localStorage first (already imported)
+    const storedXml = localStorage.getItem('mcu-xml:STM32H755IIKx');
+    if (storedXml) {
+      this.loadMcuXml(storedXml, 'STM32H755IIKx.xml');
+      this.fetchTutorialConstraints();
+      return;
+    }
+
+    // Fetch from bundled example assets
+    fetch('examples/STM32H755IIKx.xml')
+      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
+      .then(xml => {
+        this.loadMcuXml(xml, 'STM32H755IIKx.xml');
+        this.fetchTutorialConstraints();
+      })
+      .catch(() => { /* Example not available, tutorial continues without data */ });
+  }
+
+  private fetchTutorialConstraints(): void {
+    // Skip if editor already has content
+    if (this.constraintEditor.getText().trim().length > 0) return;
+
+    fetch('examples/ecat_complex.txt')
+      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
+      .then(text => {
+        this.constraintEditor.setText(text);
+      })
+      .catch(() => { /* Example not available */ });
   }
 
   private loadDmaXml(xmlString: string, fileName: string): void {
@@ -1353,7 +1483,7 @@ export class App {
 
     modal.querySelector('#set-show-tutorial')!.addEventListener('click', () => {
       overlay.remove();
-      startTutorial();
+      startTutorial(() => this.loadTutorialExample());
     });
 
     modal.querySelector('#set-apply')!.addEventListener('click', () => {
@@ -1540,6 +1670,25 @@ export class App {
               `).join('')}
             </div>
           </section>
+
+          <section class="settings-section">
+            <h3>Custom Export Functions</h3>
+            <div class="dm-list">
+              ${(() => {
+                const exports = loadCustomExports();
+                if (exports.length === 0) return '<p class="settings-hint">No custom export functions. Click "New" to create one.</p>';
+                return exports.map(fn => `
+                  <div class="dm-row">
+                    <span class="dm-name">${fn.name}</span>
+                    <span class="dm-size" style="min-width:auto">${fn.description}</span>
+                    <button class="btn btn-small" data-action="edit-export" data-export-id="${fn.id}">Edit</button>
+                    <button class="btn btn-small dm-delete" data-action="delete-export" data-export-id="${fn.id}">Delete</button>
+                  </div>
+                `).join('');
+              })()}
+            </div>
+            <div style="margin-top:6px"><button class="btn btn-small" data-action="new-export">New</button></div>
+          </section>
         </div>
       `;
 
@@ -1603,6 +1752,22 @@ export class App {
               overlay.remove();
               break;
             }
+            case 'new-export':
+              this.showExportEditor(null, overlay, renderContent);
+              break;
+            case 'edit-export': {
+              const exportId = (btn as HTMLElement).dataset.exportId!;
+              const exports = loadCustomExports();
+              const fn = exports.find(e => e.id === exportId);
+              if (fn) this.showExportEditor(fn, overlay, renderContent);
+              break;
+            }
+            case 'delete-export': {
+              const exportId = (btn as HTMLElement).dataset.exportId!;
+              deleteCustomExport(exportId);
+              renderContent();
+              break;
+            }
           }
         });
       });
@@ -1611,6 +1776,159 @@ export class App {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     renderContent();
+  }
+
+  private showExportEditor(fn: CustomExportFunction | null, _parentOverlay: HTMLElement, onSave: () => void): void {
+    const isNew = fn === null;
+    const current: CustomExportFunction = fn ? { ...fn } : {
+      id: `custom-${Date.now()}`,
+      name: '',
+      description: '',
+      code: '',
+    };
+
+    const overlay = document.createElement('div');
+    overlay.className = 'settings-overlay';
+    overlay.style.zIndex = '1100';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'settings-modal';
+    modal.style.width = '600px';
+
+    const render = (): void => {
+      modal.innerHTML = `
+        <div class="settings-header">
+          <strong>${isNew ? 'New' : 'Edit'} Export Function</strong>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-small" id="export-editor-help">Help</button>
+            <button class="btn btn-small settings-close">Close</button>
+          </div>
+        </div>
+        <div class="settings-body">
+          <div class="settings-row" style="margin-bottom:8px">
+            <label>Name</label>
+            <input class="settings-input" style="width:200px" id="export-editor-name" value="${current.name.replace(/"/g, '&quot;')}">
+          </div>
+          <div class="settings-row" style="margin-bottom:8px">
+            <label>Description</label>
+            <input class="settings-input" style="width:300px" id="export-editor-desc" value="${current.description.replace(/"/g, '&quot;')}">
+          </div>
+          <div style="margin-bottom:4px;font-size:11px;color:var(--text-secondary)">JavaScript code (return a string to copy to clipboard, or {filename, content, mimeType} to download):</div>
+          <div class="code-editor-wrap">
+            <pre class="code-editor-highlight" id="export-editor-highlight" aria-hidden="true"></pre>
+            <textarea class="export-code-editor" id="export-editor-code" spellcheck="false">${current.code.replace(/</g, '&lt;')}</textarea>
+          </div>
+          <div class="export-error" id="export-editor-error" style="display:none"></div>
+          <div class="export-help" id="export-editor-help-panel" style="display:none">
+            <strong>Available variables:</strong>
+            <pre>mcuName     - MCU reference name (e.g. "STM32H755XIHx")
+mcuPackage  - Package type (e.g. "TFBGA240")
+assignments - Array of {pinName, signalName, portName,
+              channelName, configurationName}
+peripherals - Array of {instanceName, type, version}
+pins        - Array of {name, position, type, gpioPort,
+              gpioNumber, isAssignable, signals:[{name,
+              peripheralInstance, peripheralType,
+              signalFunction}]}
+ports       - Array of {name, color, channels:[],
+              configurations:[]}</pre>
+            <strong>Return value:</strong>
+            <pre>return "text"  → copies to clipboard
+return {filename:"f.csv", content:"...", mimeType:"text/csv"}
+               → downloads as file</pre>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
+            <button class="btn btn-small" id="export-editor-test">Test</button>
+            <button class="btn btn-small btn-primary" id="export-editor-save">Save</button>
+          </div>
+        </div>
+      `;
+
+      modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+
+      const codeEl = modal.querySelector('#export-editor-code') as HTMLTextAreaElement;
+      const highlightEl = modal.querySelector('#export-editor-highlight') as HTMLPreElement;
+
+      const syncHighlight = (): void => {
+        highlightEl.innerHTML = highlightJs(codeEl.value) + '\n';
+      };
+      const syncScroll = (): void => {
+        highlightEl.scrollTop = codeEl.scrollTop;
+        highlightEl.scrollLeft = codeEl.scrollLeft;
+      };
+      codeEl.addEventListener('input', syncHighlight);
+      codeEl.addEventListener('scroll', syncScroll);
+      syncHighlight();
+
+      codeEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const start = codeEl.selectionStart;
+          const end = codeEl.selectionEnd;
+          codeEl.value = codeEl.value.substring(0, start) + '  ' + codeEl.value.substring(end);
+          codeEl.selectionStart = codeEl.selectionEnd = start + 2;
+          syncHighlight();
+        }
+      });
+
+      modal.querySelector('#export-editor-help')!.addEventListener('click', () => {
+        const panel = modal.querySelector('#export-editor-help-panel') as HTMLElement;
+        panel.style.display = panel.style.display === 'none' ? '' : 'none';
+      });
+
+      modal.querySelector('#export-editor-test')!.addEventListener('click', () => {
+        const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
+        try {
+          const code = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', code);
+          errorEl.style.display = '';
+          errorEl.style.color = 'var(--success)';
+          errorEl.textContent = 'Syntax OK';
+          setTimeout(() => { errorEl.style.display = 'none'; }, 2000);
+        } catch (err) {
+          errorEl.style.display = '';
+          errorEl.style.color = 'var(--error)';
+          errorEl.textContent = (err as Error).message;
+        }
+      });
+
+      modal.querySelector('#export-editor-save')!.addEventListener('click', () => {
+        const nameVal = (modal.querySelector('#export-editor-name') as HTMLInputElement).value.trim();
+        const descVal = (modal.querySelector('#export-editor-desc') as HTMLInputElement).value.trim();
+        const codeVal = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
+        const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
+
+        if (!nameVal) {
+          errorEl.style.display = '';
+          errorEl.style.color = 'var(--error)';
+          errorEl.textContent = 'Name is required';
+          return;
+        }
+
+        try {
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', codeVal);
+        } catch (err) {
+          errorEl.style.display = '';
+          errorEl.style.color = 'var(--error)';
+          errorEl.textContent = (err as Error).message;
+          return;
+        }
+
+        current.name = nameVal;
+        current.description = descVal;
+        current.code = codeVal;
+        saveCustomExport(current);
+        overlay.remove();
+        onSave();
+      });
+    };
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    render();
   }
 
   private renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): void {

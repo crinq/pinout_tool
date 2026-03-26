@@ -1,7 +1,9 @@
-import type { Mcu, Pin, Signal, Assignment, CompatibilityResult } from '../types';
+import type { Mcu, Pin, Signal, Assignment, CompatibilityResult, CustomExportFunction } from '../types';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
+import { exportSvg } from './svg-export';
+import { loadCustomExports } from '../storage';
 
 interface PinRect {
   x: number;
@@ -108,24 +110,17 @@ export class PackageViewer implements Panel {
       }
     });
 
-    // Export buttons
+    // Export button
     const exportSep = document.createElement('span');
     exportSep.className = 'pv-toolbar-separator';
     toolbar.appendChild(exportSep);
 
-    const exportPngBtn = document.createElement('button');
-    exportPngBtn.className = 'btn btn-small pv-btn';
-    exportPngBtn.title = 'Export view as PNG image';
-    exportPngBtn.textContent = 'PNG';
-    exportPngBtn.addEventListener('click', () => this.exportImage());
-    toolbar.appendChild(exportPngBtn);
-
-    const exportJsonBtn = document.createElement('button');
-    exportJsonBtn.className = 'btn btn-small pv-btn';
-    exportJsonBtn.title = 'Export solution as JSON';
-    exportJsonBtn.textContent = 'JSON';
-    exportJsonBtn.addEventListener('click', () => this.exportJSON());
-    toolbar.appendChild(exportJsonBtn);
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'btn btn-small pv-btn';
+    exportBtn.title = 'Export pinout';
+    exportBtn.textContent = 'Export';
+    exportBtn.addEventListener('click', () => this.showExportModal());
+    toolbar.appendChild(exportBtn);
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'package-canvas';
@@ -232,13 +227,162 @@ export class PackageViewer implements Panel {
     this.render();
   }
 
-  private exportImage(): void {
+  private showExportModal(): void {
+    if (!this.mcu) return;
+
+    const existing = document.querySelector('.export-overlay');
+    if (existing) { existing.remove(); return; }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'export-overlay';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'export-modal';
+    const hasAssignments = this.assignments.length > 0;
+
+    const customExports = loadCustomExports();
+
+    let customHtml = '';
+    if (customExports.length > 0) {
+      customHtml = `<div class="export-separator"></div>`;
+      for (const fn of customExports) {
+        customHtml += `
+          <button class="btn export-option${hasAssignments ? '' : ' disabled'}" data-format="custom" data-custom-id="${fn.id}" ${hasAssignments ? '' : 'disabled'}>
+            <span class="export-option-title">${this.escHtml(fn.name)}</span>
+            <span class="export-option-desc">${hasAssignments ? this.escHtml(fn.description) : 'No assignments to export'}</span>
+          </button>`;
+      }
+    }
+
+    modal.innerHTML = `
+      <div class="export-header">
+        <strong>Export</strong>
+        <button class="btn btn-small export-close">Close</button>
+      </div>
+      <div class="export-body">
+        <button class="btn export-option" data-format="png">
+          <span class="export-option-title">PNG Image</span>
+          <span class="export-option-desc">Current canvas view as raster image</span>
+        </button>
+        <button class="btn export-option" data-format="svg">
+          <span class="export-option-title">SVG Image</span>
+          <span class="export-option-desc">Vector graphic, ideal for documentation</span>
+        </button>
+        <button class="btn export-option${hasAssignments ? '' : ' disabled'}" data-format="text" ${hasAssignments ? '' : 'disabled'}>
+          <span class="export-option-title">Text</span>
+          <span class="export-option-desc">${hasAssignments ? 'Copy pin assignment table to clipboard' : 'No assignments to export'}</span>
+        </button>
+        <button class="btn export-option${hasAssignments ? '' : ' disabled'}" data-format="json" ${hasAssignments ? '' : 'disabled'}>
+          <span class="export-option-title">JSON Data</span>
+          <span class="export-option-desc">${hasAssignments ? 'Pin assignments as structured data' : 'No assignments to export'}</span>
+        </button>
+        ${customHtml}
+      </div>
+    `;
+
+    modal.querySelector('.export-close')!.addEventListener('click', () => overlay.remove());
+
+    modal.querySelectorAll('.export-option').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const format = (btn as HTMLElement).dataset.format;
+        overlay.remove();
+        switch (format) {
+          case 'png': this.exportPNG(); break;
+          case 'svg': this.exportSVG(); break;
+          case 'text': this.exportText(); break;
+          case 'json': this.exportJSON(); break;
+          case 'custom': {
+            const id = (btn as HTMLElement).dataset.customId;
+            const fn = customExports.find(f => f.id === id);
+            if (fn) this.executeCustomExport(fn);
+            break;
+          }
+        }
+      });
+    });
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+
+  private exportPNG(): void {
     if (!this.mcu) return;
     const dataUrl = this.canvas.toDataURL('image/png');
     const a = document.createElement('a');
     a.href = dataUrl;
     a.download = `${this.mcu.refName}_pinout.png`;
     a.click();
+  }
+
+  private exportSVG(): void {
+    if (!this.mcu) return;
+    const svg = exportSvg(this.mcu, this.assignments, this.portColors);
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${this.mcu.refName}_pinout.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private exportText(): void {
+    if (!this.mcu || this.assignments.length === 0) return;
+
+    const lines: string[] = [];
+    lines.push(`${this.mcu.refName}  ${this.mcu.package}`);
+    lines.push('');
+
+    // Group signals by pin + port.channel
+    const pinMap = new Map<string, { port: string; signals: Set<string> }>();
+    for (const a of this.assignments) {
+      const port = a.portName === '<pinned>' ? '' : `${a.portName}.${a.channelName}`;
+      const key = `${a.pinName}\0${port}`;
+      let entry = pinMap.get(key);
+      if (!entry) { entry = { port, signals: new Set() }; pinMap.set(key, entry); }
+      entry.signals.add(a.signalName);
+    }
+
+    const rows: Array<[string, string, string]> = [];
+    for (const [key, entry] of pinMap) {
+      const pinName = key.split('\0')[0];
+      rows.push([pinName, entry.port, [...entry.signals].join(', ')]);
+    }
+    rows.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+
+    const headers: [string, string, string] = ['Pin', 'Port.Channel', 'Signal'];
+    const w = headers.map((h, i) => Math.max(h.length, ...rows.map(r => r[i].length)));
+
+    lines.push(headers.map((h, i) => h.padEnd(w[i])).join('  '));
+    lines.push(w.map(n => '-'.repeat(n)).join('  '));
+    for (const r of rows) {
+      lines.push(r.map((c, i) => c.padEnd(w[i])).join('  '));
+    }
+
+    const text = lines.join('\n') + '\n';
+    navigator.clipboard.writeText(text).then(() => {
+      this.showExportToast('Copied to clipboard');
+    }, () => {
+      // Fallback: download as file
+      const blob = new Blob([text], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${this.mcu!.refName}_pinout.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  private showExportToast(message: string): void {
+    const toast = document.createElement('div');
+    toast.className = 'pv-toast';
+    toast.textContent = message;
+    this.container.appendChild(toast);
+    setTimeout(() => toast.remove(), 2000);
   }
 
   private exportJSON(): void {
@@ -272,6 +416,88 @@ export class PackageViewer implements Panel {
     a.download = `${this.mcu.refName}_solution.json`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  private executeCustomExport(fn: CustomExportFunction): void {
+    if (!this.mcu || this.assignments.length === 0) return;
+
+    const mcu = this.mcu;
+
+    // Build ports structure from assignments
+    const portMap = new Map<string, Map<string, Set<string>>>();
+    for (const a of this.assignments) {
+      if (a.portName === '<pinned>') continue;
+      let channels = portMap.get(a.portName);
+      if (!channels) { channels = new Map(); portMap.set(a.portName, channels); }
+      let configs = channels.get(a.channelName);
+      if (!configs) { configs = new Set(); channels.set(a.channelName, configs); }
+      configs.add(a.configurationName);
+    }
+    const ports = [...portMap.entries()].map(([name, channels]) => ({
+      name,
+      color: this.portColors.get(name) || null,
+      channels: [...channels.keys()],
+      configurations: [...new Set([...channels.values()].flatMap(c => [...c]))],
+    }));
+
+    const context = {
+      mcuName: mcu.refName,
+      mcuPackage: mcu.package,
+      assignments: this.assignments,
+      peripherals: mcu.peripherals,
+      pins: mcu.pins.map(p => ({
+        name: p.name,
+        position: p.position,
+        type: p.type,
+        gpioPort: p.gpioPort,
+        gpioNumber: p.gpioNumber,
+        isAssignable: p.isAssignable,
+        signals: p.signals.map(s => ({
+          name: s.name,
+          peripheralInstance: s.peripheralInstance,
+          peripheralType: s.peripheralType,
+          signalFunction: s.signalFunction,
+        })),
+      })),
+      ports,
+    };
+
+    try {
+      const executor = new Function(
+        'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports',
+        fn.code,
+      );
+      const result = executor(
+        context.mcuName, context.mcuPackage, context.assignments,
+        context.peripherals, context.pins, context.ports,
+      );
+
+      if (typeof result === 'string') {
+        navigator.clipboard.writeText(result).then(
+          () => this.showExportToast('Copied to clipboard'),
+          () => this.downloadResult(result, `${mcu.refName}_export.txt`, 'text/plain'),
+        );
+      } else if (result && typeof result === 'object' && result.content) {
+        const { filename, content, mimeType } = result as { filename?: string; content: string; mimeType?: string };
+        this.downloadResult(content, filename || `${mcu.refName}_export`, mimeType || 'text/plain');
+      }
+    } catch (err) {
+      this.showExportToast(`Export error: ${(err as Error).message}`);
+    }
+  }
+
+  private downloadResult(content: string, filename: string, mimeType: string): void {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  private escHtml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   render(): void {

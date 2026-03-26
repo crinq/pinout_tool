@@ -44,9 +44,13 @@ The tool needs MCU pin/peripheral data from STM32CubeMX XML files:
 1. Install [STM32CubeMX](https://www.st.com/en/development-tools/stm32cubemx.html)
 2. Navigate to the CubeMX installation folder: `db/mcu/`
 3. Find your MCU's XML file (e.g., `STM32G473C(B-E)Tx.xml`)
-4. Drag and drop the file onto the app, or use **Import XML**
+4. Drag and drop the file onto the app, or click **Import**
 
 Imported MCUs are stored in localStorage and can be reloaded from the **Data** manager.
+
+### Importing CubeMX .ioc Projects (optional)
+
+You can import `.ioc` project files from STM32CubeMX. The tool extracts the MCU name and pin-to-signal assignments, adding them as `pin` declarations to the constraint editor. This lets you use an existing CubeMX project as a starting point. Drag and drop the `.ioc` file or use the **Import** button.
 
 ### Loading DMA Data (optional)
 
@@ -489,7 +493,12 @@ The package viewer renders the MCU package with interactive pin display.
 - **Rotate:** Rotate button (90 degrees clockwise per click)
 - **Reset:** Reset zoom and rotation to defaults
 - **Search:** Type signal patterns to highlight matching pins with a pulsing glow
-- **Export:** Download the current view as a PNG image
+- **Export:** Click to open the export modal with format options:
+  - **PNG** -- raster image of the current canvas view
+  - **SVG** -- vector graphic, ideal for documentation and scaling
+  - **Text** -- copy pin assignment table to clipboard (grouped by pin)
+  - **JSON** -- structured pin assignment data
+  - **Custom** -- any registered custom export functions
 
 ### Pin Interaction
 
@@ -646,6 +655,19 @@ Access via the **Data** button. Shows:
 
 - **Stored MCUs** -- imported MCU XML files with size, load/delete actions
 - **Projects** -- saved projects with load/delete actions
+- **Custom Export Functions** -- user-defined JavaScript export functions (create, edit, delete)
+
+### Custom Export Functions
+
+Create custom export functions via the Data Manager to generate any output format from your solution data. Each function is written in JavaScript and has access to:
+
+- `mcuName`, `mcuPackage` -- MCU identification
+- `assignments` -- array of `{pinName, signalName, portName, channelName, configurationName}`
+- `peripherals` -- array of `{instanceName, type, version}`
+- `pins` -- array with pin details and all available signals
+- `ports` -- array of `{name, color, channels, configurations}`
+
+Return a string to copy to clipboard, or `{filename, content, mimeType}` to trigger a file download. Custom exports appear in the Export modal alongside the built-in formats.
 
 ### Keyboard Shortcuts
 

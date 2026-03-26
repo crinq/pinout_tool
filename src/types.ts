@@ -241,6 +241,17 @@ export interface CostFunction {
 }
 
 // ============================================================
+// Custom Export Functions
+// ============================================================
+
+export interface CustomExportFunction {
+  id: string;
+  name: string;
+  description: string;
+  code: string;
+}
+
+// ============================================================
 // Peripheral Type Normalization
 // ============================================================
 

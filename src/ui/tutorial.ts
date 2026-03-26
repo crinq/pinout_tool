@@ -45,7 +45,8 @@ const STEPS: TutorialStep[] = [
     target: () => findPanel('package-viewer'),
     title: 'Package Viewer',
     body: `Once an MCU is loaded, its package appears here. Scroll to zoom, drag to pan, and click pins to see available signals.<br><br>
-      Use the search field to highlight pins by signal pattern (e.g. <code>SPI*_SCK</code>).`,
+      Use the search field to highlight pins by signal pattern (e.g. <code>SPI*_SCK</code>).
+      Click <b>Export</b> to save your pinout as PNG, SVG, text, JSON, or a custom format.`,
     placement: 'right',
   },
   {
@@ -108,8 +109,8 @@ const STEPS: TutorialStep[] = [
   {
     target: '#btn-data-manager',
     title: 'Data Manager',
-    body: `View and manage stored MCU data and DMA files.
-      You can delete unused MCU data to free up browser storage.`,
+    body: `View and manage stored MCU data, DMA files, projects, and custom export functions.
+      You can also create JavaScript export functions to generate custom output from your solutions.`,
     placement: 'bottom',
   },
   {
@@ -260,9 +261,12 @@ function closeTutorial(): void {
   localStorage.setItem('tutorial-seen', '1');
 }
 
-export function startTutorial(): void {
+export function startTutorial(onStart?: () => void): void {
   // Clean up any existing
   closeTutorial();
+
+  // Load example data if provided
+  if (onStart) onStart();
 
   currentStep = 0;
 

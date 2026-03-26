@@ -4,13 +4,16 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 
 ## Features
 
-- **7 solver algorithms** -- backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, and diverse instances
+- **14 solver algorithms** -- backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, diverse instances, priority backtracking, priority two-phase, priority diverse, priority group, MRV group, ratio MRV group, and hybrid
 - **Parallel multi-solver** -- run multiple solvers simultaneously and merge results
 - **Visual package viewer** -- interactive canvas with zoom, rotation, pin assignment popup, and signal search
 - **Multiple package types** -- LQFP, BGA, and WLCSP support with correct ball/pin rendering
 - **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, proximity, and more
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
 - **Project management** -- save/load projects, store MCU data in browser localStorage
+- **CubeMX .ioc import** -- import pin assignments from STM32CubeMX project files
+- **Custom export functions** -- user-defined JavaScript export functions for any output format
+- **Interactive tutorial** -- guided tour for first-time users
 - **Dark mode** -- full light/dark theme support
 
 ## Getting Started
@@ -25,7 +28,7 @@ Open `http://localhost:5173` in your browser.
 ### Loading MCU Data
 
 1. Download MCU XML files from [STM32CubeMX](https://www.st.com/en/development-tools/stm32cubemx.html) (found in the `db/mcu/` folder of the CubeMX installation)
-2. Drag and drop the `.xml` file onto the app, or click **Import XML**
+2. Drag and drop the `.xml` or `.ioc` file onto the app, or click **Import**
 
 ### Writing Constraints
 
@@ -54,7 +57,12 @@ Use the search field in the package viewer toolbar to find pins by signal patter
 
 ### Exporting
 
-Click **Export** in the viewer toolbar to download a PNG of the current view.
+Click **Export** in the viewer toolbar to choose a format:
+- **PNG** -- raster image of the current canvas view
+- **SVG** -- vector graphic, ideal for documentation and scaling
+- **Text** -- copy pin assignment table to clipboard
+- **JSON** -- structured pin assignment data
+- **Custom** -- user-defined JavaScript export functions (manage via Data Manager)
 
 ## Documentation
 

@@ -1,4 +1,4 @@
-import type { Solution, SolverResult, Assignment, ConfigCombinationAssignment } from './types';
+import type { Solution, SolverResult, Assignment, ConfigCombinationAssignment, CustomExportFunction } from './types';
 
 // ============================================================
 // Serialized Types (JSON-safe, no Map/Set)
@@ -154,6 +154,74 @@ export function serializeSolverResult(result: SolverResult): SerializedSolution[
 
 // ============================================================
 // Project Migration (old format → versioned)
+// ============================================================
+
+// ============================================================
+// Custom Export Functions
+// ============================================================
+
+const CUSTOM_EXPORT_PREFIX = 'custom-export:';
+
+export function loadCustomExports(): CustomExportFunction[] {
+  const results: CustomExportFunction[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith(CUSTOM_EXPORT_PREFIX)) {
+      try {
+        results.push(JSON.parse(localStorage.getItem(key)!));
+      } catch { /* skip corrupt entries */ }
+    }
+  }
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function saveCustomExport(fn: CustomExportFunction): void {
+  localStorage.setItem(CUSTOM_EXPORT_PREFIX + fn.id, JSON.stringify(fn));
+}
+
+export function deleteCustomExport(id: string): void {
+  localStorage.removeItem(CUSTOM_EXPORT_PREFIX + id);
+}
+
+export const DEFAULT_EXPORT_EXAMPLE: CustomExportFunction = {
+  id: 'example-pin-list',
+  name: 'Pin List',
+  description: 'List of used pins with port/signal mapping',
+  code: `const lines = [mcuName + '  ' + mcuPackage, ''];
+
+// Group signals per pin
+const pinMap = new Map();
+for (const a of assignments) {
+  const key = a.pinName + '\\0' + a.portName + '.' + a.channelName;
+  if (!pinMap.has(key)) pinMap.set(key, { pin: a.pinName, port: a.portName + '.' + a.channelName, signals: new Set() });
+  pinMap.get(key).signals.add(a.signalName);
+}
+
+const rows = [...pinMap.values()].sort((a, b) => a.pin.localeCompare(b.pin, undefined, { numeric: true }));
+
+// Find column widths
+const hdr = ['Pin', 'Port.Channel', 'Signal'];
+const w = hdr.map((h, i) => Math.max(h.length, ...rows.map(r => [r.pin, r.port, [...r.signals].join(', ')][i].length)));
+
+lines.push(hdr.map((h, i) => h.padEnd(w[i])).join('  '));
+lines.push(w.map(n => '-'.repeat(n)).join('  '));
+for (const r of rows) {
+  lines.push([r.pin.padEnd(w[0]), r.port.padEnd(w[1]), [...r.signals].join(', ')].join('  '));
+}
+
+return lines.join('\\n');`,
+};
+
+export function seedDefaultExports(): void {
+  if (localStorage.getItem('custom-export-seeded')) return;
+  if (!localStorage.getItem(CUSTOM_EXPORT_PREFIX + DEFAULT_EXPORT_EXAMPLE.id)) {
+    saveCustomExport(DEFAULT_EXPORT_EXAMPLE);
+  }
+  localStorage.setItem('custom-export-seeded', '1');
+}
+
+// ============================================================
+// Project Data Migration
 // ============================================================
 
 export function migrateProjectData(raw: unknown): ProjectData {
