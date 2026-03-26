@@ -773,31 +773,23 @@ export class App {
   }
 
   private loadTutorialExample(): void {
-    // Skip if MCU already loaded
-    if (this.currentMcu) return;
-
-    // Try loading from localStorage first (already imported)
+    // Try loading MCU from localStorage first, then fetch
     const storedXml = localStorage.getItem('mcu-xml:STM32H755IIKx');
     if (storedXml) {
       this.loadMcuXml(storedXml, 'STM32H755IIKx.xml');
       this.fetchTutorialConstraints();
-      return;
+    } else {
+      fetch('examples/STM32H755IIKx.xml')
+        .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
+        .then(xml => {
+          this.loadMcuXml(xml, 'STM32H755IIKx.xml');
+          this.fetchTutorialConstraints();
+        })
+        .catch(() => { /* Example not available, tutorial continues without data */ });
     }
-
-    // Fetch from bundled example assets
-    fetch('examples/STM32H755IIKx.xml')
-      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
-      .then(xml => {
-        this.loadMcuXml(xml, 'STM32H755IIKx.xml');
-        this.fetchTutorialConstraints();
-      })
-      .catch(() => { /* Example not available, tutorial continues without data */ });
   }
 
   private fetchTutorialConstraints(): void {
-    // Skip if editor already has content
-    if (this.constraintEditor.getText().trim().length > 0) return;
-
     fetch('examples/ecat_complex.txt')
       .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
       .then(text => {
