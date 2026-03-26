@@ -2,13 +2,15 @@
 // Standard Library Macros
 // Pre-defined macros for common peripheral configurations.
 // These are parsed at startup and available in all projects.
+// Users can edit the library via the Data Manager.
 // ============================================================
 
 import { parseConstraints } from './constraint-parser';
 import { extractMacros } from './macro-expander';
 import type { MacroDeclNode } from './constraint-ast';
+import { loadMacroLibrary, saveMacroLibrary } from '../storage';
 
-const STDLIB_SOURCE = `
+export const DEFAULT_MACRO_LIBRARY = `\
 # UART / USART full-duplex
 macro uart_port(TX, RX):
   TX = USART*_TX
@@ -76,6 +78,34 @@ macro can_port(TX, RX):
 `;
 
 let cachedStdlib: Map<string, MacroDeclNode> | null = null;
+let cachedSource: string | null = null;
+
+/**
+ * Seed the macro library in localStorage if not present.
+ */
+export function seedMacroLibrary(): void {
+  if (loadMacroLibrary() === null) {
+    saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
+  }
+}
+
+/**
+ * Invalidate the cached macros so they are re-parsed on next access.
+ * Call this after the user edits the macro library.
+ */
+export function invalidateStdlibCache(): void {
+  cachedStdlib = null;
+  cachedSource = null;
+}
+
+/**
+ * Get the current macro library source (from localStorage or default).
+ */
+export function getStdlibSource(): string {
+  if (cachedSource !== null) return cachedSource;
+  cachedSource = loadMacroLibrary() ?? DEFAULT_MACRO_LIBRARY.trim();
+  return cachedSource;
+}
 
 /**
  * Get the stdlib macro definitions (parsed once, cached).
@@ -83,7 +113,8 @@ let cachedStdlib: Map<string, MacroDeclNode> | null = null;
 export function getStdlibMacros(): Map<string, MacroDeclNode> {
   if (cachedStdlib) return cachedStdlib;
 
-  const result = parseConstraints(STDLIB_SOURCE);
+  const source = getStdlibSource();
+  const result = parseConstraints(source);
   if (result.ast) {
     cachedStdlib = extractMacros(result.ast);
   } else {
@@ -93,8 +124,8 @@ export function getStdlibMacros(): Map<string, MacroDeclNode> {
 }
 
 /**
- * Get the stdlib source text (for display in help/editor).
+ * Get the names of all macros in the current library.
  */
-export function getStdlibSource(): string {
-  return STDLIB_SOURCE.trim();
+export function getStdlibMacroNames(): Set<string> {
+  return new Set(getStdlibMacros().keys());
 }

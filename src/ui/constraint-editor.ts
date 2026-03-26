@@ -1,8 +1,10 @@
 import type { Panel, StateChange } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
+import { getStdlibMacroNames } from '../parser/stdlib-macros';
 
 const KEYWORDS = ['mcu', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
 const DEBOUNCE_MS = 300;
 
 function escapeRegex(str: string): string {
@@ -376,13 +378,7 @@ export class ConstraintEditor implements Panel {
         const word = code.substring(start, i);
         if (KEYWORDS.includes(word)) {
           result += `<span class="ce-keyword">${this.escapeHtml(word)}</span>`;
-        } else if (word === 'same_instance' || word === 'diff_instance' || word === 'instance' ||
-                   word === 'type' || word === 'gpio_pin' || word === 'gpio_port' || word === 'version' ||
-                   word === 'uart_port' || word === 'uart_half_duplex' ||
-                   word === 'spi_port' || word === 'spi_port_cs' ||
-                   word === 'i2c_port' || word === 'encoder' || word === 'encoder_with_index' ||
-                   word === 'pwm' || word === 'dac' || word === 'adc' || word === 'can_port' ||
-                   word === 'IN' || word === 'OUT') {
+        } else if (BUILTINS.has(word) || getStdlibMacroNames().has(word)) {
           result += `<span class="ce-builtin">${this.escapeHtml(word)}</span>`;
         } else {
           result += this.escapeHtml(word);
@@ -572,7 +568,7 @@ MOSI = SPI*_MOSI &amp; GPIO[1-2]_*</pre>
 
         <section>
           <h3>Standard Library Macros</h3>
-          <p>Pre-defined macros for common peripherals:</p>
+          <p>Pre-defined macros for common peripherals. Edit via <b>Data Manager &gt; Macro Library</b>.</p>
           <table>
             <tr><td><code>uart_port(TX, RX)</code></td><td>USART full-duplex (same instance)</td></tr>
             <tr><td><code>spi_port(MOSI, MISO, SCK)</code></td><td>SPI master 3-wire</td></tr>

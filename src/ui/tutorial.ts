@@ -109,8 +109,8 @@ const STEPS: TutorialStep[] = [
   {
     target: '#btn-data-manager',
     title: 'Data Manager',
-    body: `View and manage stored MCU data, DMA files, projects, and custom export functions.
-      You can also create JavaScript export functions to generate custom output from your solutions.`,
+    body: `View and manage stored MCU data, DMA files, projects, custom export functions, and the macro library.
+      You can edit the shared macro library to add or modify macros available in all constraints.`,
     placement: 'bottom',
   },
   {

@@ -338,7 +338,7 @@ Parameters are textually substituted. Macros expand before constraint evaluation
 
 ### Standard Library
 
-Pre-defined macros available in all projects:
+Pre-defined macros available in all projects. The macro library can be edited via the **Data Manager** (click Edit under "Macro Library"). Changes apply to all projects. Use Reset to restore the defaults.
 
 | Macro | Parameters | Description |
 |-------|------------|-------------|
@@ -656,6 +656,7 @@ Access via the **Data** button. Shows:
 - **Stored MCUs** -- imported MCU XML files with size, load/delete actions
 - **Projects** -- saved projects with load/delete actions
 - **Custom Export Functions** -- user-defined JavaScript export functions (create, edit, delete)
+- **Macro Library** -- edit shared macros available in all constraints (edit, reset to default)
 
 ### Custom Export Functions
 

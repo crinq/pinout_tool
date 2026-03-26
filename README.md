@@ -12,6 +12,7 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
 - **Project management** -- save/load projects, store MCU data in browser localStorage
 - **CubeMX .ioc import** -- import pin assignments from STM32CubeMX project files
+- **Editable macro library** -- customize and extend the standard library macros via Data Manager
 - **Custom export functions** -- user-defined JavaScript export functions for any output format
 - **Interactive tutorial** -- guided tour for first-time users
 - **Dark mode** -- full light/dark theme support

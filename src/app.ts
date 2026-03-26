@@ -13,12 +13,13 @@ import { getSolvers } from './solver/solver-registry';
 import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary } from './storage';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { startTutorial, shouldShowTutorial } from './ui/tutorial';
+import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY, getStdlibMacroNames } from './parser/stdlib-macros';
 
 // ============================================================
 // Simple JS syntax highlighter for the export function editor
@@ -229,8 +230,9 @@ export class App {
     // Restore constraint text from URL hash or localStorage
     this.restoreState();
 
-    // Seed default custom export functions
+    // Seed defaults
     seedDefaultExports();
+    seedMacroLibrary();
 
     // Show tutorial for first-time users
     if (shouldShowTutorial()) {
@@ -1681,6 +1683,15 @@ export class App {
             </div>
             <div style="margin-top:6px"><button class="btn btn-small" data-action="new-export">New</button></div>
           </section>
+
+          <section class="settings-section">
+            <h3>Macro Library</h3>
+            <p class="settings-hint">Shared macros available in all constraints. Uses the same syntax as the constraint editor.</p>
+            <div style="margin-top:6px">
+              <button class="btn btn-small" data-action="edit-macro-lib">Edit</button>
+              <button class="btn btn-small" data-action="reset-macro-lib">Reset to Default</button>
+            </div>
+          </section>
         </div>
       `;
 
@@ -1760,6 +1771,13 @@ export class App {
               renderContent();
               break;
             }
+            case 'edit-macro-lib':
+              this.showMacroLibEditor(overlay);
+              break;
+            case 'reset-macro-lib':
+              saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
+              invalidateStdlibCache();
+              break;
           }
         });
       });
@@ -1921,6 +1939,160 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     render();
+  }
+
+  private showMacroLibEditor(_parentOverlay: HTMLElement): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'settings-overlay';
+    overlay.style.zIndex = '1100';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const modal = document.createElement('div');
+    modal.className = 'settings-modal';
+    modal.style.width = '600px';
+    modal.style.maxHeight = '85vh';
+
+    const currentSource = getStdlibSource();
+
+    modal.innerHTML = `
+      <div class="settings-header">
+        <strong>Macro Library</strong>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-small" id="macro-lib-reset">Reset</button>
+          <button class="btn btn-small settings-close">Close</button>
+        </div>
+      </div>
+      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
+        <div class="ce-editor-wrapper" style="flex:1;min-height:200px;border:1px solid var(--border);border-radius:3px">
+          <div class="ce-line-numbers" id="macro-lib-lines">1</div>
+          <div class="ce-code-area">
+            <textarea class="ce-textarea" id="macro-lib-code" spellcheck="false">${currentSource.replace(/</g, '&lt;')}</textarea>
+            <pre class="ce-highlight" id="macro-lib-highlight"></pre>
+          </div>
+        </div>
+        <div class="export-error" id="macro-lib-error" style="display:none"></div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
+          <button class="btn btn-small btn-primary" id="macro-lib-save">Save</button>
+        </div>
+      </div>
+    `;
+
+    const codeEl = modal.querySelector('#macro-lib-code') as HTMLTextAreaElement;
+    const highlightEl = modal.querySelector('#macro-lib-highlight') as HTMLPreElement;
+    const lineNumEl = modal.querySelector('#macro-lib-lines') as HTMLElement;
+    const errorEl = modal.querySelector('#macro-lib-error') as HTMLElement;
+
+    const syncHighlight = (): void => {
+      highlightEl.innerHTML = this.highlightConstraintCode(codeEl.value) + '\n';
+    };
+    const syncLineNumbers = (): void => {
+      const lines = codeEl.value.split('\n');
+      lineNumEl.innerHTML = lines.map((_, i) => `<div class="ce-line-num">${i + 1}</div>`).join('');
+    };
+    const syncScroll = (): void => {
+      highlightEl.scrollTop = codeEl.scrollTop;
+      highlightEl.scrollLeft = codeEl.scrollLeft;
+      lineNumEl.scrollTop = codeEl.scrollTop;
+    };
+
+    codeEl.addEventListener('input', () => { syncHighlight(); syncLineNumbers(); });
+    codeEl.addEventListener('scroll', syncScroll);
+    syncHighlight();
+    syncLineNumbers();
+
+    codeEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = codeEl.selectionStart;
+        const end = codeEl.selectionEnd;
+        codeEl.value = codeEl.value.substring(0, start) + '  ' + codeEl.value.substring(end);
+        codeEl.selectionStart = codeEl.selectionEnd = start + 2;
+        syncHighlight();
+      }
+    });
+
+    modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+
+    modal.querySelector('#macro-lib-reset')!.addEventListener('click', () => {
+      codeEl.value = DEFAULT_MACRO_LIBRARY.trim();
+      syncHighlight();
+      syncLineNumbers();
+    });
+
+    modal.querySelector('#macro-lib-save')!.addEventListener('click', () => {
+      const source = codeEl.value;
+      // Validate syntax
+      const result = parseConstraints(source);
+      if (result.errors.length > 0) {
+        errorEl.style.display = '';
+        errorEl.style.color = 'var(--error)';
+        errorEl.textContent = result.errors.map(e => `Line ${e.line}: ${e.message}`).join('; ');
+        return;
+      }
+      saveMacroLibrary(source);
+      invalidateStdlibCache();
+      overlay.remove();
+    });
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+
+  /** Constraint-style syntax highlighting (shared with macro lib editor) */
+  private highlightConstraintCode(code: string): string {
+    const KWORDS = ['mcu', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
+    const BLTS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
+
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    return code.split('\n').map(line => {
+      const commentIdx = line.indexOf('#');
+      let src = line, comment = '';
+      if (commentIdx >= 0) {
+        src = line.substring(0, commentIdx);
+        comment = line.substring(commentIdx);
+      }
+
+      let result = '';
+      let i = 0;
+      while (i < src.length) {
+        if (src[i] === '"') {
+          const start = i; i++;
+          while (i < src.length && src[i] !== '"') i++;
+          if (i < src.length) i++;
+          result += `<span class="ce-string">${esc(src.substring(start, i))}</span>`;
+          continue;
+        }
+        if (/[a-zA-Z_]/.test(src[i])) {
+          const start = i;
+          while (i < src.length && /[a-zA-Z0-9_]/.test(src[i])) i++;
+          const word = src.substring(start, i);
+          if (KWORDS.includes(word)) {
+            result += `<span class="ce-keyword">${esc(word)}</span>`;
+          } else if (BLTS.has(word) || getStdlibMacroNames().has(word)) {
+            result += `<span class="ce-builtin">${esc(word)}</span>`;
+          } else {
+            result += esc(word);
+          }
+          continue;
+        }
+        if (/[0-9]/.test(src[i])) {
+          const start = i;
+          while (i < src.length && /[0-9]/.test(src[i])) i++;
+          result += `<span class="ce-number">${esc(src.substring(start, i))}</span>`;
+          continue;
+        }
+        if ('=!&|^*@'.includes(src[i])) {
+          result += `<span class="ce-operator">${esc(src[i])}</span>`;
+          i++; continue;
+        }
+        result += esc(src[i]); i++;
+      }
+      if (comment) result += `<span class="ce-comment">${esc(comment)}</span>`;
+      return result;
+    }).join('\n');
   }
 
   private renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): void {

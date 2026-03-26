@@ -221,6 +221,20 @@ export function seedDefaultExports(): void {
 }
 
 // ============================================================
+// Macro Library
+// ============================================================
+
+const MACRO_LIB_KEY = 'macro-library';
+
+export function loadMacroLibrary(): string | null {
+  try { return localStorage.getItem(MACRO_LIB_KEY); } catch { return null; }
+}
+
+export function saveMacroLibrary(source: string): void {
+  try { localStorage.setItem(MACRO_LIB_KEY, source); } catch { /* storage unavailable */ }
+}
+
+// ============================================================
 // Project Data Migration
 // ============================================================
 
