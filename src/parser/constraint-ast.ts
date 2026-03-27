@@ -16,6 +16,10 @@ export interface ProgramNode {
 
 export type StatementNode =
   | McuDeclNode
+  | PackageDeclNode
+  | RamDeclNode
+  | RomDeclNode
+  | FreqDeclNode
   | ReserveDeclNode
   | PinDeclNode
   | PortDeclNode
@@ -26,6 +30,34 @@ export type StatementNode =
 export interface McuDeclNode {
   type: 'mcu_decl';
   patterns: string[];
+  loc: SourceLocation;
+}
+
+// package: LQFP* | BGA*
+export interface PackageDeclNode {
+  type: 'package_decl';
+  patterns: string[];
+  loc: SourceLocation;
+}
+
+// ram: 1024K (minimum RAM in bytes)
+export interface RamDeclNode {
+  type: 'ram_decl';
+  minBytes: number;
+  loc: SourceLocation;
+}
+
+// rom: 512K (minimum flash in bytes)
+export interface RomDeclNode {
+  type: 'rom_decl';
+  minBytes: number;
+  loc: SourceLocation;
+}
+
+// freq: 480 (minimum frequency in MHz)
+export interface FreqDeclNode {
+  type: 'freq_decl';
+  minMHz: number;
   loc: SourceLocation;
 }
 

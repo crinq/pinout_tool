@@ -7,6 +7,10 @@ import type {
   ProgramNode,
   StatementNode,
   McuDeclNode,
+  PackageDeclNode,
+  RamDeclNode,
+  RomDeclNode,
+  FreqDeclNode,
   ReserveDeclNode,
   SharedDeclNode,
   PinDeclNode,
@@ -69,7 +73,7 @@ interface Token {
 }
 
 const KEYWORDS = new Set([
-  'mcu', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
+  'mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
 ]);
 
 // ============================================================
@@ -319,6 +323,10 @@ class Parser {
     if (tok.type === 'KEYWORD') {
       switch (tok.value) {
         case 'mcu': return this.parseMcuDecl();
+        case 'package': return this.parsePackageDecl();
+        case 'ram': return this.parseMemoryDecl('ram');
+        case 'rom': return this.parseMemoryDecl('rom');
+        case 'freq': return this.parseFreqDecl();
         case 'reserve': return this.parseReserveDecl();
         case 'shared': return this.parseSharedDecl();
         case 'pin': return this.parsePinDecl();
@@ -336,7 +344,7 @@ class Parser {
       return null;
     }
 
-    this.error(`Expected a declaration (mcu, reserve, shared, pin, port, macro), got '${tok.value || tok.type}'`, tok);
+    this.error(`Expected a declaration (mcu, package, ram, rom, freq, reserve, shared, pin, port, macro), got '${tok.value || tok.type}'`, tok);
     this.advance();
     return null;
   }
@@ -359,13 +367,76 @@ class Parser {
     return { type: 'mcu_decl', patterns, loc };
   }
 
-  // Parse a glob pattern (sequence of ident, *, number, underscore, dash)
+  // package: pattern (| pattern)*
+  private parsePackageDecl(): PackageDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('package');
+    this.expect('COLON');
+
+    const patterns: string[] = [];
+    patterns.push(this.parseGlobPattern());
+
+    while (this.check('PIPE')) {
+      this.advance();
+      patterns.push(this.parseGlobPattern());
+    }
+
+    this.expectNewlineOrEnd();
+    return { type: 'package_decl', patterns, loc };
+  }
+
+  // ram: 1024K  or  rom: 512K
+  private parseMemoryDecl(keyword: 'ram' | 'rom'): RamDeclNode | RomDeclNode {
+    const loc = this.loc();
+    this.expectKeyword(keyword);
+    this.expect('COLON');
+
+    const numTok = this.expect('NUMBER');
+    let value = parseFloat(numTok.value);
+
+    // Optional suffix: K, KB, M, MB (case-insensitive)
+    if (this.check('IDENT') || this.check('KEYWORD')) {
+      const suffix = this.peek().value.toUpperCase();
+      if (suffix === 'K' || suffix === 'KB') {
+        value *= 1024;
+        this.advance();
+      } else if (suffix === 'M' || suffix === 'MB') {
+        value *= 1024 * 1024;
+        this.advance();
+      }
+      // No suffix → raw value in bytes
+    }
+
+    this.expectNewlineOrEnd();
+    const minBytes = Math.floor(value);
+
+    if (keyword === 'ram') {
+      return { type: 'ram_decl', minBytes, loc } as RamDeclNode;
+    }
+    return { type: 'rom_decl', minBytes, loc } as RomDeclNode;
+  }
+
+  // freq: 480
+  private parseFreqDecl(): FreqDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('freq');
+    this.expect('COLON');
+
+    const numTok = this.expect('NUMBER');
+    const minMHz = parseFloat(numTok.value);
+
+    this.expectNewlineOrEnd();
+    return { type: 'freq_decl', minMHz, loc };
+  }
+
+  // Parse a glob pattern (sequence of ident, *, number, underscore, dash, brackets)
   private parseGlobPattern(): string {
     let result = '';
     while (!this.isAtEnd() && !this.check('PIPE') && !this.check('NEWLINE') && !this.check('EOF')) {
       const tok = this.peek();
       if (tok.type === 'IDENT' || tok.type === 'KEYWORD' || tok.type === 'STAR' ||
-          tok.type === 'NUMBER' || tok.type === 'DASH' || tok.type === 'UNDERSCORE') {
+          tok.type === 'NUMBER' || tok.type === 'DASH' || tok.type === 'UNDERSCORE' ||
+          tok.type === 'LBRACKET' || tok.type === 'RBRACKET' || tok.type === 'COMMA') {
         result += tok.value;
         this.advance();
       } else {

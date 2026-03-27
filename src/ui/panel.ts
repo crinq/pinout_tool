@@ -5,7 +5,8 @@ export type StateChangeType =
   | 'solution-selected'
   | 'constraints-changed'
   | 'solver-complete'
-  | 'theme-changed';
+  | 'theme-changed'
+  | 'highlight-pins';
 
 export interface StateChange {
   type: StateChangeType;
@@ -17,6 +18,10 @@ export interface StateChange {
   gpioCount?: number;
   dmaStreamAssignment?: Map<string, string>;
   compatibility?: CompatibilityResult;
+  /** Pin names to highlight in the package viewer (empty set clears) */
+  highlightPins?: Set<string>;
+  /** Color for the highlighted pins */
+  highlightColor?: string;
 }
 
 export interface Panel {

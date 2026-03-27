@@ -6,6 +6,9 @@
 2. [Getting Started](#getting-started)
 3. [Constraint Language](#constraint-language)
    - [MCU Selection](#mcu-selection)
+   - [Package Filter](#package-filter)
+   - [Memory Filters](#memory-filters)
+   - [Frequency Filter](#frequency-filter)
    - [Pin Reservations](#pin-reservations)
    - [Fixed Pin Assignments](#fixed-pin-assignments)
    - [Shared Peripherals](#shared-peripherals)
@@ -90,9 +93,44 @@ The constraint language uses indentation-based nesting (2 spaces per level), `#`
 ```
 mcu: STM32G473*
 mcu: STM32F405* | STM32F407*
+mcu: STM32F[405,407]
 ```
 
-Glob patterns with `*` wildcard. Multiple patterns separated by `|`. This is optional -- if omitted, the currently loaded MCU is used.
+Glob patterns with `*` wildcard. Multiple patterns separated by `|`. Bracket alternatives with `[a,b]`. Case-insensitive with implicit `*` at end (e.g., `stm32f4` matches `STM32F405VGTx`).
+
+When `mcu:` is present, the solver searches **all matching MCUs stored in the browser** instead of just the currently loaded one. Solutions from all matching MCUs are merged into a single result set. Selecting a solution from a different MCU automatically switches the package viewer.
+
+If omitted, the currently loaded MCU is used.
+
+### Package Filter
+
+```
+package: LQFP100
+package: LQFP[100,144] | BGA*
+package: *176
+```
+
+Filter MCUs by package type. Same glob syntax as `mcu:`. Can be combined with `mcu:` or used alone (searches all stored MCUs).
+
+### Memory Filters
+
+```
+ram: 256K
+rom: 512K
+ram: 1M
+rom: 2048KB
+```
+
+Specify minimum RAM and ROM (flash) requirements. Supports suffixes: `K`/`KB` (×1024), `M`/`MB` (×1024²). Without a suffix, the value is in bytes. MCUs with less memory are excluded from the search.
+
+### Frequency Filter
+
+```
+freq: 200
+freq: 480
+```
+
+Specify a minimum CPU frequency in MHz. MCUs with a lower maximum frequency are excluded from the search.
 
 ### Pin Reservations
 
@@ -603,11 +641,13 @@ Access via the **Settings** button:
 
 ## Solution Browser
 
-Solutions are displayed in a grouped table. Solutions with the same peripheral-to-port mapping are grouped together.
+Solutions are displayed in a grouped table. Solutions with the same peripheral-to-port mapping are grouped together. When solving across multiple MCUs, groups are MCU-specific and the group header shows the MCU name.
 
 ### Peripheral Summary
 
 The Peripherals panel shows the port-to-peripheral mapping for the currently selected solution, along with the total number of used pins and peripherals.
+
+**Pin group highlighting:** Hover over a port name or peripheral instance to highlight the corresponding pins on the package viewer with a pulsating glow. Click to toggle a persistent highlight that stays active until clicked again or a different solution is selected.
 
 ### Navigation
 
@@ -629,10 +669,11 @@ After a solver run, the solution list is automatically focused for immediate key
 | Column | Description |
 |--------|-------------|
 | **#** | Solution ID |
+| **MCU** | MCU variant (only shown in multi-MCU mode) |
 | **Cost** | Total weighted cost score |
 | **Pins** | Number of MCU pins used |
 | **Peripherals** | Number of peripheral instances used |
-| **Name** | User-defined name, or the solver that found the solution (BT, 2Ph, Rnd, CG, Div, AC3, MRV) |
+| **Name** | User-defined name, or the solver that found the solution |
 
 All columns except Name are sortable (click header to toggle ascending/descending).
 

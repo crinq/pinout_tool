@@ -265,6 +265,11 @@ export class SolverSolutions implements Panel {
       this.focusedIndex = Math.max(0, this.flatItems.length - 1);
     }
 
+    // Detect multi-MCU results
+    const mcuRefs = new Set(result.solutions.map(s => s.mcuRef));
+    const isMultiMcu = mcuRefs.size > 1;
+    const colCount = isMultiMcu ? 6 : 5;
+
     // Build table
     const table = document.createElement('table');
     table.className = 'st-table';
@@ -273,6 +278,7 @@ export class SolverSolutions implements Panel {
     const thead = document.createElement('thead');
     thead.innerHTML = `<tr>
       ${this.headerCell('#', 'id')}
+      ${isMultiMcu ? '<th>MCU</th>' : ''}
       ${this.headerCell('Cost', 'cost')}
       ${this.headerCell('Pins', 'pins')}
       ${this.headerCell('Periphs', 'peripherals')}
@@ -310,11 +316,12 @@ export class SolverSolutions implements Panel {
           + (isExpanded ? ' st-group-expanded' : '')
           + (isFocused ? ' st-focused' : '');
         const groupTd = document.createElement('td');
-        groupTd.colSpan = 5;
+        groupTd.colSpan = colCount;
         const arrow = isExpanded ? '\u25BE' : '\u25B8';
         const best = group.solutions[0];
         const bestCost = best ? `, best ${best.totalCost.toFixed(1)}` : '';
-        groupTd.textContent = `${arrow} Group ${item.groupNum}: ${group.solutions.length} solutions${bestCost}`;
+        const mcuLabel = best ? ` [${best.mcuRef}]` : '';
+        groupTd.textContent = `${arrow} Group ${item.groupNum}${mcuLabel}: ${group.solutions.length} solutions${bestCost}`;
         groupTr.appendChild(groupTd);
 
         const idx = fi;
@@ -337,6 +344,7 @@ export class SolverSolutions implements Panel {
 
         tr.innerHTML = `
           <td class="st-cell-id">${sol.id}</td>
+          ${isMultiMcu ? `<td class="st-cell-mcu" title="${sol.mcuRef}">${this.shortMcuRef(sol.mcuRef)}</td>` : ''}
           <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
           <td class="st-cell-pins">${this.countPins(sol)}</td>
           <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
@@ -396,7 +404,7 @@ export class SolverSolutions implements Panel {
     return groups;
   }
 
-  /** Create a stable grouping key from port -> peripherals mapping */
+  /** Create a stable grouping key from port -> peripherals mapping (includes MCU for multi-MCU) */
   private peripheralKey(solution: Solution): string {
     const parts: string[] = [];
     const sortedPorts = [...solution.portPeripherals.keys()].sort();
@@ -404,7 +412,8 @@ export class SolverSolutions implements Panel {
       const peripherals = [...solution.portPeripherals.get(port)!].sort();
       parts.push(`${port}:${peripherals.join(',')}`);
     }
-    return parts.join('|');
+    // Include mcuRef so solutions from different MCUs are grouped separately
+    return `${solution.mcuRef}||${parts.join('|')}`;
   }
 
   /** Create a compact label listing unique peripherals across all ports */
@@ -413,7 +422,13 @@ export class SolverSolutions implements Panel {
     for (const peripherals of solution.portPeripherals.values()) {
       for (const p of peripherals) allPeripherals.add(p);
     }
-    return [...allPeripherals].sort().join(', ');
+    const label = [...allPeripherals].sort().join(', ');
+    // Prepend MCU ref when result has multiple MCUs
+    const mcuRefs = new Set(this.solverResult?.solutions.map(s => s.mcuRef) ?? []);
+    if (mcuRefs.size > 1) {
+      return `${this.shortMcuRef(solution.mcuRef)}: ${label}`;
+    }
+    return label;
   }
 
   private headerCell(label: string, key: SortKey): string {
@@ -460,7 +475,17 @@ export class SolverSolutions implements Panel {
 
   private solverShortLabel(origin?: string): string {
     if (!origin) return '';
-    return SolverSolutions.SOLVER_SHORT_LABELS[origin] ?? origin;
+    // Strip MCU ref prefix (e.g., "STM32G473VETx:hybrid" → "hybrid")
+    const solver = origin.includes(':') ? origin.substring(origin.indexOf(':') + 1) : origin;
+    return SolverSolutions.SOLVER_SHORT_LABELS[solver] ?? solver;
+  }
+
+  /** Shorten MCU ref for display (e.g., STM32G473VETx → G473VE) */
+  private shortMcuRef(ref: string): string {
+    // Strip STM32 prefix and package suffix
+    const m = ref.match(/^STM32(.+?)([A-Z]\d*x?)$/i);
+    if (m) return m[1];
+    return ref.length > 10 ? ref.substring(0, 10) : ref;
   }
 
 }

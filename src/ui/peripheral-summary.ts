@@ -14,6 +14,13 @@ export class PeripheralSummary implements Panel {
   private totalAssignablePins = 0;
   private gpioCount = 0;
   private dmaStreamAssignment = new Map<string, string>();
+  private highlightCallback: ((pins: Set<string>, color?: string) => void) | null = null;
+  private persistentHighlight: { type: 'port' | 'peripheral'; key: string } | null = null;
+
+  /** Register a callback to highlight pins in the package viewer */
+  onHighlightPins(callback: (pins: Set<string>, color?: string) => void): void {
+    this.highlightCallback = callback;
+  }
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -33,6 +40,8 @@ export class PeripheralSummary implements Panel {
       this.gpioCount = change.gpioCount ?? 0;
       this.dmaStreamAssignment = change.dmaStreamAssignment ?? new Map();
       this.portPeripherals = this.derivePeripherals(this.currentAssignments);
+      this.persistentHighlight = null;
+      this.emitHighlight(new Set());
       this.render();
     } else if (change.type === 'mcu-loaded' && change.mcu) {
       this.mcu = change.mcu;
@@ -94,6 +103,31 @@ export class PeripheralSummary implements Panel {
     return result;
   }
 
+  /** Get all pin names assigned to a given port */
+  private getPinsForPort(portName: string): Set<string> {
+    const pins = new Set<string>();
+    for (const a of this.currentAssignments) {
+      if (a.portName === portName) pins.add(a.pinName);
+    }
+    return pins;
+  }
+
+  /** Get all pin names assigned to a given peripheral instance (e.g. "SPI1") */
+  private getPinsForPeripheral(instance: string): Set<string> {
+    const pins = new Set<string>();
+    for (const a of this.currentAssignments) {
+      const ui = a.signalName.indexOf('_');
+      if (ui !== -1 && a.signalName.substring(0, ui) === instance) {
+        pins.add(a.pinName);
+      }
+    }
+    return pins;
+  }
+
+  private emitHighlight(pins: Set<string>, color?: string): void {
+    this.highlightCallback?.(pins, color);
+  }
+
   private render(): void {
     if (!this.listEl) return;
 
@@ -136,29 +170,86 @@ export class PeripheralSummary implements Panel {
       row.className = 'ps-row';
 
       const portSpan = document.createElement('span');
-      portSpan.className = 'ps-port';
+      portSpan.className = 'ps-port ps-highlightable';
       portSpan.textContent = port;
       const color = this.portColors.get(port);
       if (color) portSpan.style.color = color;
 
-      // Build peripheral list with inline DMA info
-      // e.g. "SPI1(D1S0, D1S2), USART1"
+      // Port hover/click → highlight all pins in this port
+      const isPersistentPort = this.persistentHighlight?.type === 'port' && this.persistentHighlight.key === port;
+      if (isPersistentPort) portSpan.classList.add('ps-highlight-active');
+
+      portSpan.addEventListener('mouseenter', () => {
+        if (!this.persistentHighlight) {
+          this.emitHighlight(this.getPinsForPort(port), color);
+        }
+      });
+      portSpan.addEventListener('mouseleave', () => {
+        if (!this.persistentHighlight) {
+          this.emitHighlight(new Set());
+        }
+      });
+      portSpan.addEventListener('click', () => {
+        if (this.persistentHighlight?.type === 'port' && this.persistentHighlight.key === port) {
+          // Toggle off
+          this.persistentHighlight = null;
+          this.emitHighlight(new Set());
+          this.render();
+        } else {
+          this.persistentHighlight = { type: 'port', key: port };
+          this.emitHighlight(this.getPinsForPort(port), color);
+          this.render();
+        }
+      });
+
+      // Build peripheral list with inline DMA info as individual clickable spans
       const portAssignments = this.currentAssignments.filter(a => a.portName === port);
       const instanceDma = this.deriveDmaByInstance(portAssignments, dmaMap);
 
-      const perifParts: string[] = [];
-      for (const inst of [...portPeripherals].sort()) {
-        const dmaStreams = instanceDma.get(inst);
-        if (dmaStreams && dmaStreams.length > 0) {
-          perifParts.push(`${inst}(${dmaStreams.join(', ')})`);
-        } else {
-          perifParts.push(inst);
-        }
-      }
-
       const perifSpan = document.createElement('span');
       perifSpan.className = 'ps-peripherals';
-      perifSpan.textContent = perifParts.join(', ');
+
+      const sortedInstances = [...portPeripherals].sort();
+      for (let i = 0; i < sortedInstances.length; i++) {
+        const inst = sortedInstances[i];
+        const dmaStreams = instanceDma.get(inst);
+        const instSpan = document.createElement('span');
+        instSpan.className = 'ps-peripheral-instance ps-highlightable';
+        instSpan.textContent = dmaStreams && dmaStreams.length > 0
+          ? `${inst}(${dmaStreams.join(', ')})`
+          : inst;
+
+        const isPersistentInst = this.persistentHighlight?.type === 'peripheral' && this.persistentHighlight.key === inst;
+        if (isPersistentInst) instSpan.classList.add('ps-highlight-active');
+
+        instSpan.addEventListener('mouseenter', () => {
+          if (!this.persistentHighlight) {
+            this.emitHighlight(this.getPinsForPeripheral(inst), color);
+          }
+        });
+        instSpan.addEventListener('mouseleave', () => {
+          if (!this.persistentHighlight) {
+            this.emitHighlight(new Set());
+          }
+        });
+        instSpan.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (this.persistentHighlight?.type === 'peripheral' && this.persistentHighlight.key === inst) {
+            this.persistentHighlight = null;
+            this.emitHighlight(new Set());
+            this.render();
+          } else {
+            this.persistentHighlight = { type: 'peripheral', key: inst };
+            this.emitHighlight(this.getPinsForPeripheral(inst), color);
+            this.render();
+          }
+        });
+
+        perifSpan.appendChild(instSpan);
+        if (i < sortedInstances.length - 1) {
+          perifSpan.appendChild(document.createTextNode(', '));
+        }
+      }
 
       row.appendChild(portSpan);
       row.appendChild(perifSpan);

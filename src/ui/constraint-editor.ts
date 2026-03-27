@@ -3,7 +3,7 @@ import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import { getStdlibMacroNames } from '../parser/stdlib-macros';
 
-const KEYWORDS = ['mcu', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
+const KEYWORDS = ['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
 const DEBOUNCE_MS = 300;
 
@@ -474,8 +474,15 @@ export class ConstraintEditor implements Panel {
       <div class="ce-help-body">
         <section>
           <h3>Structure</h3>
-          <pre class="ce-help-code"># MCU selection (glob patterns)
+          <pre class="ce-help-code"># MCU selection (glob patterns, searches stored MCUs)
 mcu: STM32F405*
+mcu: STM32G4*VE | STM32F4*VG
+
+# Filter by package, min RAM/ROM/freq
+package: LQFP[100,144] | BGA*
+ram: 256K
+rom: 512K
+freq: 200
 
 # Reserve pins and peripherals from solving
 reserve: PH0, PH1, ADC*, SPI[1,3]

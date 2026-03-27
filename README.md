@@ -9,7 +9,9 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **Visual package viewer** -- interactive canvas with zoom, rotation, pin assignment popup, and signal search
 - **Multiple package types** -- LQFP, BGA, and WLCSP support with correct ball/pin rendering
 - **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, proximity, and more
+- **Multi-MCU search** -- solve across multiple MCU variants with `mcu:`, `package:`, `ram:`, `rom:` filters
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
+- **Pin group highlighting** -- hover/click port names or peripheral instances to highlight pins on the viewer
 - **Project management** -- save/load projects, store MCU data in browser localStorage
 - **CubeMX .ioc import** -- import pin assignments from STM32CubeMX project files
 - **Editable macro library** -- customize and extend the standard library macros via Data Manager

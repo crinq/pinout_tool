@@ -51,13 +51,19 @@ export class PackageViewer implements Panel {
   private searchInput!: HTMLInputElement;
   private searchMatchPins: Set<string> = new Set();
   private searchMatchSignals: Set<string> = new Set();
-  private searchAnimationId: number | null = null;
-  private searchAnimPhase = 0;
   private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Hover-based signal highlight state
   private hoverMatchPins: Set<string> = new Set();
   private signalToPins: Map<string, string[]> = new Map();
+
+  // Group highlight state (from peripheral summary hover/click)
+  private groupHighlightPins: Set<string> = new Set();
+  private groupHighlightColor: string = '#a78bfa';
+
+  // Unified pulsating animation (shared by search, hover, group highlights)
+  private pulsePhase = 0;
+  private pulseAnimId: number | null = null;
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -156,6 +162,12 @@ export class PackageViewer implements Panel {
     if (change.type === 'theme-changed') {
       this.render();
     }
+    if (change.type === 'highlight-pins') {
+      this.groupHighlightPins = change.highlightPins ?? new Set();
+      this.groupHighlightColor = change.highlightColor ?? '#a78bfa';
+      this.updateAnimation();
+      this.render();
+    }
   }
 
   setMcu(mcu: Mcu): void {
@@ -168,7 +180,7 @@ export class PackageViewer implements Panel {
     if (this.searchInput) this.searchInput.value = '';
     this.searchMatchPins.clear();
     this.searchMatchSignals.clear();
-    this.stopSearchAnimation();
+    this.stopPulseAnimation();
     this.buildSignalToPins(mcu);
     this.render();
   }
@@ -680,7 +692,7 @@ export class PackageViewer implements Panel {
       const isSelected = this.selectedPin === pin;
       const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
 
-      const searchColor = this.getSearchHighlightColor(pin.name);
+      const hlColor = this.getPinHighlightColor(pin.name);
 
       let fillColor: string;
       if (isHovered) {
@@ -703,15 +715,21 @@ export class PackageViewer implements Panel {
       ctx.fillStyle = fillColor;
       ctx.fillRect(x, y, pw, ph);
 
-      if (searchColor) {
-        // Pulsing amber border ring (keeps original fill visible)
-        ctx.strokeStyle = searchColor;
+      if (hlColor) {
+        const intensity = this.getPulseIntensity();
+        ctx.save();
+        ctx.globalAlpha = intensity;
+        ctx.shadowColor = hlColor;
+        ctx.shadowBlur = 6 + 6 * intensity;
+        ctx.strokeStyle = hlColor;
         ctx.lineWidth = 2.5;
+        ctx.strokeRect(x, y, pw, ph);
+        ctx.restore();
       } else {
         ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
         ctx.lineWidth = 0.5;
+        ctx.strokeRect(x, y, pw, ph);
       }
-      ctx.strokeRect(x, y, pw, ph);
 
       // Draw pin label (counter-rotate so labels stay readable regardless of view rotation)
       ctx.save();
@@ -731,8 +749,8 @@ export class PackageViewer implements Panel {
       const fontSize = Math.min(9, pinSpacing * 0.65);
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
       ctx.font = `${fontSize}px monospace`;
-      if (searchColor) {
-        ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
+      if (hlColor) {
+        ctx.globalAlpha = this.getPulseIntensity();
       }
       ctx.textBaseline = 'middle';
 
@@ -929,7 +947,7 @@ export class PackageViewer implements Panel {
       const isHovered = this.hoveredPin === pin;
       const isSelected = this.selectedPin === pin;
       const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
-      const searchColor = this.getSearchHighlightColor(pin.name);
+      const hlColor = this.getPinHighlightColor(pin.name);
 
       let fillColor: string;
       if (isHovered) {
@@ -953,11 +971,18 @@ export class PackageViewer implements Panel {
       ctx.fillStyle = fillColor;
       ctx.fill();
 
-      if (searchColor) {
-        // Pulsing amber border ring (drawn outside the ball)
-        ctx.strokeStyle = searchColor;
-        ctx.lineWidth = 3.5;
+      if (hlColor) {
+        const intensity = this.getPulseIntensity();
+        ctx.save();
+        ctx.globalAlpha = intensity;
+        ctx.shadowColor = hlColor;
+        ctx.shadowBlur = 8 + 8 * intensity;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ballRadius + 1, 0, Math.PI * 2);
+        ctx.strokeStyle = hlColor;
+        ctx.lineWidth = 2.5;
         ctx.stroke();
+        ctx.restore();
       } else {
         ctx.strokeStyle = textColor;
         ctx.lineWidth = 0.5;
@@ -975,8 +1000,8 @@ export class PackageViewer implements Panel {
         ctx.rotate(counterAngle);
         ctx.fillStyle = isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor;
         ctx.font = `${fontSize}px monospace`;
-        if (searchColor) {
-          ctx.globalAlpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
+        if (hlColor) {
+          ctx.globalAlpha = this.getPulseIntensity();
         }
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1359,16 +1384,19 @@ export class PackageViewer implements Panel {
 
   /** Start or stop the pulsating animation based on whether any pins need highlighting */
   private updateAnimation(): void {
-    const needsAnimation = this.searchMatchPins.size > 0 || this.hoverMatchPins.size > 0;
+    const needsAnimation =
+      this.searchMatchPins.size > 0 ||
+      this.hoverMatchPins.size > 0 ||
+      this.groupHighlightPins.size > 0;
     if (needsAnimation) {
-      this.startSearchAnimation();
+      this.startPulseAnimation();
     } else {
-      this.stopSearchAnimation();
+      this.stopPulseAnimation();
     }
   }
 
-  private startSearchAnimation(): void {
-    if (this.searchAnimationId !== null) return;
+  private startPulseAnimation(): void {
+    if (this.pulseAnimId !== null) return;
 
     let lastTime = performance.now();
     const PULSE_PERIOD_MS = 1200;
@@ -1376,20 +1404,20 @@ export class PackageViewer implements Panel {
     const animate = (now: number) => {
       const dt = now - lastTime;
       lastTime = now;
-      this.searchAnimPhase = (this.searchAnimPhase + dt / PULSE_PERIOD_MS) % 1;
+      this.pulsePhase = (this.pulsePhase + dt / PULSE_PERIOD_MS) % 1;
       this.render();
-      this.searchAnimationId = requestAnimationFrame(animate);
+      this.pulseAnimId = requestAnimationFrame(animate);
     };
 
-    this.searchAnimationId = requestAnimationFrame(animate);
+    this.pulseAnimId = requestAnimationFrame(animate);
   }
 
-  private stopSearchAnimation(): void {
-    if (this.searchAnimationId !== null) {
-      cancelAnimationFrame(this.searchAnimationId);
-      this.searchAnimationId = null;
+  private stopPulseAnimation(): void {
+    if (this.pulseAnimId !== null) {
+      cancelAnimationFrame(this.pulseAnimId);
+      this.pulseAnimId = null;
     }
-    this.searchAnimPhase = 0;
+    this.pulsePhase = 0;
   }
 
   private isIncompatiblePin(pinName: string): boolean {
@@ -1404,9 +1432,22 @@ export class PackageViewer implements Panel {
     return new RegExp(`^${re}$`);
   }
 
-  private getSearchHighlightColor(pinName: string): string | null {
-    if (!this.searchMatchPins.has(pinName) && !this.hoverMatchPins.has(pinName)) return null;
-    const intensity = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.searchAnimPhase * Math.PI * 2));
-    return `rgba(251, 191, 36, ${intensity})`;
+  /** Current pulsating intensity (0.3–1.0) */
+  private getPulseIntensity(): number {
+    return 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.pulsePhase * Math.PI * 2));
+  }
+
+  /**
+   * Returns the highlight color for a pin, or null if not highlighted.
+   * Search/hover highlights use amber; group highlights use the port color.
+   */
+  private getPinHighlightColor(pinName: string): string | null {
+    if (this.searchMatchPins.has(pinName) || this.hoverMatchPins.has(pinName)) {
+      return '#fbbf24'; // amber
+    }
+    if (this.groupHighlightPins.has(pinName)) {
+      return this.groupHighlightColor;
+    }
+    return null;
   }
 }

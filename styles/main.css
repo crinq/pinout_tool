@@ -833,6 +833,27 @@ body.splitter-dragging {
   word-break: break-word;
 }
 
+.ps-highlightable {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 2px;
+  transition: background-color 0.15s;
+}
+
+.ps-highlightable:hover {
+  background-color: rgba(128, 128, 128, 0.15);
+}
+
+.ps-highlight-active {
+  background-color: rgba(128, 128, 128, 0.2);
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 1px;
+}
+
+.ps-peripheral-instance {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
 .ps-summary {
   font-size: 11px;
   color: var(--text-secondary);
@@ -1053,6 +1074,15 @@ body.splitter-dragging {
 .st-row-selected {
   background: var(--accent);
   color: white;
+}
+
+.st-cell-mcu {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 10px;
 }
 
 .st-cell-id {

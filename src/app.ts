@@ -18,6 +18,7 @@ import type { ProjectData, ProjectVersion, SerializedSolution } from './storage'
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
+import { filterStoredMcus, extractMcuFilters } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from './ui/tutorial';
 import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY, getStdlibMacroNames } from './parser/stdlib-macros';
 
@@ -176,6 +177,10 @@ export class App {
   private debugOverlay = new SolverDebugOverlay();
   private currentSolution: Solution | null = null;
   private currentProjectName: string | null = null;
+  /** Cache of parsed MCU objects for multi-MCU solving */
+  private mcuCache = new Map<string, Mcu>();
+  /** MCU refNames involved in the current solver result (for multi-MCU mode) */
+  private multiMcuRefs: string[] = [];
   private projectSelect!: HTMLSelectElement;
 
   init(): void {
@@ -193,6 +198,9 @@ export class App {
     this.solverSolutions = new SolverSolutions();
     this.projectSolutions = new ProjectSolutions();
     this.peripheralSummary = new PeripheralSummary();
+    this.peripheralSummary.onHighlightPins((pins, color) => {
+      this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: pins, highlightColor: color });
+    });
 
     const bottomSplitter = HorizontalSplitter();
     bottomSplitter.add(this.solverSolutions, 1);
@@ -250,6 +258,21 @@ export class App {
     // Solution selection -> package viewer (shared by both lists)
     const handleSolutionSelected = (solution: Solution) => {
       this.currentSolution = solution;
+
+      // Switch MCU if the solution is from a different MCU (multi-MCU mode)
+      if (solution.mcuRef && (!this.currentMcu || this.currentMcu.refName !== solution.mcuRef)) {
+        const cachedMcu = this.mcuCache.get(solution.mcuRef);
+        if (cachedMcu) {
+          this.currentMcu = cachedMcu;
+          // Update header
+          const mcuInfo = document.getElementById('mcu-info');
+          if (mcuInfo) {
+            mcuInfo.textContent = `${cachedMcu.refName} | ${cachedMcu.package} | ${cachedMcu.core} @ ${cachedMcu.frequency}MHz | ${cachedMcu.flash}KB Flash | ${cachedMcu.ram}KB RAM`;
+          }
+          this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu: cachedMcu });
+        }
+      }
+
       const seen = new Set<string>();
       const assignments = solution.configAssignments.flatMap(ca => ca.assignments).filter(a => {
         const key = `${a.pinName}:${a.signalName}:${a.portName}:${a.channelName}`;
@@ -349,15 +372,58 @@ export class App {
 
     this.currentSolution = null;
 
-    if (!this.currentMcu) {
-      this.showStatus('No MCU loaded', 'error');
-      return;
-    }
-
     const parseResult = this.constraintEditor.getParseResult();
     if (!parseResult?.ast) {
       this.showStatus('Fix constraint errors before solving', 'error');
       return;
+    }
+
+    // Determine MCU list: multi-MCU from filters or single current MCU
+    const filters = extractMcuFilters(parseResult.ast);
+    let mcuList: Mcu[];
+
+    if (filters) {
+      // Multi-MCU mode: load matching MCUs from storage
+      const matchingRefs = filterStoredMcus(parseResult.ast);
+      if (matchingRefs.length === 0) {
+        this.showStatus('No stored MCUs match the mcu/package/ram/rom/freq filters. Import MCU XML files first.', 'error');
+        return;
+      }
+
+      mcuList = [];
+      for (const ref of matchingRefs) {
+        // Use cache or parse from storage
+        let mcu = this.mcuCache.get(ref);
+        if (!mcu) {
+          const xml = localStorage.getItem(`mcu-xml:${ref}`);
+          if (!xml) continue;
+          try {
+            mcu = parseMcuXml(xml);
+            this.mcuCache.set(ref, mcu);
+          } catch {
+            console.warn(`Failed to parse stored MCU ${ref}`);
+            continue;
+          }
+        }
+        mcuList.push(mcu);
+      }
+
+      if (mcuList.length === 0) {
+        this.showStatus('Failed to load any matching MCU data', 'error');
+        return;
+      }
+
+      this.multiMcuRefs = mcuList.map(m => m.refName);
+    } else {
+      // Single MCU mode
+      if (!this.currentMcu) {
+        this.showStatus('No MCU loaded', 'error');
+        return;
+      }
+      mcuList = [this.currentMcu];
+      this.multiMcuRefs = [];
+      // Ensure current MCU is in cache for solution switching
+      this.mcuCache.set(this.currentMcu.refName, this.currentMcu);
     }
 
     const solverTypes = this.settings.solverTypes;
@@ -366,26 +432,63 @@ export class App {
       return;
     }
 
+    const multiLabel = mcuList.length > 1 ? ` across ${mcuList.length} MCUs` : '';
     const label = solverTypes.length > 1
-      ? `Solving with ${solverTypes.length} solvers...`
-      : 'Solving...';
+      ? `Solving with ${solverTypes.length} solvers${multiLabel}...`
+      : `Solving${multiLabel}...`;
     this.showStatus(label, 'info');
     this.setSolveButtonState(true);
-
-    const twoPhaseTypes = new Set(['two-phase', 'diverse-instances', 'priority-group', 'mrv-group', 'ratio-mrv-group']);
-    const results: LabeledSolverResult[] = [];
-    let completedCount = 0;
 
     if (this.settings.solverDebugOverlay) {
       this.debugOverlay.startRun(solverTypes);
     }
+
+    // Solve sequentially for each MCU, collecting all results
+    const allResults: LabeledSolverResult[] = [];
+    let mcuIdx = 0;
+
+    const solveNextMcu = () => {
+      if (mcuIdx >= mcuList.length) {
+        this.onAllSolversComplete(allResults);
+        return;
+      }
+
+      const mcu = mcuList[mcuIdx];
+      const mcuLabel = mcuList.length > 1 ? `[${mcuIdx + 1}/${mcuList.length} ${mcu.refName}] ` : '';
+
+      if (mcuList.length > 1) {
+        this.showStatus(`${mcuLabel}Solving...`, 'info');
+      }
+
+      this.solveForMcu(mcu, parseResult.ast!, solverTypes, mcuLabel, (results) => {
+        allResults.push(...results);
+        mcuIdx++;
+        solveNextMcu();
+      });
+    };
+
+    solveNextMcu();
+  }
+
+  /**
+   * Dispatch solver workers for a single MCU. Calls onComplete when all workers finish.
+   */
+  private solveForMcu(
+    mcu: Mcu,
+    ast: ProgramNode,
+    solverTypes: string[],
+    statusPrefix: string,
+    onComplete: (results: LabeledSolverResult[]) => void,
+  ): void {
+    const twoPhaseTypes = new Set(['two-phase', 'diverse-instances', 'priority-group', 'mrv-group', 'ratio-mrv-group']);
+    const results: LabeledSolverResult[] = [];
+    let completedCount = 0;
 
     // A2: Group shared-Phase-1 solvers into one worker
     const sharedPhase1Set = new Set(['two-phase', 'diverse-instances', 'priority-two-phase', 'priority-group']);
     const sharedSolvers = solverTypes.filter(s => sharedPhase1Set.has(s));
     const individualSolvers = solverTypes.filter(s => !sharedPhase1Set.has(s));
 
-    // Workers: one for shared Phase 1 group (if ≥2), plus one per individual solver
     const workerJobs: Array<{ types: string[]; useShared: boolean }> = [];
     if (sharedSolvers.length >= 2) {
       workerJobs.push({ types: sharedSolvers, useShared: true });
@@ -393,7 +496,6 @@ export class App {
         workerJobs.push({ types: [st], useShared: false });
       }
     } else {
-      // Not enough to share - run all individually
       for (const st of solverTypes) {
         workerJobs.push({ types: [st], useShared: false });
       }
@@ -415,7 +517,7 @@ export class App {
       );
       this.solverWorkers.push(worker);
 
-      const jobLabel = job.types.join('+');
+      const jobLabel = `${mcu.refName}:${job.types.join('+')}`;
 
       worker.onmessage = (e) => {
         const solverResult = e.data as SolverResult;
@@ -425,17 +527,19 @@ export class App {
         }
         completedCount++;
         if (totalCount > 1) {
-          this.showStatus(`Solving... (${completedCount}/${totalCount} complete)`, 'info');
+          this.showStatus(`${statusPrefix}Solving... (${completedCount}/${totalCount} complete)`, 'info');
         }
         if (completedCount === totalCount) {
-          this.onAllSolversComplete(results);
+          // Terminate workers for this MCU before proceeding
+          this.terminateWorkers();
+          onComplete(results);
         }
       };
 
       worker.onerror = (err) => {
         console.error(`Solver worker error (${jobLabel}):`, err);
         const errorResult: SolverResult = {
-          mcuRef: this.currentMcu?.refName ?? '',
+          mcuRef: mcu.refName,
           solutions: [],
           errors: [{ type: 'error', message: `${jobLabel} crashed: ${err.message}` }],
           statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
@@ -446,15 +550,14 @@ export class App {
         }
         completedCount++;
         if (completedCount === totalCount) {
-          this.onAllSolversComplete(results);
+          this.terminateWorkers();
+          onComplete(results);
         }
       };
 
       if (job.useShared) {
-        // A2: Send multiple solver types to one worker for shared Phase 1
         worker.postMessage({
-          ast: parseResult.ast,
-          mcu: this.currentMcu,
+          ast, mcu,
           config: baseConfig,
           solverTypes: job.types,
           twoPhaseConfig: {
@@ -470,8 +573,7 @@ export class App {
           : this.settings.maxGroups * this.settings.maxSolutionsPerGroup;
 
         worker.postMessage({
-          ast: parseResult.ast,
-          mcu: this.currentMcu,
+          ast, mcu,
           config: { ...baseConfig, maxSolutions: effectiveMaxSolutions },
           solverType,
           twoPhaseConfig: {
@@ -506,9 +608,11 @@ export class App {
     if (statsEl) {
       const s = result.statistics;
       const solverCount = results.length;
+      const mcuCount = this.multiMcuRefs.length;
+      const mcuLabel = mcuCount > 1 ? `, ${mcuCount} MCUs` : '';
       statsEl.textContent = solverCount > 1
-        ? `${s.validSolutions} solutions in ${s.solveTimeMs.toFixed(0)}ms (${solverCount} solvers, ${s.evaluatedCombinations} combos)`
-        : `${s.validSolutions} solutions in ${s.solveTimeMs.toFixed(0)}ms (${s.evaluatedCombinations}/${s.totalCombinations} combos)`;
+        ? `${s.validSolutions} solutions in ${s.solveTimeMs.toFixed(0)}ms (${solverCount} solvers${mcuLabel}, ${s.evaluatedCombinations} combos)`
+        : `${s.validSolutions} solutions in ${s.solveTimeMs.toFixed(0)}ms${mcuLabel} (${s.evaluatedCombinations}/${s.totalCombinations} combos)`;
     }
 
     // Show solver errors/warnings in constraint editor status bar
@@ -524,8 +628,10 @@ export class App {
     }
 
     if (result.solutions.length > 0) {
+      const mcuCount = this.multiMcuRefs.length;
+      const mcuSuffix = mcuCount > 1 ? ` across ${mcuCount} MCUs` : '';
       this.showStatus(
-        `Found ${result.solutions.length} solutions in ${result.statistics.solveTimeMs.toFixed(0)}ms`,
+        `Found ${result.solutions.length} solutions in ${result.statistics.solveTimeMs.toFixed(0)}ms${mcuSuffix}`,
         'success'
       );
     } else {
@@ -755,7 +861,9 @@ export class App {
     // Store raw XML and metadata for later re-loading
     try {
       localStorage.setItem(`mcu-xml:${mcu.refName}`, xmlString);
-      localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({ tags }));
+      localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({
+        tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
+      }));
     } catch {
       console.warn('Failed to store MCU XML (storage full?)');
     }
@@ -2058,7 +2166,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
 
   /** Constraint-style syntax highlighting (shared with macro lib editor) */
   private highlightConstraintCode(code: string): string {
-    const KWORDS = ['mcu', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
+    const KWORDS = ['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
     const BLTS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
 
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
