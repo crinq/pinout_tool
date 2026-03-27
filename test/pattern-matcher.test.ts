@@ -210,6 +210,29 @@ describe('Pattern matcher', () => {
       }))).toBe(true);
     });
 
+    it('should match USART via UART alias in pattern (forward lookup)', () => {
+      const pattern = pat(
+        { type: 'wildcard', prefix: 'UART' },
+        { type: 'literal', value: 'TX' },
+      );
+      // MCU only has USART peripherals, user writes UART* in constraint
+      expect(matchSignalPattern(pattern, sig('USART1_TX', {
+        peripheralInstance: 'USART1', peripheralType: 'USART',
+        instanceNumber: 1, signalFunction: 'TX',
+      }))).toBe(true);
+    });
+
+    it('should match USART[1,2] via UART alias in pattern (range)', () => {
+      const pattern = pat(
+        { type: 'range', prefix: 'UART', values: [1, 2] },
+        { type: 'literal', value: 'TX' },
+      );
+      expect(matchSignalPattern(pattern, sig('USART1_TX', {
+        peripheralInstance: 'USART1', peripheralType: 'USART',
+        instanceNumber: 1, signalFunction: 'TX',
+      }))).toBe(true);
+    });
+
     it('should match TIM via TIM1_8 normalization', () => {
       const pattern = pat(
         { type: 'wildcard', prefix: 'TIM' },

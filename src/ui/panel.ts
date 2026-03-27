@@ -15,6 +15,8 @@ export interface StateChange {
   solverResult?: SolverResult;
   constraintText?: string;
   portColors?: Map<string, string>;
+  /** Channel comments from constraint source: Map<"portName.channelName", comment> */
+  channelComments?: Map<string, string>;
   gpioCount?: number;
   dmaStreamAssignment?: Map<string, string>;
   compatibility?: CompatibilityResult;

@@ -1,7 +1,8 @@
 import type { Mcu, Pin, Signal, Assignment, CompatibilityResult, CustomExportFunction } from '../types';
+import { escapeHtml } from '../utils';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
-import { expandPatternToCandidates } from '../solver/pattern-matcher';
+import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
 import { exportSvg } from './svg-export';
 import { loadCustomExports } from '../storage';
 
@@ -27,6 +28,7 @@ export class PackageViewer implements Panel {
   private mcu: Mcu | null = null;
   private assignments: Assignment[] = [];
   private portColors: Map<string, string> = new Map();
+  private channelComments: Map<string, string> = new Map();
   private dmaAssignment: Map<string, string> = new Map(); // signalName → stream name
   private compatibility: CompatibilityResult | null = null;
   private pinRects: PinRect[] = [];
@@ -155,6 +157,7 @@ export class PackageViewer implements Panel {
     }
     if (change.type === 'solution-selected' && change.assignments) {
       this.portColors = change.portColors || new Map();
+      this.channelComments = change.channelComments || new Map();
       this.dmaAssignment = change.dmaStreamAssignment ?? new Map();
       this.compatibility = change.compatibility ?? null;
       this.setAssignments(change.assignments);
@@ -263,8 +266,8 @@ export class PackageViewer implements Panel {
       for (const fn of customExports) {
         customHtml += `
           <button class="btn export-option${hasAssignments ? '' : ' disabled'}" data-format="custom" data-custom-id="${fn.id}" ${hasAssignments ? '' : 'disabled'}>
-            <span class="export-option-title">${this.escHtml(fn.name)}</span>
-            <span class="export-option-desc">${hasAssignments ? this.escHtml(fn.description) : 'No assignments to export'}</span>
+            <span class="export-option-title">${escapeHtml(fn.name)}</span>
+            <span class="export-option-desc">${hasAssignments ? escapeHtml(fn.description) : 'No assignments to export'}</span>
           </button>`;
       }
     }
@@ -448,15 +451,33 @@ export class PackageViewer implements Panel {
     const ports = [...portMap.entries()].map(([name, channels]) => ({
       name,
       color: this.portColors.get(name) || null,
-      channels: [...channels.keys()],
+      comment: this.channelComments.get(name) || null,
+      channels: [...channels.keys()].map(ch => ({
+        name: ch,
+        comment: this.channelComments.get(`${name}.${ch}`) || null,
+      })),
       configurations: [...new Set([...channels.values()].flatMap(c => [...c]))],
     }));
+
+    // Build pin comments map from "pin:" prefixed entries
+    const pinComments: Record<string, string> = {};
+    for (const [key, value] of this.channelComments) {
+      if (key.startsWith('pin:')) {
+        pinComments[key.substring(4)] = value;
+      }
+    }
 
     const context = {
       mcuName: mcu.refName,
       mcuPackage: mcu.package,
-      assignments: this.assignments,
+      assignments: this.assignments.map(a => ({
+        ...a,
+        portComment: this.channelComments.get(a.portName) || null,
+        channelComment: this.channelComments.get(`${a.portName}.${a.channelName}`) || null,
+        pinComment: pinComments[a.pinName] || null,
+      })),
       peripherals: mcu.peripherals,
+      pinComments,
       pins: mcu.pins.map(p => ({
         name: p.name,
         position: p.position,
@@ -476,12 +497,12 @@ export class PackageViewer implements Panel {
 
     try {
       const executor = new Function(
-        'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports',
+        'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments',
         fn.code,
       );
       const result = executor(
         context.mcuName, context.mcuPackage, context.assignments,
-        context.peripherals, context.pins, context.ports,
+        context.peripherals, context.pins, context.ports, context.pinComments,
       );
 
       if (typeof result === 'string') {
@@ -508,9 +529,6 @@ export class PackageViewer implements Panel {
     URL.revokeObjectURL(url);
   }
 
-  private escHtml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
 
   render(): void {
     if (!this.mcu) {
@@ -1364,11 +1382,13 @@ export class PackageViewer implements Panel {
       }
     }
 
-    // Tier 3: Substring fallback on signal names
+    // Tier 3: Substring fallback on signal names (with type alias expansion)
     if (this.searchMatchPins.size === 0) {
+      const searchTerms = getEquivalentSearchTerms(trimmed);
       for (const pin of this.mcu.pins) {
         for (const sig of pin.signals) {
-          if (sig.name.toUpperCase().includes(trimmed)) {
+          const upper = sig.name.toUpperCase();
+          if (searchTerms.some(t => upper.includes(t.toUpperCase()))) {
             this.searchMatchPins.add(pin.name);
             this.searchMatchSignals.add(sig.name);
           }

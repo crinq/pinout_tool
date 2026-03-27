@@ -8,43 +8,29 @@
 
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
-import { computeTotalCost } from './cost-functions';
 import {
   prepareSolverContext,
-  evaluateAllConstraints, buildSolution, deduplicateSolutions,
-  validateGpioAvailability,
-  canAssignPin, assignPin, unassignPin, isSharedInstance, evaluateExpr,
+  evaluateAllConstraints, buildSolution,
+  canAssignPin, assignPin, unassignPin, evaluateExpr,
+  propagateShared, undoPropagateShared, buildPinLookups,
+  mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
 } from './solver';
-
-const DEFAULT_CONFIG: SolverConfig = {
-  maxSolutions: 100,
-  timeoutMs: 5000,
-  costWeights: new Map(),
-};
 
 export function solveDynamicMRV(
   ast: ProgramNode,
   mcu: Mcu,
   config: Partial<SolverConfig> = {}
 ): SolverResult {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (config.costWeights) {
-    cfg.costWeights = new Map([...DEFAULT_CONFIG.costWeights, ...config.costWeights]);
-  }
+  const cfg = mergeSolverConfig(config);
 
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
   const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
   if (!ctx) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: errors.length > 0 ? errors : [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-    };
+    return emptyResult(mcu.refName, errors);
   }
 
   const solutions: Solution[] = [];
@@ -62,23 +48,7 @@ export function solveDynamicMRV(
     configVarIndices.get(key)!.push(i);
   }
 
-  // Precompute pin -> (varIdx, candIdx)
-  const pinToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-  const instanceToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-
-  for (let vi = 0; vi < n; vi++) {
-    const v = ctx.variables[vi];
-    for (const ci of v.domain) {
-      const c = v.candidates[ci];
-      if (!pinToVarCandidates.has(c.pin.name)) pinToVarCandidates.set(c.pin.name, []);
-      pinToVarCandidates.get(c.pin.name)!.push({ varIdx: vi, candIdx: ci });
-
-      if (c.peripheralInstance) {
-        if (!instanceToVarCandidates.has(c.peripheralInstance)) instanceToVarCandidates.set(c.peripheralInstance, []);
-        instanceToVarCandidates.get(c.peripheralInstance)!.push({ varIdx: vi, candIdx: ci });
-      }
-    }
-  }
+  const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(ctx.variables);
 
   solveBacktrackDynamic(
     ctx.variables, assigned, domains, ctx.tracker, [],
@@ -89,135 +59,12 @@ export function solveDynamicMRV(
     ctx.dmaData
   );
 
-  if (solutions.length >= cfg.maxSolutions) {
-    errors.push({ type: 'warning', message: `Maximum solutions (${cfg.maxSolutions}) reached.` });
-  }
-  if (performance.now() - startTime > cfg.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
 
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, cfg.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  ctx.stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
-}
-
-/**
- * Check if any port has ALL its configs blocked (every config has at least
- * one unassigned variable with an empty domain).
- *
- * A config is viable if:
- * - All its variables are already assigned (fully resolved), OR
- * - All its unassigned variables have non-empty domains
- */
-export function hasPortWipeout(
-  variables: SolverVariable[],
-  domains: number[][],
-  assigned: boolean[]
-): boolean {
-  const emptyVarPorts = new Set<string>();
-  for (let i = 0; i < variables.length; i++) {
-    if (!assigned[i] && domains[i].length === 0) {
-      emptyVarPorts.add(variables[i].portName);
-    }
-  }
-  if (emptyVarPorts.size === 0) return false;
-
-  for (const port of emptyVarPorts) {
-    const configHasUnassigned = new Map<string, boolean>();
-    const configHasEmpty = new Map<string, boolean>();
-    for (let i = 0; i < variables.length; i++) {
-      if (variables[i].portName !== port) continue;
-      const cfg = variables[i].configName;
-      if (!configHasUnassigned.has(cfg)) {
-        configHasUnassigned.set(cfg, false);
-        configHasEmpty.set(cfg, false);
-      }
-      if (!assigned[i]) {
-        configHasUnassigned.set(cfg, true);
-        if (domains[i].length === 0) configHasEmpty.set(cfg, true);
-      }
-    }
-    let anyViable = false;
-    for (const [cfg, hasUnassigned] of configHasUnassigned) {
-      if (!hasUnassigned || !configHasEmpty.get(cfg)) {
-        anyViable = true;
-        break;
-      }
-    }
-    if (!anyViable) return true;
-  }
-  return false;
-}
-
-/** Forward-check: remove conflicting candidates, return removed list or null on real wipeout */
-export function propagate(
-  candidate: import('./pattern-matcher').SignalCandidate,
-  portName: string,
-  variables: SolverVariable[],
-  domains: number[][],
-  assigned: boolean[],
-  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[]
-): Array<{ varIdx: number; candIdx: number }> | null {
-  const removed: Array<{ varIdx: number; candIdx: number }> = [];
-
-  // Pin exclusivity across ports
-  const pinEntries = pinToVarCandidates.get(candidate.pin.name);
-  if (pinEntries) {
-    for (const entry of pinEntries) {
-      if (assigned[entry.varIdx]) continue;
-      if (variables[entry.varIdx].portName === portName) continue;
-      const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
-      if (domIdx !== -1) {
-        domains[entry.varIdx].splice(domIdx, 1);
-        removed.push(entry);
-      }
-    }
-  }
-
-  // Instance exclusivity across ports
-  if (candidate.peripheralInstance && !isSharedInstance(candidate.peripheralInstance, sharedPatterns)) {
-    const instEntries = instanceToVarCandidates.get(candidate.peripheralInstance);
-    if (instEntries) {
-      for (const entry of instEntries) {
-        if (assigned[entry.varIdx]) continue;
-        if (variables[entry.varIdx].portName === portName) continue;
-        const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
-        if (domIdx !== -1) {
-          domains[entry.varIdx].splice(domIdx, 1);
-          removed.push(entry);
-        }
-      }
-    }
-  }
-
-  // Check for real wipeout: a port with no viable config remaining
-  if (hasPortWipeout(variables, domains, assigned)) {
-    // Undo domain changes before reporting wipeout
-    undoPropagate(removed, domains);
-    return null;
-  }
-
-  return removed;
-}
-
-export function undoPropagate(
-  removed: Array<{ varIdx: number; candIdx: number }>,
-  domains: number[][]
-): void {
-  for (const entry of removed) {
-    domains[entry.varIdx].push(entry.candIdx);
-  }
+  return finalizeSolutions(
+    solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime,
+    ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments,
+  );
 }
 
 export function solveBacktrackDynamic(
@@ -352,9 +199,9 @@ export function solveBacktrackDynamic(
 
     if (!pruned) {
       // Forward checking propagation
-      const removed = propagate(
+      const removed = propagateShared(
         candidate, v.portName,
-        variables, domains, assigned,
+        variables, domains, i => assigned[i],
         pinToVarCandidates, instanceToVarCandidates, sharedPatterns
       );
 
@@ -367,7 +214,7 @@ export function solveBacktrackDynamic(
           pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
           dmaData
         );
-        undoPropagate(removed, domains);
+        undoPropagateShared(removed, domains);
       }
     }
 

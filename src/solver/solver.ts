@@ -14,7 +14,7 @@ import type {
   Mcu, Solution, SolverResult, SolverError, SolverStats,
   Assignment, DmaData, DmaStreamInfo,
 } from '../types';
-import { normalizePeripheralType } from '../types';
+import { normalizePeripheralType } from '../parser/mcu-xml-parser';
 import { findDmaStreamsForSignal } from '../parser/dma-xml-parser';
 import type {
   ProgramNode,
@@ -40,7 +40,7 @@ export interface SolverConfig {
   skipGpioMapping?: boolean;
 }
 
-const DEFAULT_CONFIG: SolverConfig = {
+export const DEFAULT_SOLVER_CONFIG: SolverConfig = {
   maxSolutions: 100,
   timeoutMs: 5000,
   costWeights: new Map([
@@ -51,6 +51,89 @@ const DEFAULT_CONFIG: SolverConfig = {
     ['pin_clustering', 0.3],
   ]),
 };
+
+/** Merge user config with defaults, properly merging costWeights Maps. */
+export function mergeSolverConfig(config: Partial<SolverConfig>): SolverConfig {
+  const cfg = { ...DEFAULT_SOLVER_CONFIG, ...config };
+  if (config.costWeights) {
+    cfg.costWeights = new Map([...DEFAULT_SOLVER_CONFIG.costWeights, ...config.costWeights]);
+  }
+  return cfg;
+}
+
+/** Create an empty solver result for early returns. */
+export function emptyResult(
+  mcuRef: string,
+  errors: SolverError[],
+  configCombinations?: number,
+  startTime?: number,
+): SolverResult {
+  const cc = configCombinations ?? 0;
+  return {
+    mcuRef,
+    solutions: [],
+    errors: errors.length > 0 ? errors : [{ type: 'warning', message: 'No variables to solve' }],
+    statistics: {
+      totalCombinations: cc,
+      evaluatedCombinations: 0,
+      validSolutions: 0,
+      solveTimeMs: startTime != null ? performance.now() - startTime : 0,
+      configCombinations: cc,
+    },
+  };
+}
+
+/** Push max-solutions/timeout warnings if applicable. */
+export function pushSolverWarnings(
+  errors: SolverError[],
+  solutions: Solution[],
+  maxSolutions: number,
+  startTime: number,
+  timeoutMs: number,
+): void {
+  if (solutions.length >= maxSolutions) {
+    errors.push({ type: 'warning', message: `Maximum solutions (${maxSolutions}) reached.` });
+  }
+  if (performance.now() - startTime > timeoutMs) {
+    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
+  }
+}
+
+/** Post-process solutions: set mcuRef, compute costs, sort, dedup, validate GPIO, return result. */
+export function finalizeSolutions(
+  solutions: Solution[],
+  mcu: Mcu,
+  costWeights: Map<string, number>,
+  errors: SolverError[],
+  stats: SolverStats,
+  startTime: number,
+  gpioCountPerConfig: Map<string, number>,
+  reservedPins: string[],
+  pinnedAssignments: PinnedAssignment[],
+): SolverResult {
+  for (const sol of solutions) {
+    sol.mcuRef = mcu.refName;
+    computeTotalCost(sol, mcu, costWeights);
+  }
+
+  solutions.sort((a, b) => a.totalCost - b.totalCost);
+  solutions.forEach((s, i) => s.id = i);
+  stats.solveTimeMs = performance.now() - startTime;
+
+  const deduped = deduplicateSolutions(solutions);
+  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reservedPins, pinnedAssignments);
+  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+}
+
+/** Build lastVarOfConfig map from solver variables. */
+export function buildLastVarOfConfig(variables: SolverVariable[]): Map<string, number> {
+  const lastVarOfConfig = new Map<string, number>();
+  for (let i = 0; i < variables.length; i++) {
+    const key = `${variables[i].portName}\0${variables[i].configName}`;
+    lastVarOfConfig.set(key, i);
+  }
+  return lastVarOfConfig;
+}
 
 // ============================================================
 // Internal Types
@@ -111,13 +194,13 @@ export interface PropagationContext {
   removedStack: Array<Array<{ varIdx: number; candIdx: number }>>;
 }
 
-export function buildPropagationContext(
-  variables: SolverVariable[],
-  sharedPatterns: PatternPart[]
-): PropagationContext {
-  const domains = variables.map(v => [...v.domain]);
-  const assigned = new Array(variables.length).fill(false);
+export type PinLookups = {
+  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>;
+  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>;
+};
 
+/** Build pin→candidates and instance→candidates lookup maps from solver variables. */
+export function buildPinLookups(variables: SolverVariable[]): PinLookups {
   const pinToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
   const instanceToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
 
@@ -125,9 +208,8 @@ export function buildPropagationContext(
     const v = variables[vi];
     for (const ci of v.domain) {
       const c = v.candidates[ci];
-      const pinName = c.pin.name;
-      if (!pinToVarCandidates.has(pinName)) pinToVarCandidates.set(pinName, []);
-      pinToVarCandidates.get(pinName)!.push({ varIdx: vi, candIdx: ci });
+      if (!pinToVarCandidates.has(c.pin.name)) pinToVarCandidates.set(c.pin.name, []);
+      pinToVarCandidates.get(c.pin.name)!.push({ varIdx: vi, candIdx: ci });
 
       if (c.peripheralInstance) {
         if (!instanceToVarCandidates.has(c.peripheralInstance)) instanceToVarCandidates.set(c.peripheralInstance, []);
@@ -136,6 +218,17 @@ export function buildPropagationContext(
     }
   }
 
+  return { pinToVarCandidates, instanceToVarCandidates };
+}
+
+export function buildPropagationContext(
+  variables: SolverVariable[],
+  sharedPatterns: PatternPart[]
+): PropagationContext {
+  const domains = variables.map(v => [...v.domain]);
+  const assigned = new Array(variables.length).fill(false);
+  const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(variables);
+
   return { domains, assigned, pinToVarCandidates, instanceToVarCandidates, sharedPatterns, removedStack: [] };
 }
 
@@ -143,11 +236,11 @@ export function buildPropagationContext(
 export function hasPortWipeout(
   variables: SolverVariable[],
   domains: number[][],
-  assigned: boolean[]
+  isAssigned: (idx: number) => boolean
 ): boolean {
   const emptyVarPorts = new Set<string>();
   for (let i = 0; i < variables.length; i++) {
-    if (!assigned[i] && domains[i].length === 0) {
+    if (!isAssigned(i) && domains[i].length === 0) {
       emptyVarPorts.add(variables[i].portName);
     }
   }
@@ -163,7 +256,7 @@ export function hasPortWipeout(
         configHasUnassigned.set(cfg, false);
         configHasEmpty.set(cfg, false);
       }
-      if (!assigned[i]) {
+      if (!isAssigned(i)) {
         configHasUnassigned.set(cfg, true);
         if (domains[i].length === 0) configHasEmpty.set(cfg, true);
       }
@@ -186,7 +279,7 @@ export function propagateShared(
   portName: string,
   variables: SolverVariable[],
   domains: number[][],
-  assigned: boolean[],
+  isAssigned: (idx: number) => boolean,
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   sharedPatterns: PatternPart[]
@@ -197,7 +290,7 @@ export function propagateShared(
   const pinEntries = pinToVarCandidates.get(candidate.pin.name);
   if (pinEntries) {
     for (const entry of pinEntries) {
-      if (assigned[entry.varIdx]) continue;
+      if (isAssigned(entry.varIdx)) continue;
       if (variables[entry.varIdx].portName === portName) continue;
       const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
       if (domIdx !== -1) {
@@ -212,7 +305,7 @@ export function propagateShared(
     const instEntries = instanceToVarCandidates.get(candidate.peripheralInstance);
     if (instEntries) {
       for (const entry of instEntries) {
-        if (assigned[entry.varIdx]) continue;
+        if (isAssigned(entry.varIdx)) continue;
         if (variables[entry.varIdx].portName === portName) continue;
         const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
         if (domIdx !== -1) {
@@ -224,7 +317,7 @@ export function propagateShared(
   }
 
   // Check for real wipeout
-  if (hasPortWipeout(variables, domains, assigned)) {
+  if (hasPortWipeout(variables, domains, isAssigned)) {
     undoPropagateShared(removed, domains);
     return null;
   }
@@ -912,10 +1005,7 @@ export function solveConstraints(
   mcu: Mcu,
   config: Partial<SolverConfig> = {}
 ): SolverResult {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (config.costWeights) {
-    cfg.costWeights = new Map([...DEFAULT_CONFIG.costWeights, ...config.costWeights]);
-  }
+  const cfg = mergeSolverConfig(config);
 
   const startTime = performance.now();
   const errors: SolverError[] = [];
@@ -1036,12 +1126,7 @@ export function solveConstraints(
     lastVarOfConfig, configRequiresMap, dmaData
   );
 
-  if (solutions.length >= cfg.maxSolutions) {
-    errors.push({ type: 'warning', message: `Maximum solutions (${cfg.maxSolutions}) reached.` });
-  }
-  if (performance.now() - startTime > cfg.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
 
   // If no solutions found, report deepest partial as conflict info
   if (solutions.length === 0 && deepest.depth >= 0) {
@@ -1070,21 +1155,7 @@ export function solveConstraints(
     }
   }
 
-  // Set mcuRef and compute costs for all solutions
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, cfg.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
-
-  // Deduplicate solutions with identical pin assignments
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reserved.pins, pinnedAssignments);
-
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
 }
 
 export function solveBacktrack(
@@ -1253,7 +1324,7 @@ export function solveBacktrack(
         propagationCtx.assigned[vi] = true;
         const removed = propagateShared(
           candidate, v.portName,
-          variables, propagationCtx.domains, propagationCtx.assigned,
+          variables, propagationCtx.domains, i => propagationCtx.assigned[i],
           propagationCtx.pinToVarCandidates, propagationCtx.instanceToVarCandidates,
           propagationCtx.sharedPatterns
         );

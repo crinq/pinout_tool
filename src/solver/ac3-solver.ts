@@ -12,44 +12,30 @@
 
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
-import { computeTotalCost } from './cost-functions';
 import {
   prepareSolverContext,
-  evaluateAllConstraints, buildSolution, deduplicateSolutions,
-  validateGpioAvailability,
-  canAssignPin, assignPin, unassignPin, isSharedInstance, evaluateExpr,
+  evaluateAllConstraints, buildSolution,
+  canAssignPin, assignPin, unassignPin, evaluateExpr,
+  propagateShared, undoPropagateShared, buildPinLookups,
+  mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
 } from './solver';
 import type { PatternPart } from '../parser/constraint-ast';
-
-const DEFAULT_CONFIG: SolverConfig = {
-  maxSolutions: 100,
-  timeoutMs: 5000,
-  costWeights: new Map(),
-};
 
 export function solveAC3(
   ast: ProgramNode,
   mcu: Mcu,
   config: Partial<SolverConfig> = {}
 ): SolverResult {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (config.costWeights) {
-    cfg.costWeights = new Map([...DEFAULT_CONFIG.costWeights, ...config.costWeights]);
-  }
+  const cfg = mergeSolverConfig(config);
 
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
   const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
   if (!ctx) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: errors.length > 0 ? errors : [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-    };
+    return emptyResult(mcu.refName, errors);
   }
 
   const solutions: Solution[] = [];
@@ -57,26 +43,7 @@ export function solveAC3(
   // Build mutable domains
   const domains: number[][] = ctx.variables.map(v => [...v.domain]);
 
-  // Precompute pin->candidate index mapping for propagation
-  // Map pin name -> list of (varIndex, candidateIdx) that use that pin
-  const pinToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-  // Map instance -> list of (varIndex, candidateIdx) that use that instance
-  const instanceToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-
-  for (let vi = 0; vi < ctx.variables.length; vi++) {
-    const v = ctx.variables[vi];
-    for (const ci of v.domain) {
-      const c = v.candidates[ci];
-      const pinKey = c.pin.name;
-      if (!pinToVarCandidates.has(pinKey)) pinToVarCandidates.set(pinKey, []);
-      pinToVarCandidates.get(pinKey)!.push({ varIdx: vi, candIdx: ci });
-
-      if (c.peripheralInstance) {
-        if (!instanceToVarCandidates.has(c.peripheralInstance)) instanceToVarCandidates.set(c.peripheralInstance, []);
-        instanceToVarCandidates.get(c.peripheralInstance)!.push({ varIdx: vi, candIdx: ci });
-      }
-    }
-  }
+  const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(ctx.variables);
 
   solveBacktrackAC3(
     ctx.variables, 0, ctx.tracker, [],
@@ -87,145 +54,8 @@ export function solveAC3(
     ctx.dmaData
   );
 
-  if (solutions.length >= cfg.maxSolutions) {
-    errors.push({ type: 'warning', message: `Maximum solutions (${cfg.maxSolutions}) reached.` });
-  }
-  if (performance.now() - startTime > cfg.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
-
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, cfg.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  ctx.stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
-}
-
-/**
- * Check if any port has ALL its configs blocked (every config has at least
- * one unassigned variable with an empty domain). If so, no valid config
- * combination exists for that port - a true dead end.
- *
- * A config is viable if:
- * - All its variables are already assigned (fully resolved), OR
- * - All its unassigned variables have non-empty domains
- */
-function hasPortWipeout(
-  variables: SolverVariable[],
-  domains: number[][],
-  assigned: Set<number>
-): boolean {
-  // Collect ports that have at least one empty-domain unassigned variable
-  const emptyVarPorts = new Set<string>();
-  for (let i = 0; i < variables.length; i++) {
-    if (!assigned.has(i) && domains[i].length === 0) {
-      emptyVarPorts.add(variables[i].portName);
-    }
-  }
-  if (emptyVarPorts.size === 0) return false;
-
-  // For each affected port, check if at least one config is still viable
-  for (const port of emptyVarPorts) {
-    // Track per-config: has unassigned vars? any unassigned var with empty domain?
-    const configHasUnassigned = new Map<string, boolean>();
-    const configHasEmpty = new Map<string, boolean>();
-    for (let i = 0; i < variables.length; i++) {
-      if (variables[i].portName !== port) continue;
-      const cfg = variables[i].configName;
-      if (!configHasUnassigned.has(cfg)) {
-        configHasUnassigned.set(cfg, false);
-        configHasEmpty.set(cfg, false);
-      }
-      if (!assigned.has(i)) {
-        configHasUnassigned.set(cfg, true);
-        if (domains[i].length === 0) configHasEmpty.set(cfg, true);
-      }
-    }
-    // A config is viable if fully assigned OR has no empty unassigned vars
-    let anyViable = false;
-    for (const [cfg, hasUnassigned] of configHasUnassigned) {
-      if (!hasUnassigned || !configHasEmpty.get(cfg)) {
-        anyViable = true;
-        break;
-      }
-    }
-    if (!anyViable) return true;
-  }
-  return false;
-}
-
-/**
- * Forward-check propagation: after assigning variable varIdx to candidate,
- * remove conflicting candidates from other variables' domains.
- * Returns the list of removed entries (for undo) or null if a port has no viable config.
- */
-function propagate(
-  candidate: import('./pattern-matcher').SignalCandidate,
-  portName: string,
-  variables: SolverVariable[],
-  domains: number[][],
-  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[],
-  assigned: Set<number>
-): Array<{ varIdx: number; candIdx: number }> | null {
-  const removed: Array<{ varIdx: number; candIdx: number }> = [];
-
-  // 1. Pin exclusivity: remove this pin from variables in different ports
-  const pinEntries = pinToVarCandidates.get(candidate.pin.name);
-  if (pinEntries) {
-    for (const entry of pinEntries) {
-      if (assigned.has(entry.varIdx)) continue;
-      if (variables[entry.varIdx].portName === portName) continue;
-      const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
-      if (domIdx !== -1) {
-        domains[entry.varIdx].splice(domIdx, 1);
-        removed.push(entry);
-      }
-    }
-  }
-
-  // 2. Instance exclusivity: if non-shared, remove from other ports
-  if (candidate.peripheralInstance && !isSharedInstance(candidate.peripheralInstance, sharedPatterns)) {
-    const instEntries = instanceToVarCandidates.get(candidate.peripheralInstance);
-    if (instEntries) {
-      for (const entry of instEntries) {
-        if (assigned.has(entry.varIdx)) continue;
-        if (variables[entry.varIdx].portName === portName) continue;
-        const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
-        if (domIdx !== -1) {
-          domains[entry.varIdx].splice(domIdx, 1);
-          removed.push(entry);
-        }
-      }
-    }
-  }
-
-  // Check for real wipeout: a port with no viable config remaining
-  if (hasPortWipeout(variables, domains, assigned)) {
-    // Undo domain changes before reporting wipeout
-    undoPropagate(removed, domains);
-    return null;
-  }
-
-  return removed;
-}
-
-/** Undo propagation by restoring removed candidates to domains */
-function undoPropagate(
-  removed: Array<{ varIdx: number; candIdx: number }>,
-  domains: number[][]
-): void {
-  for (const entry of removed) {
-    domains[entry.varIdx].push(entry.candIdx);
-  }
+  pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }
 
 function solveBacktrackAC3(
@@ -321,10 +151,11 @@ function solveBacktrackAC3(
     if (!pruned) {
       // Forward-check propagation
       assigned.add(varIndex);
-      const removed = propagate(
+      const removed = propagateShared(
         candidate, v.portName,
-        variables, domains, pinToVarCandidates, instanceToVarCandidates,
-        sharedPatterns, assigned
+        variables, domains, i => assigned.has(i),
+        pinToVarCandidates, instanceToVarCandidates,
+        sharedPatterns
       );
 
       if (removed !== null) {
@@ -337,7 +168,7 @@ function solveBacktrackAC3(
           domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
           dmaData
         );
-        undoPropagate(removed, domains);
+        undoPropagateShared(removed, domains);
       }
       assigned.delete(varIndex);
     }

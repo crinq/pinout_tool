@@ -2,13 +2,65 @@ import type { Panel, StateChange } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import { getStdlibMacroNames } from '../parser/stdlib-macros';
+import { escapeHtml, escapeRegex, createModal } from '../utils';
 
-const KEYWORDS = ['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
-const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
+const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color']);
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT', 'dma']);
 const DEBOUNCE_MS = 300;
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Syntax-highlight a single line of constraint code (no comment handling). */
+function highlightCodeLine(code: string): string {
+  let result = '';
+  let i = 0;
+  while (i < code.length) {
+    if (code[i] === '"') {
+      const start = i; i++;
+      while (i < code.length && code[i] !== '"') i++;
+      if (i < code.length) i++;
+      result += `<span class="ce-string">${escapeHtml(code.substring(start, i))}</span>`;
+      continue;
+    }
+    if (/[a-zA-Z_]/.test(code[i])) {
+      const start = i;
+      while (i < code.length && /[a-zA-Z0-9_]/.test(code[i])) i++;
+      const word = code.substring(start, i);
+      if (KEYWORDS.has(word)) {
+        result += `<span class="ce-keyword">${escapeHtml(word)}</span>`;
+      } else if (BUILTINS.has(word) || getStdlibMacroNames().has(word)) {
+        result += `<span class="ce-builtin">${escapeHtml(word)}</span>`;
+      } else {
+        result += escapeHtml(word);
+      }
+      continue;
+    }
+    if (/[0-9]/.test(code[i])) {
+      const start = i;
+      while (i < code.length && /[0-9]/.test(code[i])) i++;
+      result += `<span class="ce-number">${escapeHtml(code.substring(start, i))}</span>`;
+      continue;
+    }
+    if ('=!&|^*@'.includes(code[i])) {
+      result += `<span class="ce-operator">${escapeHtml(code[i])}</span>`;
+      i++; continue;
+    }
+    result += escapeHtml(code[i]); i++;
+  }
+  return result;
+}
+
+/** Syntax-highlight constraint code (multi-line, with comment handling). */
+export function highlightConstraintCode(code: string): string {
+  return code.split('\n').map(line => {
+    const commentIdx = line.indexOf('#');
+    let src = line, comment = '';
+    if (commentIdx >= 0) {
+      src = line.substring(0, commentIdx);
+      comment = line.substring(commentIdx);
+    }
+    let result = highlightCodeLine(src);
+    if (comment) result += `<span class="ce-comment">${escapeHtml(comment)}</span>`;
+    return result;
+  }).join('\n');
 }
 
 export class ConstraintEditor implements Panel {
@@ -339,81 +391,15 @@ export class ConstraintEditor implements Panel {
   }
 
   private highlightLine(line: string): string {
-    // Comment
     const commentIdx = line.indexOf('#');
-    let code = line;
-    let comment = '';
+    let code = line, comment = '';
     if (commentIdx >= 0) {
       code = line.substring(0, commentIdx);
       comment = line.substring(commentIdx);
     }
-
-    let result = this.highlightCode(code);
-    if (comment) {
-      result += `<span class="ce-comment">${this.escapeHtml(comment)}</span>`;
-    }
+    let result = highlightCodeLine(code);
+    if (comment) result += `<span class="ce-comment">${escapeHtml(comment)}</span>`;
     return result;
-  }
-
-  private highlightCode(code: string): string {
-    // Tokenize for highlighting
-    let result = '';
-    let i = 0;
-
-    while (i < code.length) {
-      // String literal
-      if (code[i] === '"') {
-        const start = i;
-        i++;
-        while (i < code.length && code[i] !== '"') i++;
-        if (i < code.length) i++;
-        result += `<span class="ce-string">${this.escapeHtml(code.substring(start, i))}</span>`;
-        continue;
-      }
-
-      // Word
-      if (/[a-zA-Z_]/.test(code[i])) {
-        const start = i;
-        while (i < code.length && /[a-zA-Z0-9_]/.test(code[i])) i++;
-        const word = code.substring(start, i);
-        if (KEYWORDS.includes(word)) {
-          result += `<span class="ce-keyword">${this.escapeHtml(word)}</span>`;
-        } else if (BUILTINS.has(word) || getStdlibMacroNames().has(word)) {
-          result += `<span class="ce-builtin">${this.escapeHtml(word)}</span>`;
-        } else {
-          result += this.escapeHtml(word);
-        }
-        continue;
-      }
-
-      // Number
-      if (/[0-9]/.test(code[i])) {
-        const start = i;
-        while (i < code.length && /[0-9]/.test(code[i])) i++;
-        result += `<span class="ce-number">${this.escapeHtml(code.substring(start, i))}</span>`;
-        continue;
-      }
-
-      // Operator
-      if ('=!&|^*@'.includes(code[i])) {
-        result += `<span class="ce-operator">${this.escapeHtml(code[i])}</span>`;
-        i++;
-        continue;
-      }
-
-      // Default
-      result += this.escapeHtml(code[i]);
-      i++;
-    }
-
-    return result;
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
   }
 
   private updateLineNumbers(): void {
@@ -433,10 +419,10 @@ export class ConstraintEditor implements Panel {
     this.errorPanel.innerHTML = errors
       .slice(0, 5)
       .map(err => {
-        const suggestion = err.suggestion ? `<span class="ce-suggestion">${this.escapeHtml(err.suggestion)}</span>` : '';
+        const suggestion = err.suggestion ? `<span class="ce-suggestion">${escapeHtml(err.suggestion)}</span>` : '';
         return `<div class="ce-error-item">
           <span class="ce-error-loc">Line ${err.line}:${err.column}</span>
-          <span class="ce-error-msg">${this.escapeHtml(err.message)}</span>
+          <span class="ce-error-msg">${escapeHtml(err.message)}</span>
           ${suggestion}
         </div>`;
       })
@@ -454,18 +440,13 @@ export class ConstraintEditor implements Panel {
   }
 
   private showHelp(): void {
-    // Remove existing overlay if any
-    const existing = document.querySelector('.ce-help-overlay');
-    if (existing) { existing.remove(); return; }
-
-    const overlay = document.createElement('div');
-    overlay.className = 'ce-help-overlay';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
+    const result = createModal({
+      overlayClass: 'ce-help-overlay',
+      modalClass: 'ce-help-modal',
+      toggle: '.ce-help-overlay',
     });
-
-    const modal = document.createElement('div');
-    modal.className = 'ce-help-modal';
+    if (!result) return;
+    const { modal, close } = result;
     modal.innerHTML = `
       <div class="ce-help-header">
         <strong>Constraint Syntax Reference</strong>
@@ -518,7 +499,8 @@ shared: ADC[1,2], TIM[1-4]</pre>
     TX = USART*_TX
     RX = USART*_RX
     require same_instance(TX, RX)</pre>
-          <p>Configs are mutually exclusive per port. The solver tries all combinations.</p>
+          <p>Configs are mutually exclusive per port. The solver tries all combinations.
+          Inline <code>#</code> comments on port, channel, and pin lines are available in custom export functions.</p>
         </section>
 
         <section>
@@ -655,9 +637,6 @@ port SENSOR:
       </div>
     `;
 
-    modal.querySelector('.ce-help-close')!.addEventListener('click', () => overlay.remove());
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
+    modal.querySelector('.ce-help-close')!.addEventListener('click', close);
   }
 }

@@ -2,7 +2,7 @@
 // Cost Functions for Solution Ranking
 // ============================================================
 
-import type { CostFunction, Solution, Mcu } from '../types';
+import type { CostFunction, Solution, Mcu, Pin } from '../types';
 import type { SignalCandidate } from './pattern-matcher';
 
 const registry = new Map<string, CostFunction>();
@@ -92,19 +92,22 @@ registerCostFunction({
   },
 });
 
+const DEBUG_SIGNAL_PATTERN = /^SYS_(?:JTCK|JTDI|JTDO|JTMS|JTRST|SWCLK|SWDIO|SWO)\b/i;
+
+export function isDebugPin(pin: Pin): boolean {
+  return pin.signals.some(s => DEBUG_SIGNAL_PATTERN.test(s.name));
+}
+
 registerCostFunction({
   id: 'debug_pin_penalty',
   name: 'Debug Pin Penalty',
   description: 'Penalty for using debug-capable pins (SWD/JTAG)',
-  compute(solution: Solution): number {
-    const debugPins = new Set(['PA13', 'PA14', 'PA15', 'PB3', 'PB4']);
+  compute(solution: Solution, mcu: Mcu): number {
     let penalty = 0;
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
-        // Check both raw pin name and GPIO-style
-        const match = a.pinName.match(/^P([A-Z])(\d+)/);
-        const gpioName = match ? `P${match[1]}${match[2]}` : a.pinName;
-        if (debugPins.has(gpioName)) {
+        const pin = mcu.pinByName.get(a.pinName) ?? mcu.pinByGpioName.get(a.pinName);
+        if (pin && isDebugPin(pin)) {
           penalty += 10;
         }
       }
@@ -117,8 +120,6 @@ registerCostFunction({
 // Static Candidate Cost Estimation (for variable ordering)
 // ============================================================
 
-const DEBUG_PINS = new Set(['PA13', 'PA14', 'PA15', 'PB3', 'PB4']);
-
 /**
  * Estimate the intrinsic cost of a candidate without current assignment context.
  * Used for cost-guided variable ordering in Phase 2.
@@ -128,11 +129,10 @@ export function estimateCandidateCost(
   costWeights: Map<string, number>
 ): number {
   let cost = 0;
-  const pinName = candidate.pin.name;
 
   // Debug pin penalty
   const wDebug = costWeights.get('debug_pin_penalty') ?? 0;
-  if (wDebug > 0 && DEBUG_PINS.has(pinName)) {
+  if (wDebug > 0 && isDebugPin(candidate.pin)) {
     cost += wDebug * 10;
   }
 
@@ -199,7 +199,7 @@ export function incrementCost(tracker: IncrementalCostTracker, candidate: Signal
     }
   }
 
-  if (tracker.wDebug > 0 && DEBUG_PINS.has(pinName)) {
+  if (tracker.wDebug > 0 && isDebugPin(candidate.pin)) {
     tracker.partialCost += tracker.wDebug * 10;
   }
 
@@ -229,7 +229,7 @@ export function decrementCost(tracker: IncrementalCostTracker, candidate: Signal
     }
   }
 
-  if (tracker.wDebug > 0 && DEBUG_PINS.has(pinName)) {
+  if (tracker.wDebug > 0 && isDebugPin(candidate.pin)) {
     tracker.partialCost -= tracker.wDebug * 10;
   }
 

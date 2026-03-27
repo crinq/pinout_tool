@@ -8,10 +8,9 @@
 
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
-import { computeTotalCost } from './cost-functions';
 import {
-  prepareSolverContext, solveBacktrack, deduplicateSolutions,
-  validateGpioAvailability,
+  prepareSolverContext, solveBacktrack,
+  emptyResult, pushSolverWarnings, finalizeSolutions, buildLastVarOfConfig,
   createPinTracker,
   type SolverVariable,
 } from './solver';
@@ -35,14 +34,7 @@ export function solveRandomizedRestarts(
   const errors: SolverError[] = [];
 
   const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
-  if (!ctx) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: errors.length > 0 ? errors : [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-    };
-  }
+  if (!ctx) { return emptyResult(mcu.refName, errors); }
 
   const allSolutions: Solution[] = [];
   const perRestart = Math.max(1, Math.ceil(config.maxSolutions / config.numRestarts));
@@ -71,11 +63,7 @@ export function solveRandomizedRestarts(
     shuffled.sort((a, b) => a.domain.length - b.domain.length);
 
     // Rebuild lastVarOfConfig for the new variable order
-    const lastVarOfConfig = new Map<string, number>();
-    for (let i = 0; i < shuffled.length; i++) {
-      const key = `${shuffled[i].portName}\0${shuffled[i].configName}`;
-      lastVarOfConfig.set(key, i);
-    }
+    const lastVarOfConfig = buildLastVarOfConfig(shuffled);
 
     const remaining = config.maxSolutions - allSolutions.length;
     const limit = Math.min(perRestart, remaining);
@@ -95,24 +83,8 @@ export function solveRandomizedRestarts(
     allSolutions.push(...restartSolutions);
   }
 
-  if (allSolutions.length >= config.maxSolutions) {
-    errors.push({ type: 'warning', message: `Maximum solutions (${config.maxSolutions}) reached.` });
-  }
-  if (performance.now() - startTime > config.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${allSolutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, allSolutions, config.maxSolutions, startTime, config.timeoutMs);
 
-  for (const sol of allSolutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, config.costWeights);
-  }
-
-  allSolutions.sort((a, b) => a.totalCost - b.totalCost);
-  allSolutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
   stats.validSolutions = allSolutions.length;
-
-  const deduped = deduplicateSolutions(allSolutions);
-  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(allSolutions, mcu, config.costWeights, errors, stats, startTime, ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }

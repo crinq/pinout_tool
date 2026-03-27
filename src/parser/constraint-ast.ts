@@ -80,6 +80,7 @@ export interface PinDeclNode {
   type: 'pin_decl';
   pinName: string;
   signalName: string;
+  comment?: string;
   loc: SourceLocation;
 }
 
@@ -88,6 +89,7 @@ export interface PortDeclNode {
   type: 'port_decl';
   name: string;
   color?: string;
+  comment?: string;
   channels: ChannelDeclNode[];
   configs: ConfigDeclNode[];
   loc: SourceLocation;
@@ -98,6 +100,7 @@ export interface ChannelDeclNode {
   type: 'channel_decl';
   name: string;
   allowedPins?: string[];
+  comment?: string;
   loc: SourceLocation;
 }
 

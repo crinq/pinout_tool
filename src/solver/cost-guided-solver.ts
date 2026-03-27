@@ -9,47 +9,29 @@
 
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
-import { computeTotalCost, parseBgaPosition, parsePackagePinCount } from './cost-functions';
+import { parseBgaPosition, parsePackagePinCount, isDebugPin } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import {
   prepareSolverContext,
-  evaluateAllConstraints, buildSolution, deduplicateSolutions,
-  validateGpioAvailability,
+  evaluateAllConstraints, buildSolution,
   canAssignPin, assignPin, unassignPin, evaluateExpr,
+  mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
 } from './solver';
-
-const DEFAULT_CONFIG: SolverConfig = {
-  maxSolutions: 100,
-  timeoutMs: 5000,
-  costWeights: new Map(),
-};
-
-const DEBUG_PINS = new Set(['PA13', 'PA14', 'PA15', 'PB3', 'PB4']);
 
 export function solveCostGuided(
   ast: ProgramNode,
   mcu: Mcu,
   config: Partial<SolverConfig> = {}
 ): SolverResult {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (config.costWeights) {
-    cfg.costWeights = new Map([...DEFAULT_CONFIG.costWeights, ...config.costWeights]);
-  }
+  const cfg = mergeSolverConfig(config);
 
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
   const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
-  if (!ctx) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: errors.length > 0 ? errors : [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-    };
-  }
+  if (!ctx) { return emptyResult(mcu.refName, errors); }
 
   const solutions: Solution[] = [];
   const isBGA = /BGA|WLCSP/i.test(mcu.package);
@@ -69,25 +51,8 @@ export function solveCostGuided(
     ctx.dmaData
   );
 
-  if (solutions.length >= cfg.maxSolutions) {
-    errors.push({ type: 'warning', message: `Maximum solutions (${cfg.maxSolutions}) reached.` });
-  }
-  if (performance.now() - startTime > cfg.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
-
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, cfg.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  ctx.stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, ctx.gpioCountPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: ctx.stats };
+  pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }
 
 function estimateCost(
@@ -121,7 +86,7 @@ function estimateCost(
   }
 
   // Debug pin penalty
-  if (wDebug > 0 && DEBUG_PINS.has(pinName)) {
+  if (wDebug > 0 && isDebugPin(candidate.pin)) {
     cost += wDebug * 10;
   }
 

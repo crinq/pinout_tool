@@ -4,7 +4,7 @@
 
 import type { SignalPatternNode, PatternPart } from '../parser/constraint-ast';
 import type { Mcu, Pin, Signal } from '../types';
-import { TYPE_ALIASES } from '../types';
+import { TYPE_ALIASES } from '../parser/mcu-xml-parser';
 
 export interface SignalCandidate {
   pin: Pin;
@@ -21,6 +21,33 @@ for (const [original, normalized] of Object.entries(TYPE_ALIASES)) {
     REVERSE_ALIASES.set(normalized, new Set());
   }
   REVERSE_ALIASES.get(normalized)!.add(original);
+}
+
+/** Get all equivalent type names (original + aliases) for a given prefix */
+function getEquivalentTypes(prefix: string): string[] {
+  // If prefix is a normalized type, include all originals
+  const reverseSet = REVERSE_ALIASES.get(prefix);
+  if (reverseSet) return [prefix, ...reverseSet];
+  // If prefix is an alias/original, include the normalized form and its siblings
+  const normalized = TYPE_ALIASES[prefix];
+  if (normalized) {
+    const siblings = REVERSE_ALIASES.get(normalized);
+    return [normalized, ...(siblings ?? [])];
+  }
+  return [prefix];
+}
+
+/** Get equivalent search terms for a substring search query (e.g. "UART" → ["UART", "USART", "LPUART"]) */
+export function getEquivalentSearchTerms(term: string): string[] {
+  const upper = term.toUpperCase();
+  // Check if the term matches any alias key or value
+  for (const [original, normalized] of Object.entries(TYPE_ALIASES)) {
+    if (upper === original.toUpperCase() || upper === normalized.toUpperCase()) {
+      const siblings = REVERSE_ALIASES.get(normalized);
+      return [normalized, ...(siblings ?? [])];
+    }
+  }
+  return [term];
 }
 
 /**
@@ -67,45 +94,30 @@ function matchPart(
       // prefix* - match if the value starts with the prefix (after type normalization)
       // For instance part: USART* should match USART1, UART4 (via normalization), etc.
       // For function part: CH* should match CH1, CH2, etc.
-      const prefix = part.prefix;
-      if (fullValue.startsWith(prefix)) return true;
-      // Check via type normalization: if prefix is a normalized type,
-      // also match aliases. E.g., pattern "USART*" should match "UART4"
-      // because UART normalizes to USART.
-      const aliasTypes = REVERSE_ALIASES.get(prefix);
-      if (aliasTypes) {
-        for (const alias of aliasTypes) {
-          if (fullValue.startsWith(alias)) return true;
-        }
+      // Also: UART* should match USART1 (forward alias lookup).
+      const equivTypes = getEquivalentTypes(part.prefix);
+      for (const t of equivTypes) {
+        if (fullValue.startsWith(t)) return true;
       }
       // Also check if the normalized type matches the prefix
-      if (typeOrFunc.startsWith(prefix)) return true;
+      if (typeOrFunc.startsWith(part.prefix)) return true;
       return false;
     }
 
     case 'range': {
       // prefix[values] - match if the type matches and number is in values
       // Must be an exact match: CH[1,2] matches CH1 but NOT CH1N
-      const prefix = part.prefix;
-      // Direct match: type matches prefix and number is in range
-      if (typeOrFunc === prefix && num !== undefined && part.values.includes(num)) {
-        // Verify the full value is exactly prefix+number (no trailing chars like "N")
-        if (fullValue === prefix + num) return true;
-      }
-      // Also try extracting number from fullValue (must be purely numeric suffix)
-      if (fullValue.startsWith(prefix)) {
-        const numStr = fullValue.substring(prefix.length);
-        if (/^\d+$/.test(numStr)) {
-          const n = parseInt(numStr, 10);
-          if (part.values.includes(n)) return true;
+      // Check all equivalent types (USART↔UART, TIM↔TIM1_8, etc.)
+      const equivTypes = getEquivalentTypes(part.prefix);
+      for (const t of equivTypes) {
+        if (typeOrFunc === t && num !== undefined && part.values.includes(num)) {
+          if (fullValue === t + num) return true;
         }
-      }
-      // Check aliases
-      const aliasTypes = REVERSE_ALIASES.get(prefix);
-      if (aliasTypes) {
-        for (const alias of aliasTypes) {
-          if (typeOrFunc === alias && num !== undefined && part.values.includes(num)) {
-            if (fullValue === alias + num) return true;
+        if (fullValue.startsWith(t)) {
+          const numStr = fullValue.substring(t.length);
+          if (/^\d+$/.test(numStr)) {
+            const n = parseInt(numStr, 10);
+            if (part.values.includes(n)) return true;
           }
         }
       }

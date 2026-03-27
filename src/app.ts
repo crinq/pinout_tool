@@ -1,7 +1,7 @@
 import { LayoutManager } from './core/layout-manager';
 import { HorizontalSplitter, VerticalSplitter } from './core/splitter';
 import { PackageViewer } from './ui/package-viewer';
-import { ConstraintEditor } from './ui/constraint-editor';
+import { ConstraintEditor, highlightConstraintCode } from './ui/constraint-editor';
 import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
 import { PeripheralSummary } from './ui/peripheral-summary';
@@ -20,7 +20,7 @@ import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { filterStoredMcus, extractMcuFilters } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from './ui/tutorial';
-import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY, getStdlibMacroNames } from './parser/stdlib-macros';
+import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
 
 // ============================================================
 // Simple JS syntax highlighter for the export function editor
@@ -34,9 +34,7 @@ const JS_KEYWORDS = new Set([
   'true', 'false', 'null', 'undefined', 'this',
 ]);
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+import { escapeHtml as escHtml, createModal } from './utils';
 
 function highlightJs(code: string): string {
   const out: string[] = [];
@@ -290,9 +288,10 @@ export class App {
         }
       }
       const portColors = this.getPortColors();
+      const channelComments = this.getChannelComments();
       const compatibility = this.checkSolutionCompatibility(assignments, solution.mcuRef);
       this.layout.broadcastStateChange({
-        type: 'solution-selected', assignments, portColors,
+        type: 'solution-selected', assignments, portColors, channelComments,
         gpioCount: solution.gpioCount,
         dmaStreamAssignment: dmaStreamAssignment.size > 0 ? dmaStreamAssignment : undefined,
         compatibility,
@@ -643,10 +642,11 @@ export class App {
       const partialError = result.errors.find((e: { partialSolution?: unknown[] }) => e.partialSolution && e.partialSolution.length > 0);
       if (partialError?.partialSolution) {
         const portColors = this.getPortColors();
+        const channelComments = this.getChannelComments();
         this.layout.broadcastStateChange({
           type: 'solution-selected',
           assignments: partialError.partialSolution,
-          portColors,
+          portColors, channelComments,
         });
       }
     }
@@ -896,6 +896,38 @@ export class App {
       console.log('  DMA streams:', mcu.dma.streams.length);
       console.log('  DMA signal mappings:', mcu.dma.signalToDmaStreams.size);
     }
+  }
+
+  private reimportAllMcus(): void {
+    let updated = 0;
+    let failed = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith('mcu-xml:')) continue;
+      const refName = key.substring('mcu-xml:'.length);
+      const xml = localStorage.getItem(key);
+      if (!xml) continue;
+      try {
+        const mcu = parseMcuXml(xml);
+        // Preserve existing tags, update everything else
+        let tags = ['PIN'];
+        try {
+          const oldMeta = localStorage.getItem(`mcu-meta:${refName}`);
+          if (oldMeta) tags = JSON.parse(oldMeta).tags ?? ['PIN'];
+        } catch { /* use default */ }
+        if (mcu.dma) tags = [...new Set([...tags, 'DMA'])];
+        localStorage.setItem(`mcu-meta:${refName}`, JSON.stringify({
+          tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
+        }));
+        updated++;
+      } catch {
+        failed++;
+      }
+    }
+    // Clear MCU cache so stale data isn't reused
+    this.mcuCache.clear();
+    const msg = `Re-imported ${updated} MCU${updated !== 1 ? 's' : ''}` + (failed ? `, ${failed} failed` : '');
+    this.showStatus(msg, failed ? 'error' : 'success');
   }
 
   private loadTutorialExample(): void {
@@ -1327,6 +1359,28 @@ export class App {
     return colors;
   }
 
+  private getChannelComments(): Map<string, string> {
+    const comments = new Map<string, string>();
+    const ast = parseConstraints(this.constraintEditor.getText()).ast;
+    if (ast) {
+      for (const stmt of ast.statements) {
+        if (stmt.type === 'port_decl') {
+          if (stmt.comment) {
+            comments.set(stmt.name, stmt.comment);
+          }
+          for (const ch of stmt.channels) {
+            if (ch.comment) {
+              comments.set(`${stmt.name}.${ch.name}`, ch.comment);
+            }
+          }
+        } else if (stmt.type === 'pin_decl' && stmt.comment) {
+          comments.set(`pin:${stmt.pinName}`, stmt.comment);
+        }
+      }
+    }
+    return comments;
+  }
+
   private setupKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
       // Ctrl+Enter / Cmd+Enter: solve
@@ -1465,17 +1519,9 @@ export class App {
   }
 
   private showSettingsModal(): void {
-    const existing = document.querySelector('.settings-overlay');
-    if (existing) { existing.remove(); return; }
-
-    const overlay = document.createElement('div');
-    overlay.className = 'settings-overlay';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'settings-modal';
+    const result = createModal({ toggle: '.settings-overlay' });
+    if (!result) return;
+    const { modal, close } = result;
 
     const costFunctions = getAllCostFunctions();
     const solvers = getSolvers();
@@ -1590,7 +1636,7 @@ export class App {
       </div>
     `;
 
-    modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+    modal.querySelector('.settings-close')!.addEventListener('click', close);
 
     modal.querySelector('#solver-select-all')!.addEventListener('click', () => {
       modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]').forEach(cb => cb.checked = true);
@@ -1600,7 +1646,7 @@ export class App {
     });
 
     modal.querySelector('#set-show-tutorial')!.addEventListener('click', () => {
-      overlay.remove();
+      close();
       startTutorial(() => this.loadTutorialExample());
     });
 
@@ -1630,20 +1676,17 @@ export class App {
       this.saveSettings();
       this.updateUrlHash();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
-      overlay.remove();
+      close();
       this.showStatus('Settings saved', 'success');
     });
 
     modal.querySelector('#set-reset-defaults')!.addEventListener('click', () => {
       this.settings = { ...DEFAULT_SETTINGS, costWeights: { ...DEFAULT_SETTINGS.costWeights } };
       this.saveSettings();
-      overlay.remove();
+      close();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
       this.showStatus('Settings reset to defaults', 'success');
     });
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
   }
 
   private loadStoredMcu(refName: string): void {
@@ -1704,17 +1747,9 @@ export class App {
   }
 
   private showDataManager(): void {
-    const existing = document.querySelector('.settings-overlay');
-    if (existing) { existing.remove(); return; }
-
-    const overlay = document.createElement('div');
-    overlay.className = 'settings-overlay';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'settings-modal dm-modal';
+    const result = createModal({ toggle: '.settings-overlay', modalClass: 'settings-modal dm-modal' });
+    if (!result) return;
+    const { modal, close } = result;
 
     const renderContent = (): void => {
       const storedMcus = this.listStoredMcus();
@@ -1755,7 +1790,7 @@ export class App {
 
           <section class="settings-section">
             <h3>Stored MCUs</h3>
-            ${storedMcus.length === 0 ? '<p class="settings-hint">No MCUs stored. Import XML files to store them.</p>' : ''}
+            ${storedMcus.length === 0 ? '<p class="settings-hint">No MCUs stored. Import XML files to store them.</p>' : `<div style="margin-bottom:6px"><button class="btn btn-small" data-action="reimport-all">Re-import All</button></div>`}
             <div class="dm-list">
               ${storedMcus.map(m => `
                 <div class="dm-row" data-mcu="${m.refName}">
@@ -1819,7 +1854,7 @@ export class App {
         </div>
       `;
 
-      modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+      modal.querySelector('.settings-close')!.addEventListener('click', close);
 
       modal.querySelectorAll('[data-action]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -1828,7 +1863,7 @@ export class App {
           switch (action) {
             case 'load-mcu':
               this.loadStoredMcu(name);
-              overlay.remove();
+              close();
               break;
             case 'export-mcu':
               this.exportMcuData(name);
@@ -1847,9 +1882,13 @@ export class App {
               localStorage.removeItem(`mcu-meta:${name}`);
               renderContent();
               break;
+            case 'reimport-all':
+              this.reimportAllMcus();
+              renderContent();
+              break;
             case 'load-project':
               this.loadProject(name);
-              overlay.remove();
+              close();
               break;
             case 'export-project':
               this.exportProjectData(name);
@@ -1865,7 +1904,7 @@ export class App {
               const arrow = btn as HTMLElement;
               if (versionList.style.display === 'none') {
                 arrow.innerHTML = '&#9660;';
-                this.renderVersionList(versionList, name, overlay, renderContent);
+                this.renderVersionList(versionList, name, result.overlay, renderContent);
                 versionList.style.display = '';
               } else {
                 arrow.innerHTML = '&#9654;';
@@ -1876,17 +1915,17 @@ export class App {
             case 'restore-version': {
               const versionId = parseInt((btn as HTMLElement).dataset.versionId || '0');
               this.loadProjectVersion(name, versionId);
-              overlay.remove();
+              close();
               break;
             }
             case 'new-export':
-              this.showExportEditor(null, overlay, renderContent);
+              this.showExportEditor(null, result.overlay, renderContent);
               break;
             case 'edit-export': {
               const exportId = (btn as HTMLElement).dataset.exportId!;
               const exports = loadCustomExports();
               const fn = exports.find(e => e.id === exportId);
-              if (fn) this.showExportEditor(fn, overlay, renderContent);
+              if (fn) this.showExportEditor(fn, result.overlay, renderContent);
               break;
             }
             case 'delete-export': {
@@ -1896,7 +1935,7 @@ export class App {
               break;
             }
             case 'edit-macro-lib':
-              this.showMacroLibEditor(overlay);
+              this.showMacroLibEditor(result.overlay);
               break;
             case 'reset-macro-lib':
               saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
@@ -1907,8 +1946,6 @@ export class App {
       });
     };
 
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
     renderContent();
   }
 
@@ -1921,16 +1958,9 @@ export class App {
       code: '',
     };
 
-    const overlay = document.createElement('div');
-    overlay.className = 'settings-overlay';
-    overlay.style.zIndex = '1100';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'settings-modal';
-    modal.style.width = '600px';
+    const exportResult = createModal({ zIndex: '1100', modalStyle: { width: '600px' } });
+    if (!exportResult) return;
+    const { modal, close: closeExport } = exportResult;
 
     const render = (): void => {
       modal.innerHTML = `
@@ -1961,14 +1991,17 @@ export class App {
             <pre>mcuName     - MCU reference name (e.g. "STM32H755XIHx")
 mcuPackage  - Package type (e.g. "TFBGA240")
 assignments - Array of {pinName, signalName, portName,
-              channelName, configurationName}
+              channelName, configurationName,
+              portComment, channelComment, pinComment}
 peripherals - Array of {instanceName, type, version}
 pins        - Array of {name, position, type, gpioPort,
               gpioNumber, isAssignable, signals:[{name,
               peripheralInstance, peripheralType,
               signalFunction}]}
-ports       - Array of {name, color, channels:[],
-              configurations:[]}</pre>
+ports       - Array of {name, color, comment,
+              channels:[{name, comment}],
+              configurations:[]}
+pinComments - Object {pinName: comment} from pin decls</pre>
             <strong>Return value:</strong>
             <pre>return "text"  → copies to clipboard
 return {filename:"f.csv", content:"...", mimeType:"text/csv"}
@@ -1981,7 +2014,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         </div>
       `;
 
-      modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+      modal.querySelector('.settings-close')!.addEventListener('click', closeExport);
 
       const codeEl = modal.querySelector('#export-editor-code') as HTMLTextAreaElement;
       const highlightEl = modal.querySelector('#export-editor-highlight') as HTMLPreElement;
@@ -2017,7 +2050,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
         try {
           const code = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', code);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', code);
           errorEl.style.display = '';
           errorEl.style.color = 'var(--success)';
           errorEl.textContent = 'Syntax OK';
@@ -2055,28 +2088,18 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         current.description = descVal;
         current.code = codeVal;
         saveCustomExport(current);
-        overlay.remove();
+        closeExport();
         onSave();
       });
     };
 
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
     render();
   }
 
   private showMacroLibEditor(_parentOverlay: HTMLElement): void {
-    const overlay = document.createElement('div');
-    overlay.className = 'settings-overlay';
-    overlay.style.zIndex = '1100';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.remove();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'settings-modal';
-    modal.style.width = '600px';
-    modal.style.maxHeight = '85vh';
+    const macroResult = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
+    if (!macroResult) return;
+    const { modal, close: closeMacro } = macroResult;
 
     const currentSource = getStdlibSource();
 
@@ -2109,7 +2132,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     const errorEl = modal.querySelector('#macro-lib-error') as HTMLElement;
 
     const syncHighlight = (): void => {
-      highlightEl.innerHTML = this.highlightConstraintCode(codeEl.value) + '\n';
+      highlightEl.innerHTML = highlightConstraintCode(codeEl.value) + '\n';
     };
     const syncLineNumbers = (): void => {
       const lines = codeEl.value.split('\n');
@@ -2137,7 +2160,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       }
     });
 
-    modal.querySelector('.settings-close')!.addEventListener('click', () => overlay.remove());
+    modal.querySelector('.settings-close')!.addEventListener('click', closeMacro);
 
     modal.querySelector('#macro-lib-reset')!.addEventListener('click', () => {
       codeEl.value = DEFAULT_MACRO_LIBRARY.trim();
@@ -2157,67 +2180,10 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       }
       saveMacroLibrary(source);
       invalidateStdlibCache();
-      overlay.remove();
+      closeMacro();
     });
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
   }
 
-  /** Constraint-style syntax highlighting (shared with macro lib editor) */
-  private highlightConstraintCode(code: string): string {
-    const KWORDS = ['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color'];
-    const BLTS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT']);
-
-    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    return code.split('\n').map(line => {
-      const commentIdx = line.indexOf('#');
-      let src = line, comment = '';
-      if (commentIdx >= 0) {
-        src = line.substring(0, commentIdx);
-        comment = line.substring(commentIdx);
-      }
-
-      let result = '';
-      let i = 0;
-      while (i < src.length) {
-        if (src[i] === '"') {
-          const start = i; i++;
-          while (i < src.length && src[i] !== '"') i++;
-          if (i < src.length) i++;
-          result += `<span class="ce-string">${esc(src.substring(start, i))}</span>`;
-          continue;
-        }
-        if (/[a-zA-Z_]/.test(src[i])) {
-          const start = i;
-          while (i < src.length && /[a-zA-Z0-9_]/.test(src[i])) i++;
-          const word = src.substring(start, i);
-          if (KWORDS.includes(word)) {
-            result += `<span class="ce-keyword">${esc(word)}</span>`;
-          } else if (BLTS.has(word) || getStdlibMacroNames().has(word)) {
-            result += `<span class="ce-builtin">${esc(word)}</span>`;
-          } else {
-            result += esc(word);
-          }
-          continue;
-        }
-        if (/[0-9]/.test(src[i])) {
-          const start = i;
-          while (i < src.length && /[0-9]/.test(src[i])) i++;
-          result += `<span class="ce-number">${esc(src.substring(start, i))}</span>`;
-          continue;
-        }
-        if ('=!&|^*@'.includes(src[i])) {
-          result += `<span class="ce-operator">${esc(src[i])}</span>`;
-          i++; continue;
-        }
-        result += esc(src[i]); i++;
-      }
-      if (comment) result += `<span class="ce-comment">${esc(comment)}</span>`;
-      return result;
-    }).join('\n');
-  }
 
   private renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): void {
     try {

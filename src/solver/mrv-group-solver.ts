@@ -14,14 +14,14 @@ import type { Mcu, Solution, SolverResult, SolverError, SolverStats, DmaData } f
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost } from './cost-functions';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
   generateConfigCombinations, validateConstraints,
-  deduplicateSolutions, createPinTracker,
-  partitionGpioVariables, validateGpioAvailability, isGpioVariable,
-  configsHaveDma,
+  emptyResult, pushSolverWarnings, finalizeSolutions,
+  createPinTracker,
+  partitionGpioVariables, isGpioVariable,
+  configsHaveDma, buildPinLookups,
   type SolverVariable, type PinnedAssignment, type PortSpec,
 } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
@@ -168,23 +168,7 @@ function solvePhase2MRV(
     }
   }
 
-  // Precompute pin -> (varIdx, candIdx) and instance -> (varIdx, candIdx) lookups
-  const pinToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-  const instanceToVarCandidates = new Map<string, Array<{ varIdx: number; candIdx: number }>>();
-
-  for (let vi = 0; vi < n; vi++) {
-    const v = filteredVars[vi];
-    for (const ci of v.domain) {
-      const c = v.candidates[ci];
-      if (!pinToVarCandidates.has(c.pin.name)) pinToVarCandidates.set(c.pin.name, []);
-      pinToVarCandidates.get(c.pin.name)!.push({ varIdx: vi, candIdx: ci });
-
-      if (c.peripheralInstance) {
-        if (!instanceToVarCandidates.has(c.peripheralInstance)) instanceToVarCandidates.set(c.peripheralInstance, []);
-        instanceToVarCandidates.get(c.peripheralInstance)!.push({ varIdx: vi, candIdx: ci });
-      }
-    }
-  }
+  const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(filteredVars);
 
   const tracker = createPinTracker(reservedPins, sharedPatterns);
   const solutions: Solution[] = [];
@@ -237,12 +221,7 @@ export function solveMrvGroup(
   const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
   if (allVariables.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   const emptyVar = allVariables.find(v => v.domain.length === 0);
@@ -252,21 +231,13 @@ export function solveMrvGroup(
       message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
       source: `${emptyVar.portName}.${emptyVar.channelName}`,
     });
-    return {
-      mcuRef: mcu.refName, solutions: [], errors,
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
 
   if (solveVars.length === 0 && gpioVars.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   if (gpioVars.length > 0) {
@@ -484,20 +455,10 @@ export function solveMrvGroup(
     });
   }
 
-  if (performance.now() - startTime > config.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, config.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reserved.pins, pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(
+    solutions, mcu, config.costWeights, errors, stats,
+    startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments,
+  );
 }

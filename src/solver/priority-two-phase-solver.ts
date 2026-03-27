@@ -10,13 +10,13 @@ import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../t
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost, estimateCandidateCost } from './cost-functions';
+import { estimateCandidateCost } from './cost-functions';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
   generateConfigCombinations, validateConstraints,
-  deduplicateSolutions,
-  partitionGpioVariables, validateGpioAvailability, isGpioVariable,
+  emptyResult, pushSolverWarnings, finalizeSolutions,
+  partitionGpioVariables, isGpioVariable,
   configsHaveDma,
 } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
@@ -59,12 +59,7 @@ export function solvePriorityTwoPhase(
   const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
   if (allVariables.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   const emptyVar = allVariables.find(v => v.domain.length === 0);
@@ -74,21 +69,13 @@ export function solvePriorityTwoPhase(
       message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
       source: `${emptyVar.portName}.${emptyVar.channelName}`,
     });
-    return {
-      mcuRef: mcu.refName, solutions: [], errors,
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
 
   if (solveVars.length === 0 && gpioVars.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve' }],
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   if (gpioVars.length > 0) {
@@ -164,10 +151,7 @@ export function solvePriorityTwoPhase(
 
   if (groups.length === 0) {
     errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
-    return {
-      mcuRef: mcu.refName, solutions: [], errors,
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   // ========== Phase 2: Pin assignment per group ==========
@@ -229,20 +213,7 @@ export function solvePriorityTwoPhase(
     });
   }
 
-  if (performance.now() - startTime > config.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, config.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reserved.pins, pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
 }

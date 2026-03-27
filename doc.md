@@ -704,10 +704,23 @@ Access via the **Data** button. Shows:
 Create custom export functions via the Data Manager to generate any output format from your solution data. Each function is written in JavaScript and has access to:
 
 - `mcuName`, `mcuPackage` -- MCU identification
-- `assignments` -- array of `{pinName, signalName, portName, channelName, configurationName}`
+- `assignments` -- array of `{pinName, signalName, portName, channelName, configurationName, portComment, channelComment, pinComment}`
 - `peripherals` -- array of `{instanceName, type, version}`
 - `pins` -- array with pin details and all available signals
-- `ports` -- array of `{name, color, channels, configurations}`
+- `ports` -- array of `{name, color, comment, channels: [{name, comment}], configurations}`
+- `pinComments` -- object `{pinName: comment}` from `pin` declarations
+
+Inline `#` comments on `port`, `channel`, and `pin` declarations are forwarded to the export function:
+
+```
+port SWD:              # Debug interface
+  channel DIO          # Serial Wire Debug Data
+  channel CLK          # Serial Wire Debug Clock
+
+pin PA4 = DAC1_OUT1    # Audio output
+```
+
+Access via `ports[i].comment`, `ports[i].channels[j].comment`, and `pinComments["PA4"]`. The `comment` field is `null` if no comment is present.
 
 Return a string to copy to clipboard, or `{filename, content, mimeType}` to trigger a file download. Custom exports appear in the Export modal alongside the built-in formats.
 

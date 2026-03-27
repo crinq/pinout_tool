@@ -60,6 +60,7 @@ type TokenType =
   | 'RBRACKET'    // ]
   | 'DASH'        // -
   | 'UNDERSCORE'  // _
+  | 'COMMENT'     // # inline comment text
   | 'NEWLINE'
   | 'INDENT'
   | 'DEDENT'
@@ -130,6 +131,10 @@ function tokenize(source: string): { tokens: Token[]; errors: ParseError[] } {
 
       // Comment - rest of line
       if (ch === '#') {
+        const commentText = line.substring(col + 1).trim();
+        if (commentText) {
+          tokens.push({ type: 'COMMENT', value: commentText, line: lineNum, column: col + 1 });
+        }
         break;
       }
 
@@ -492,8 +497,9 @@ class Parser {
     this.expect('EQUALS');
     const signalName = this.parseRawName();
 
+    const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return { type: 'pin_decl', pinName, signalName, loc };
+    return { type: 'pin_decl', pinName, signalName, comment, loc };
   }
 
   // port IDENT: NEWLINE INDENT port_body DEDENT
@@ -502,6 +508,7 @@ class Parser {
     this.expectKeyword('port');
     const name = this.parseCompoundIdent();
     this.expect('COLON');
+    const comment = this.skipComment();
     this.expectNewline();
 
     const channels: ChannelDeclNode[] = [];
@@ -537,7 +544,7 @@ class Parser {
       this.advance();
     }
 
-    return { type: 'port_decl', name, channels, configs, color, loc };
+    return { type: 'port_decl', name, channels, configs, color, comment, loc };
   }
 
   // channel IDENT (@ pin_list)?
@@ -557,8 +564,9 @@ class Parser {
       }
     }
 
+    const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return { type: 'channel_decl', name, allowedPins, loc };
+    return { type: 'channel_decl', name, allowedPins, comment, loc };
   }
 
   // config STRING: NEWLINE INDENT config_body DEDENT
@@ -1074,6 +1082,7 @@ class Parser {
   }
 
   private expectNewline(): void {
+    this.skipComment();
     if (this.check('NEWLINE')) {
       this.advance();
     } else if (!this.check('EOF') && !this.check('DEDENT')) {
@@ -1082,6 +1091,7 @@ class Parser {
   }
 
   private expectNewlineOrEnd(): void {
+    this.skipComment();
     if (this.check('NEWLINE')) {
       this.advance();
     } else if (this.check('EOF') || this.check('DEDENT')) {
@@ -1089,6 +1099,16 @@ class Parser {
     } else {
       this.error('Expected end of line', this.peek());
     }
+  }
+
+  /** Skip a COMMENT token if present, returning its value or undefined */
+  private skipComment(): string | undefined {
+    if (this.check('COMMENT')) {
+      const value = this.peek().value;
+      this.advance();
+      return value;
+    }
+    return undefined;
   }
 
   private isAtEnd(): boolean {

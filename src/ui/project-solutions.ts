@@ -1,5 +1,6 @@
 import type { Panel, StateChange } from './panel';
 import type { Solution } from '../types';
+import { escapeHtml } from '../utils';
 
 type SortKey = 'id' | 'cost' | 'pins' | 'peripherals';
 type SortDir = 'asc' | 'desc';
@@ -243,8 +244,8 @@ export class ProjectSolutions implements Panel {
       const displayName = sol.name || `Solution ${sol.id}`;
       tr.innerHTML = `
         <td class="st-cell-id">${sol.id}</td>
-        <td class="st-cell-name">${this.escapeHtml(displayName)}</td>
-        <td class="st-cell-mcu">${this.escapeHtml(sol.mcuRef)}</td>
+        <td class="st-cell-name">${escapeHtml(displayName)}</td>
+        <td class="st-cell-mcu">${escapeHtml(sol.mcuRef)}</td>
         <td class="st-cell-cost">${sol.totalCost.toFixed(1)}</td>
         <td class="st-cell-pins">${this.countPins(sol)}</td>
         <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
@@ -286,7 +287,4 @@ export class ProjectSolutions implements Panel {
     return count;
   }
 
-  private escapeHtml(text: string): string {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
 }

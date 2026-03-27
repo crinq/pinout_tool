@@ -11,13 +11,13 @@
 import type {
   Mcu, Solution, SolverResult, SolverError, SolverStats, DmaData,
 } from '../types';
-import { normalizePeripheralType } from '../types';
+import { normalizePeripheralType } from '../parser/mcu-xml-parser';
 import type {
   ProgramNode, RequireNode, PatternPart, ConstraintExprNode,
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros } from '../parser/stdlib-macros';
-import { computeTotalCost, estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
+import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
   SolverVariable, VariableAssignment, PortSpec, PinnedAssignment,
@@ -26,9 +26,10 @@ import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, isSharedInstance, resolveAllVariables,
   generateConfigCombinations, validateConstraints,
-  solveBacktrack, deduplicateSolutions, createPinTracker,
-  partitionGpioVariables, validateGpioAvailability, isGpioVariable,
+  solveBacktrack, createPinTracker,
+  partitionGpioVariables, isGpioVariable,
   configsHaveDma, buildPropagationContext,
+  pushSolverWarnings, finalizeSolutions,
 } from './solver';
 import { mulberry32, shuffleArray } from './solver-utils';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
@@ -298,24 +299,9 @@ export function solveTwoPhase(
     });
   }
 
-  if (performance.now() - startTime > config.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  // Compute costs and sort
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, config.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reserved.pins, pinnedAssignments);
-
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
 }
 
 // ============================================================
@@ -999,20 +985,7 @@ export function runPhase2Only(
   if (solutions.length === 0 && phase1.groups.length > 0) {
     errors.push({ type: 'warning', message: `Phase 1 found ${phase1.groups.length} instance groups but Phase 2 found no valid pin assignments` });
   }
-  if (performance.now() - startTime > config.timeoutMs) {
-    errors.push({ type: 'warning', message: `Solver timeout after ${solutions.length} solutions.` });
-  }
+  pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  for (const sol of solutions) {
-    sol.mcuRef = mcu.refName;
-    computeTotalCost(sol, mcu, config.costWeights);
-  }
-
-  solutions.sort((a, b) => a.totalCost - b.totalCost);
-  solutions.forEach((s, i) => s.id = i);
-  stats.solveTimeMs = performance.now() - startTime;
-
-  const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, phase1.gpioCountPerConfig, mcu, phase1.reservedPins, phase1.pinnedAssignments);
-  return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, phase1.gpioCountPerConfig, phase1.reservedPins, phase1.pinnedAssignments);
 }

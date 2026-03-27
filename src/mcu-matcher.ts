@@ -6,6 +6,7 @@
 // ============================================================
 
 import type { ProgramNode } from './parser/constraint-ast';
+import { escapeRegex } from './utils';
 
 export interface McuMetadata {
   refName: string;
@@ -61,9 +62,6 @@ export function globToRegex(pattern: string): RegExp {
   return new RegExp('^' + re + '$', 'i');
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.+^${}()|\\]/g, '\\$&');
-}
 
 /**
  * Test if a value matches any of the given glob patterns (OR logic).
