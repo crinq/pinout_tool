@@ -421,7 +421,9 @@ port DEBUG:
 | `same_instance(ch, ..., "TYPE")` | 2+ channels + type | boolean | Same instance, only considering signals of given type |
 | `diff_instance(ch, ...)` | 2+ channels | boolean | All channels use different peripheral instances |
 | `instance(ch)` | 1 channel | string | Peripheral instance name (e.g., "USART1") |
+| `instance(ch, "TYPE")` | 1 channel + type | string | Instance name filtered by signal type |
 | `type(ch)` | 1 channel | string | Normalized peripheral type (e.g., "USART") |
+| `type(ch, "TYPE")` | 1 channel + type | string | Peripheral type filtered by signal type |
 | `gpio_pin(ch)` | 1 channel | string | Pin name (e.g., "PA4") |
 | `gpio_pin(ch, "TYPE")` | 1 channel + type | string | Pin name filtered by signal type |
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
@@ -822,12 +824,13 @@ Weights are configurable: `0` = disabled, `1` = normal, higher values = more imp
 
 Access via the **Settings** button:
 
-- **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle)
+- **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle). Default: two-phase, cost-guided, priority-backtracking, mrv-group, ratio-mrv-group, hybrid
 - **Max solutions** -- stop after finding this many (default: 5000)
 - **Max groups** -- limit the number of solution groups (default: 500)
 - **Max solutions per group** -- limit solutions within each group (default: 100)
 - **Num restarts** -- number of restarts for randomized-restarts solver (default: 150)
 - **Timeout** -- abort after this many milliseconds (default: 2500)
+- **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 5)
 - **Cost weights** -- adjust the ranking formula for all 7 cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
 

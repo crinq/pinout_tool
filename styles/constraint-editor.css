@@ -49,6 +49,13 @@
   position: relative;
 }
 
+/* Minimap */
+.ce-minimap {
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+}
+
 /* Line numbers */
 .ce-line-numbers {
   width: 36px;

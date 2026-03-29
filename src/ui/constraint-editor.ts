@@ -1,8 +1,10 @@
 import type { Panel } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
+import type { Mcu, Assignment } from '../types';
 import { getStdlibMacroNames } from '../parser/stdlib-macros';
 import { escapeHtml, escapeRegex, createModal } from '../utils';
+import { ConstraintMinimap } from './constraint-minimap';
 
 const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma']);
@@ -77,6 +79,10 @@ export class ConstraintEditor implements Panel {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private changeCallbacks: Array<(text: string, result: ParseResult) => void> = [];
 
+  // Minimap
+  private minimap!: ConstraintMinimap;
+  private highlightPinCallbacks: Array<(pins: Set<string>, color?: string) => void> = [];
+
   // Undo/redo
   private undoStack: string[] = [''];
   private undoIndex = 0;
@@ -141,6 +147,21 @@ export class ConstraintEditor implements Panel {
     codeArea.appendChild(this.highlight);
 
     editorWrapper.appendChild(codeArea);
+
+    // Minimap
+    this.minimap = new ConstraintMinimap();
+    this.minimap.onScroll((scrollTop) => {
+      this.textarea.scrollTop = scrollTop;
+      this.syncScroll();
+    });
+    this.minimap.onCursorJump((line) => {
+      this.setCursorToLine(line);
+    });
+    this.minimap.onHighlightPins((pins, color) => {
+      for (const cb of this.highlightPinCallbacks) cb(pins, color);
+    });
+    editorWrapper.appendChild(this.minimap.element);
+
     this.container.appendChild(editorWrapper);
 
     // Error panel
@@ -159,17 +180,40 @@ export class ConstraintEditor implements Panel {
     this.textarea.addEventListener('scroll', () => this.syncScroll());
     this.textarea.addEventListener('keydown', (e) => this.onKeyDown(e));
 
+    // Resize observer for minimap
+    const resizeObserver = new ResizeObserver(() => {
+      this.minimap.resize(editorWrapper.clientHeight);
+      this.syncMinimapViewport();
+    });
+    resizeObserver.observe(editorWrapper);
+
     // Initial render
     this.updateHighlight();
     this.updateLineNumbers();
   }
 
-  onStateChange(_change: Record<string, unknown>): void {
-    // No external state changes affect the editor currently
+  onStateChange(change: Record<string, unknown>): void {
+    if (change['type'] === 'mcu-loaded') {
+      this.minimap.setMcu(change['mcu'] as Mcu | null);
+    }
+    if (change['type'] === 'solution-selected') {
+      this.minimap.setAssignments((change['assignments'] as Assignment[]) || null);
+      // Repaint minimap to reflect solution state
+      if (this.parseResult) {
+        const totalLines = this.textarea.value.split('\n').length;
+        const errorLines = this.parseResult.errors.map(e => e.line);
+        this.minimap.update(this.parseResult.ast, totalLines, errorLines);
+      }
+    }
   }
 
   onChange(callback: (text: string, result: ParseResult) => void): void {
     this.changeCallbacks.push(callback);
+  }
+
+  /** Register callback for minimap pin highlighting */
+  onHighlightPins(callback: (pins: Set<string>, color?: string) => void): void {
+    this.highlightPinCallbacks.push(callback);
   }
 
   getText(): string {
@@ -191,6 +235,23 @@ export class ConstraintEditor implements Panel {
 
   getSolverStatusBar(): HTMLElement | null {
     return this.solverStatusBar ?? null;
+  }
+
+  /** Move cursor to the start of a given line (1-based) and scroll into view */
+  setCursorToLine(line: number): void {
+    const lines = this.textarea.value.split('\n');
+    let offset = 0;
+    for (let i = 0; i < Math.min(line - 1, lines.length); i++) {
+      offset += lines[i].length + 1; // +1 for \n
+    }
+    this.textarea.focus();
+    this.textarea.selectionStart = offset;
+    this.textarea.selectionEnd = offset;
+    // Scroll textarea so the line is visible
+    const lineHeight = 18; // matches CSS line-height
+    const targetScroll = (line - 1) * lineHeight - this.textarea.clientHeight / 3;
+    this.textarea.scrollTop = Math.max(0, targetScroll);
+    this.syncScroll();
   }
 
   getPinDeclarationSignal(pinName: string): string | null {
@@ -272,6 +333,11 @@ export class ConstraintEditor implements Panel {
     this.parseResult = parseConstraints(text);
     this.updateErrors(this.parseResult.errors);
     this.updateHighlight(); // re-highlight with error info
+
+    // Update minimap
+    const totalLines = text.split('\n').length;
+    const errorLines = this.parseResult.errors.map(e => e.line);
+    this.minimap.update(this.parseResult.ast, totalLines, errorLines);
 
     for (const cb of this.changeCallbacks) {
       cb(text, this.parseResult);
@@ -437,6 +503,11 @@ export class ConstraintEditor implements Panel {
     this.highlight.scrollTop = this.textarea.scrollTop;
     this.highlight.scrollLeft = this.textarea.scrollLeft;
     this.lineNumbers.scrollTop = this.textarea.scrollTop;
+    this.syncMinimapViewport();
+  }
+
+  private syncMinimapViewport(): void {
+    this.minimap.updateViewport(this.textarea.scrollTop, this.textarea.clientHeight);
   }
 
   private showHelp(): void {
@@ -551,7 +622,9 @@ MOSI = SPI*_MOSI + GPIO[1-2]_*</pre>
             <tr><td><code>same_instance(A, B, "TIM")</code></td><td>Same instance, filtered by type</td></tr>
             <tr><td><code>diff_instance(A, B)</code></td><td>Different instances</td></tr>
             <tr><td><code>instance(A)</code></td><td>Get instance name</td></tr>
+            <tr><td><code>instance(A, "TIM")</code></td><td>Get instance name, filtered by type</td></tr>
             <tr><td><code>type(A)</code></td><td>Get peripheral type</td></tr>
+            <tr><td><code>type(A, "TIM")</code></td><td>Get peripheral type, filtered by type</td></tr>
             <tr><td><code>gpio_port(A)</code></td><td>Get GPIO port (e.g., "GPIO1")</td></tr>
             <tr><td><code>gpio_port(A, "SPI")</code></td><td>Get GPIO port, filtered by type</td></tr>
             <tr><td><code>gpio_pin(A)</code></td><td>Get pin name (e.g., "PA4")</td></tr>
@@ -675,6 +748,17 @@ require gpio_port(LED) == "GPIO2"
 # TX and RX on the same GPIO port:
 require gpio_port(TX) == gpio_port(RX)</pre>
           <p>GPIO signals are also available for multi-pin mappings: <code>GPIO1_*</code>, <code>GPIO[1-2]_*</code></p>
+        </section>
+
+        <section>
+          <h3>Comment Interpolation</h3>
+          <p>Channel comments are included in exports. Use <code>{}</code> placeholders for dynamic values:</p>
+          <pre class="ce-help-code">port CMD:
+  channel TX  # UART TX: {signal} on {pin}
+  channel RX  # UART RX: {signal} on {pin}</pre>
+          <p>Available placeholders: <code>{pin}</code>, <code>{signal}</code>, <code>{port}</code>,
+          <code>{channel}</code>, <code>{config}</code>, <code>{instance}</code>, <code>{type}</code>,
+          <code>{function}</code>, <code>{number}</code>, <code>{gpio_port}</code></p>
         </section>
 
         <section>

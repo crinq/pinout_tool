@@ -1,0 +1,173 @@
+/* ============================================================
+   Constraint Viewer
+   ============================================================ */
+
+.constraint-viewer {
+  height: 100%;
+  overflow: hidden;
+}
+
+.cv-content {
+  height: 100%;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cv-empty {
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 16px;
+  text-align: center;
+}
+
+/* Port box */
+.cv-port {
+  border: 2px solid #888;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.cv-port-header {
+  padding: 4px 8px;
+  font-weight: 700;
+  font-size: 12px;
+  color: #fff;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cv-port-header:hover {
+  filter: brightness(1.15);
+}
+
+.cv-port-template {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+/* Channel */
+.cv-channel {
+  padding: 2px 8px 2px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.cv-channel:hover {
+  background: var(--bg-secondary);
+}
+
+.cv-channel-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cv-pin-badge {
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.cv-assignment {
+  font-size: 11px;
+  color: var(--accent);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  margin-left: auto;
+}
+
+/* Config */
+.cv-config {
+  border-top: 1px solid var(--border);
+}
+
+.cv-config-header {
+  padding: 3px 8px 3px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  cursor: pointer;
+}
+
+.cv-config-header:hover {
+  color: var(--text-primary);
+}
+
+.cv-config-header::before {
+  content: '\25B8 ';
+  font-size: 10px;
+}
+
+/* Mapping */
+.cv-mapping {
+  padding: 2px 8px 2px 20px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 11px;
+}
+
+.cv-mapping:hover {
+  background: var(--bg-secondary);
+}
+
+.cv-mapping-channel {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.cv-mapping-op {
+  color: var(--text-secondary);
+}
+
+.cv-mapping-pattern {
+  color: var(--text-primary);
+}
+
+.cv-var-badge {
+  font-size: 10px;
+  color: #7c3aed;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+[data-theme="dark"] .cv-var-badge {
+  color: #a78bfa;
+}
+
+/* Require */
+.cv-require {
+  padding: 2px 8px 2px 20px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cv-require:hover {
+  background: var(--bg-secondary);
+}
+
+.cv-require-label {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+[data-theme="dark"] .cv-require-label {
+  color: #a78bfa;
+}
+
+.cv-require-expr {
+  color: var(--text-primary);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}

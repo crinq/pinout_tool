@@ -129,6 +129,7 @@ export interface AppSettings {
   mouseZoomGain: number;
   skipGpioMapping: boolean;
   dataInspector: boolean;
+  dynamicTimeoutMultiplier: number;
   solverDebugOverlay: boolean;
   urlEncoding: 'none' | 'constraints' | 'constraints-mcu' | 'full';
 }
@@ -136,6 +137,7 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   maxSolutions: 5000,
   solverTimeoutMs: 2500,
+  dynamicTimeoutMultiplier: 5,
   solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid'],
   maxGroups: 500,
   maxSolutionsPerGroup: 100,
@@ -177,6 +179,7 @@ export class App {
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
+  private isDynamicTimeoutRetry = false;
   private debugOverlay = new SolverDebugOverlay();
   private currentSolution: Solution | null = null;
   private currentProjectName: string | null = null;
@@ -202,6 +205,9 @@ export class App {
     this.projectSolutions = new ProjectSolutions();
     this.peripheralSummary = new PeripheralSummary();
     this.peripheralSummary.onHighlightPins((pins, color) => {
+      this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: pins, highlightColor: color });
+    });
+    this.constraintEditor.onHighlightPins((pins, color) => {
       this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: pins, highlightColor: color });
     });
 
@@ -623,9 +629,60 @@ export class App {
 
   private onAllSolversComplete(results: LabeledSolverResult[]): void {
     this.terminateWorkers();
-    this.setSolveButtonState(false);
 
     const result = mergeResults(results, this.settings.maxSolutions);
+
+    // Dynamic timeout retry: if 0 solutions and multiplier > 1 and not already a retry
+    const mult = this.settings.dynamicTimeoutMultiplier;
+    if (result.solutions.length === 0 && mult > 1 && !this.isDynamicTimeoutRetry) {
+      const originalTimeout = this.settings.solverTimeoutMs;
+      const boostedTimeout = originalTimeout * mult;
+      this.showStatus(`No solutions found — retrying with ${boostedTimeout}ms timeout (×${mult})...`, 'info');
+      this.isDynamicTimeoutRetry = true;
+      const savedTimeout = this.settings.solverTimeoutMs;
+      this.settings.solverTimeoutMs = boostedTimeout;
+
+      const parseResult = this.constraintEditor.getParseResult();
+      if (parseResult?.ast) {
+        if (this.settings.solverDebugOverlay) {
+          this.debugOverlay.startRun(this.settings.solverTypes);
+        }
+
+        // Re-run solver with boosted timeout
+        const mcuList = this.multiMcuRefs.length > 0
+          ? this.multiMcuRefs.map(ref => this.mcuCache.get(ref)!).filter(Boolean)
+          : this.currentMcu ? [this.currentMcu] : [];
+
+        if (mcuList.length > 0) {
+          const allRetryResults: LabeledSolverResult[] = [];
+          let mcuIdx = 0;
+
+          const solveNextMcu = () => {
+            if (mcuIdx >= mcuList.length) {
+              this.settings.solverTimeoutMs = savedTimeout;
+              this.isDynamicTimeoutRetry = false;
+              this.onAllSolversComplete(allRetryResults);
+              return;
+            }
+            const mcu = mcuList[mcuIdx];
+            const mcuLabel = mcuList.length > 1 ? `[${mcuIdx + 1}/${mcuList.length} ${mcu.refName}] ` : '';
+            this.solveForMcu(mcu, parseResult.ast!, this.settings.solverTypes, mcuLabel, (res) => {
+              allRetryResults.push(...res);
+              mcuIdx++;
+              solveNextMcu();
+            });
+          };
+          solveNextMcu();
+          return;
+        }
+        this.settings.solverTimeoutMs = savedTimeout;
+      }
+      this.isDynamicTimeoutRetry = false;
+    }
+
+    this.isDynamicTimeoutRetry = false;
+    this.setSolveButtonState(false);
+
     this.debugOverlay.finalize(result.solutions);
 
     this.layout.broadcastStateChange({ type: 'solver-complete', solverResult: result });
@@ -727,6 +784,7 @@ export class App {
       </div>
       <div class="header-right">
         <button class="btn btn-small" id="btn-import-xml">Import</button>
+        <button class="btn btn-small" id="btn-tutorial">Tutorial</button>
         <button class="btn btn-small" id="btn-data-manager">Data</button>
         <button class="btn btn-small" id="btn-settings">Settings</button>
         <button class="btn btn-small" id="btn-theme-toggle" title="Toggle dark mode">Light</button>
@@ -776,6 +834,15 @@ export class App {
     });
 
     header.querySelector('#btn-project-save-as')!.addEventListener('click', () => this.saveProjectAs());
+
+    // Tutorial button
+    header.querySelector('#btn-tutorial')!.addEventListener('click', () => {
+      startTutorial({
+        steps: this.getTutorialSteps(),
+        storageKey: 'tutorial-seen',
+        onStart: () => this.loadTutorialExample(),
+      });
+    });
 
     // Data manager button
     header.querySelector('#btn-data-manager')!.addEventListener('click', () => this.showDataManager());
@@ -956,6 +1023,10 @@ export class App {
   }
 
   private loadTutorialExample(): void {
+    // Reset project selection so the dropdown doesn't show a stale project
+    this.currentProjectName = null;
+    this.projectSelect.value = '';
+
     // Try loading MCU from localStorage first, then fetch
     const storedXml = localStorage.getItem('mcu-xml:STM32H755IIKx');
     if (storedXml) {
@@ -1075,15 +1146,14 @@ export class App {
       {
         target: '#btn-settings',
         title: 'Settings',
-        body: `Configure solver algorithms, timeouts, cost function weights, and display options.<br><br>
-          You can also replay this tutorial from here.`,
+        body: `Configure solver algorithms, timeouts, cost function weights, and display options.`,
         placement: 'bottom',
       },
       {
         target: () => document.querySelector('.app-header') as HTMLElement,
         title: 'Ready!',
         body: `That's everything. Import an MCU XML to get started.<br><br>
-          You can replay this tutorial anytime from <b>Settings</b>.`,
+          You can replay this tutorial anytime from the <b>Tutorial</b> button in the header.`,
         placement: 'bottom',
       },
     ];
@@ -1704,6 +1774,10 @@ export class App {
             <input type="number" class="settings-input" id="set-timeout" min="100" max="60000" step="100" value="${this.settings.solverTimeoutMs}">
           </div>
           <div class="settings-row">
+            <label title="If the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1.">Dynamic timeout</label>
+            <input type="number" class="settings-input" id="set-dynamic-timeout" min="0" max="100" step="1" value="${this.settings.dynamicTimeoutMultiplier}">
+          </div>
+          <div class="settings-row">
             <label title="Skip pin assignment for IN/OUT (GPIO) channels; only verify enough free pins are available">Skip GPIO mapping</label>
             <input type="checkbox" id="set-skip-gpio" ${this.settings.skipGpioMapping ? 'checked' : ''}>
           </div>
@@ -1763,7 +1837,6 @@ export class App {
 
         <div class="settings-actions">
           <button class="btn btn-small" id="set-reset-defaults">Reset Defaults</button>
-          <button class="btn btn-small" id="set-show-tutorial">Tutorial</button>
           <button class="btn btn-primary btn-small" id="set-apply">Apply</button>
         </div>
       </div>
@@ -1778,15 +1851,6 @@ export class App {
       modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]').forEach(cb => cb.checked = false);
     });
 
-    modal.querySelector('#set-show-tutorial')!.addEventListener('click', () => {
-      close();
-      startTutorial({
-        steps: this.getTutorialSteps(),
-        storageKey: 'tutorial-seen',
-        onStart: () => this.loadTutorialExample(),
-      });
-    });
-
     modal.querySelector('#set-apply')!.addEventListener('click', () => {
       const checkedSolvers = [...modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]:checked')]
         .map(cb => cb.value);
@@ -1796,6 +1860,7 @@ export class App {
       this.settings.maxSolutionsPerGroup = parseInt((modal.querySelector('#set-max-per-group') as HTMLInputElement).value) || DEFAULT_SETTINGS.maxSolutionsPerGroup;
       this.settings.numRestarts = parseInt((modal.querySelector('#set-num-restarts') as HTMLInputElement).value) || DEFAULT_SETTINGS.numRestarts;
       this.settings.solverTimeoutMs = parseInt((modal.querySelector('#set-timeout') as HTMLInputElement).value) || DEFAULT_SETTINGS.solverTimeoutMs;
+      this.settings.dynamicTimeoutMultiplier = parseInt((modal.querySelector('#set-dynamic-timeout') as HTMLInputElement).value) || 0;
       this.settings.minZoom = parseFloat((modal.querySelector('#set-min-zoom') as HTMLInputElement).value) || DEFAULT_SETTINGS.minZoom;
       this.settings.maxZoom = parseFloat((modal.querySelector('#set-max-zoom') as HTMLInputElement).value) || DEFAULT_SETTINGS.maxZoom;
       this.settings.mouseZoomGain = parseFloat((modal.querySelector('#set-zoom-gain') as HTMLInputElement).value) || DEFAULT_SETTINGS.mouseZoomGain;
