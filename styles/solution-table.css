@@ -153,6 +153,15 @@
   color: #fbbf24;
 }
 
+.st-sender {
+  color: #6b7280;
+  font-weight: 600;
+}
+
+[data-theme="dark"] .st-sender {
+  color: #9ca3af;
+}
+
 /* Save bar (project solutions) */
 .st-save-bar {
   display: flex;

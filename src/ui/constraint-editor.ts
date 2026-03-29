@@ -1,10 +1,10 @@
-import type { Panel, StateChange } from './panel';
+import type { Panel } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import { getStdlibMacroNames } from '../parser/stdlib-macros';
 import { escapeHtml, escapeRegex, createModal } from '../utils';
 
-const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color']);
+const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT', 'dma']);
 const DEBOUNCE_MS = 300;
 
@@ -164,7 +164,7 @@ export class ConstraintEditor implements Panel {
     this.updateLineNumbers();
   }
 
-  onStateChange(_change: StateChange): void {
+  onStateChange(_change: Record<string, unknown>): void {
     // No external state changes affect the editor currently
   }
 
@@ -459,11 +459,15 @@ export class ConstraintEditor implements Panel {
 mcu: STM32F405*
 mcu: STM32G4*VE | STM32F4*VG
 
-# Filter by package, min RAM/ROM/freq
+# Filter by package, RAM/ROM/freq/temp/voltage
 package: LQFP[100,144] | BGA*
-ram: 256K
-rom: 512K
-freq: 200
+ram: 256K          # minimum 256KB
+rom: < 2M          # maximum 2MB
+freq: 100 < 480    # between 100 and 480 MHz
+temp: -40 < 85     # operating temperature range
+voltage: 1.8 < 3.3  # operating voltage range (V suffix optional)
+core: M4           # MCU must have Cortex-M4
+core: M4 + M7      # dual-core (both required)
 
 # Reserve pins and peripherals from solving
 reserve: PH0, PH1, ADC*, SPI[1,3]
@@ -529,13 +533,13 @@ shared: ADC[1,2], TIM[1-4]</pre>
         <section>
           <h3>Operators in Mappings</h3>
           <p><code>|</code> (alternatives): pin matches ANY of the patterns<br>
-          <code>&amp;</code> (multi-pin): channel gets a separate pin for EACH expression</p>
-          <p>Evaluation: <code>A | B &amp; C | D</code> means <code>(A | B) &amp; (C | D)</code></p>
+          <code>+</code> (multi-pin): channel gets a separate pin for EACH expression</p>
+          <p>Evaluation: <code>A | B + C | D</code> means <code>(A | B) + (C | D)</code></p>
           <pre class="ce-help-code"># Channel accepts SPI or I2C (alternatives):
 COMM = SPI*_MOSI | I2C*_SDA
 
 # Channel gets an SPI pin AND an extra GPIO pin:
-MOSI = SPI*_MOSI &amp; GPIO[1-2]_*</pre>
+MOSI = SPI*_MOSI + GPIO[1-2]_*</pre>
           <p>To restrict a channel to a specific GPIO port without extra pins, use <code>require</code>:</p>
           <pre class="ce-help-code">require gpio_port(MOSI) == "GPIO1"  # port A only</pre>
         </section>
@@ -552,7 +556,58 @@ MOSI = SPI*_MOSI &amp; GPIO[1-2]_*</pre>
             <tr><td><code>gpio_port(A, "SPI")</code></td><td>Get GPIO port, filtered by type</td></tr>
             <tr><td><code>gpio_pin(A)</code></td><td>Get pin name (e.g., "PA4")</td></tr>
             <tr><td><code>gpio_pin(A, "SPI")</code></td><td>Get pin name, filtered by type</td></tr>
+            <tr><td><code>pin_number(A)</code></td><td>Physical pin number (integer)</td></tr>
+            <tr><td><code>channel_number(A)</code></td><td>Peripheral channel/input number</td></tr>
+            <tr><td><code>instance_number(A)</code></td><td>Peripheral instance number</td></tr>
           </table>
+          <p>Numeric functions support comparison: <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>+</code>, <code>-</code></p>
+          <pre class="ce-help-code">require channel_number(A) < channel_number(B)
+require pin_number(A) - pin_number(B) < 5</pre>
+        </section>
+
+        <section>
+          <h3>Instance Binding (@)</h3>
+          <p>Use <code>@name</code> after a signal pattern to bind the instance. Channels with the same <code>@name</code> automatically get a <code>same_instance</code> constraint:</p>
+          <pre class="ce-help-code">config "UART":
+  TX = USART*_TX @u
+  RX = USART*_RX @u
+  CTS = USART*_CTS @u
+# Equivalent to adding: require same_instance(TX, RX, CTS)</pre>
+        </section>
+
+        <section>
+          <h3>Optional Channels</h3>
+          <p>Use <code>channel?</code> for channels the solver assigns if possible but skips if not:</p>
+          <pre class="ce-help-code">port CMD:
+  channel TX
+  channel RX
+  channel? CTS           # optional
+  channel? RTS           # optional
+
+  config "UART":
+    TX = USART*_TX
+    RX = USART*_RX
+    CTS = USART*_CTS
+    RTS = USART*_RTS</pre>
+        </section>
+
+        <section>
+          <h3>Port Templates</h3>
+          <p>Define a port once, instantiate multiple times with <code>from</code>:</p>
+          <pre class="ce-help-code">port encoder_port:
+  channel A
+  channel B
+  config "quadrature":
+    encoder(A, B)
+
+port ENC0 from encoder_port color "orange"
+port ENC1 from encoder_port color "green"
+
+# Override specific configs:
+port ENC2 from encoder_port color "red":
+  config "quadrature":
+    A = TIM[1-3]_CH1
+    B = TIM[1-3]_CH2</pre>
         </section>
 
         <section>
@@ -561,10 +616,10 @@ MOSI = SPI*_MOSI &amp; GPIO[1-2]_*</pre>
           <table>
             <tr><td><code>uart_port(TX, RX)</code></td><td>USART full-duplex (same instance)</td></tr>
             <tr><td><code>spi_port(MOSI, MISO, SCK)</code></td><td>SPI master 3-wire</td></tr>
-            <tr><td><code>spi_port_cs(MOSI, MISO, SCK, NSS)</code></td><td>SPI master with chip select</td></tr>
+            <tr><td><code>spi_port(MOSI, MISO, SCK, NSS)</code></td><td>SPI master with chip select</td></tr>
             <tr><td><code>i2c_port(SDA, SCL)</code></td><td>I2C port</td></tr>
             <tr><td><code>encoder(A, B)</code></td><td>Timer encoder (CH1+CH2)</td></tr>
-            <tr><td><code>encoder_with_index(A, B, Z)</code></td><td>Encoder + index (CH1+CH2+CH3)</td></tr>
+            <tr><td><code>encoder(A, B, Z)</code></td><td>Encoder + index (CH1+CH2+CH3/4)</td></tr>
             <tr><td><code>pwm(CH)</code></td><td>PWM on any timer channel</td></tr>
             <tr><td><code>dac(OUT)</code></td><td>DAC output</td></tr>
             <tr><td><code>adc(IN)</code></td><td>ADC input</td></tr>

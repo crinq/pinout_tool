@@ -255,6 +255,16 @@ Cost functions rank solutions after solving. Weight of 0 disables a function; we
 | **Pin Clustering** | Bonus for keeping pins on the same GPIO port. | 0.0 |
 | **Pin Proximity** | Closer physical pin placement within a port is better. | 1.0 |
 
+### DMA Constraints
+
+When constraints use `dma()`, the solver requires that a DMA modes XML file has been loaded for the MCU. DMA stream assignment follows these rules:
+
+- Each DMA stream is exclusive to one port (no two ports share a stream)
+- Within a configuration, each channel with `dma()` gets its own stream
+- Different configurations of the same port may reuse streams (configs are mutually exclusive)
+
+The solver verifies consistent DMA stream assignment across all ports via backtracking. On STM32F4 (16 streams with fixed peripheral-to-stream mapping) this is a real constraint; on STM32H7 (16 streams, any peripheral on any stream via DMAMUX) it mainly limits the total number of simultaneous DMA channels.
+
 The **cost-guided** solver also uses port spread, debug pin penalty, and pin proximity during search to order candidates - not just for post-solve ranking.
 
 ### Skip GPIO Mapping

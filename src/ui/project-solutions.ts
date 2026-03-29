@@ -1,4 +1,4 @@
-import type { Panel, StateChange } from './panel';
+import type { Panel } from './panel';
 import type { Solution } from '../types';
 import { escapeHtml } from '../utils';
 
@@ -42,7 +42,7 @@ export class ProjectSolutions implements Panel {
 
   }
 
-  onStateChange(_change: StateChange): void {
+  onStateChange(_change: Record<string, unknown>): void {
     // ProjectSolutions does not react to solver-complete or other state changes.
     // It only gets populated via explicit addSolution/setSolutions calls.
   }

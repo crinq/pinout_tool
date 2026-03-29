@@ -18,6 +18,7 @@ import {
   canAssignPin, assignPin, unassignPin, evaluateExpr,
   propagateShared, undoPropagateShared, buildPinLookups,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
+  isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
 } from './solver';
@@ -140,7 +141,11 @@ function solveBacktrackAC3(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
+          if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
+            continue;
+          }
           if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+            if (req.optional) continue;
             pruned = true;
             break;
           }

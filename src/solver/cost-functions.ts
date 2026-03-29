@@ -92,6 +92,17 @@ registerCostFunction({
   },
 });
 
+registerCostFunction({
+  id: 'optional_fulfillment',
+  name: 'Optional Fulfillment',
+  description: 'Ratio of unfulfilled optional mappings and requires (lower = more optionals satisfied)',
+  compute(solution: Solution): number {
+    if (solution.optionalTotal === 0) return 0;
+    // Cost = fraction of optionals NOT fulfilled (0 = all fulfilled, 1 = none fulfilled)
+    return 1 - solution.optionalFulfilled / solution.optionalTotal;
+  },
+});
+
 const DEBUG_SIGNAL_PATTERN = /^SYS_(?:JTCK|JTDI|JTDO|JTMS|JTRST|SWCLK|SWDIO|SWO)\b/i;
 
 export function isDebugPin(pin: Pin): boolean {

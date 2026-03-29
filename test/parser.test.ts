@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { parseConstraints, parseSearchPattern } from '../src/parser/constraint-parser';
+import { parseConstraints, parseSearchPattern, parseExpressionString } from '../src/parser/constraint-parser';
+import { expandAllMacros } from '../src/parser/macro-expander';
 import type {
   ProgramNode,
   McuDeclNode,
+  RamDeclNode,
+  RomDeclNode,
+  FreqDeclNode,
+  TempDeclNode,
+  VoltageDeclNode,
+  CoreDeclNode,
   ReserveDeclNode,
   SharedDeclNode,
   PinDeclNode,
@@ -50,6 +57,157 @@ describe('Constraint parser', () => {
       const ast = parseOk('mcu: STM32G474R-B*');
       const mcu = ast.statements[0] as McuDeclNode;
       expect(mcu.patterns[0]).toBe('STM32G474R-B*');
+    });
+  });
+
+  // ========== ram/rom/freq declarations ==========
+
+  describe('ram/rom/freq declarations', () => {
+    it('should parse ram with min only', () => {
+      const ast = parseOk('ram: 256K');
+      const ram = ast.statements[0] as RamDeclNode;
+      expect(ram.type).toBe('ram_decl');
+      expect(ram.minBytes).toBe(256 * 1024);
+      expect(ram.maxBytes).toBeUndefined();
+    });
+
+    it('should parse ram with max only', () => {
+      const ast = parseOk('ram: < 1M');
+      const ram = ast.statements[0] as RamDeclNode;
+      expect(ram.minBytes).toBe(0);
+      expect(ram.maxBytes).toBe(1024 * 1024);
+    });
+
+    it('should parse ram with min and max', () => {
+      const ast = parseOk('ram: 128K < 512K');
+      const ram = ast.statements[0] as RamDeclNode;
+      expect(ram.minBytes).toBe(128 * 1024);
+      expect(ram.maxBytes).toBe(512 * 1024);
+    });
+
+    it('should parse rom with range', () => {
+      const ast = parseOk('rom: 256K < 2M');
+      const rom = ast.statements[0] as RomDeclNode;
+      expect(rom.minBytes).toBe(256 * 1024);
+      expect(rom.maxBytes).toBe(2 * 1024 * 1024);
+    });
+
+    it('should parse freq with min only', () => {
+      const ast = parseOk('freq: 480');
+      const freq = ast.statements[0] as FreqDeclNode;
+      expect(freq.minMHz).toBe(480);
+      expect(freq.maxMHz).toBeUndefined();
+    });
+
+    it('should parse freq with max only', () => {
+      const ast = parseOk('freq: < 200');
+      const freq = ast.statements[0] as FreqDeclNode;
+      expect(freq.minMHz).toBe(0);
+      expect(freq.maxMHz).toBe(200);
+    });
+
+    it('should parse freq with min and max', () => {
+      const ast = parseOk('freq: 100 < 480');
+      const freq = ast.statements[0] as FreqDeclNode;
+      expect(freq.minMHz).toBe(100);
+      expect(freq.maxMHz).toBe(480);
+    });
+  });
+
+  // ========== temp/voltage declarations ==========
+
+  describe('temp/voltage declarations', () => {
+    it('should parse temp with single value', () => {
+      const ast = parseOk('temp: 85');
+      const temp = ast.statements[0] as TempDeclNode;
+      expect(temp.type).toBe('temp_decl');
+      expect(temp.minTemp).toBe(85);
+      expect(temp.maxTemp).toBeUndefined();
+    });
+
+    it('should parse temp with negative value', () => {
+      const ast = parseOk('temp: -40');
+      const temp = ast.statements[0] as TempDeclNode;
+      expect(temp.minTemp).toBe(-40);
+    });
+
+    it('should parse temp with range', () => {
+      const ast = parseOk('temp: -40 < 125');
+      const temp = ast.statements[0] as TempDeclNode;
+      expect(temp.minTemp).toBe(-40);
+      expect(temp.maxTemp).toBe(125);
+    });
+
+    it('should parse temp with max only', () => {
+      const ast = parseOk('temp: < 85');
+      const temp = ast.statements[0] as TempDeclNode;
+      expect(temp.minTemp).toBeUndefined();
+      expect(temp.maxTemp).toBe(85);
+    });
+
+    it('should parse voltage with single value', () => {
+      const ast = parseOk('voltage: 3.3');
+      const v = ast.statements[0] as VoltageDeclNode;
+      expect(v.type).toBe('voltage_decl');
+      expect(v.minVoltage).toBe(3.3);
+      expect(v.maxVoltage).toBeUndefined();
+    });
+
+    it('should parse voltage with range', () => {
+      const ast = parseOk('voltage: 1.8 < 3.6');
+      const v = ast.statements[0] as VoltageDeclNode;
+      expect(v.minVoltage).toBe(1.8);
+      expect(v.maxVoltage).toBe(3.6);
+    });
+
+    it('should parse voltage with < max', () => {
+      const ast = parseOk('voltage: < 3.6');
+      const v = ast.statements[0] as VoltageDeclNode;
+      expect(v.minVoltage).toBeUndefined();
+      expect(v.maxVoltage).toBe(3.6);
+    });
+
+    it('should parse voltage with V suffix', () => {
+      const ast = parseOk('voltage: 3.3V');
+      const v = ast.statements[0] as VoltageDeclNode;
+      expect(v.minVoltage).toBe(3.3);
+      expect(v.maxVoltage).toBeUndefined();
+    });
+
+    it('should parse voltage range with V suffix', () => {
+      const ast = parseOk('voltage: 1.8V < 3.6V');
+      const v = ast.statements[0] as VoltageDeclNode;
+      expect(v.minVoltage).toBe(1.8);
+      expect(v.maxVoltage).toBe(3.6);
+    });
+  });
+
+  // ========== core declaration ==========
+
+  describe('core declaration', () => {
+    it('should parse single core', () => {
+      const ast = parseOk('core: M4');
+      const core = ast.statements[0] as CoreDeclNode;
+      expect(core.type).toBe('core_decl');
+      expect(core.required).toEqual([['M4']]);
+    });
+
+    it('should parse core with alternatives (OR)', () => {
+      const ast = parseOk('core: M4 | M7');
+      const core = ast.statements[0] as CoreDeclNode;
+      expect(core.required).toEqual([['M4', 'M7']]);
+    });
+
+    it('should parse dual-core requirement (AND)', () => {
+      const ast = parseOk('core: M4 + M7');
+      const core = ast.statements[0] as CoreDeclNode;
+      expect(core.required).toEqual([['M4'], ['M7']]);
+    });
+
+    it('should parse core with number suffix', () => {
+      const ast = parseOk('core: M33');
+      const core = ast.statements[0] as CoreDeclNode;
+      expect(core.required).toEqual([['M33']]);
     });
   });
 
@@ -315,11 +473,11 @@ describe('Constraint parser', () => {
       expect(pat.functionPart).toEqual({ type: 'any' });
     });
 
-    it('should parse ampersand-joined signal expressions', () => {
+    it('should parse plus-joined signal expressions (multi-pin)', () => {
       const src = `port P:
   channel A
   config "X":
-    A = USART*_TX & USART*_RX`;
+    A = USART*_TX + USART*_RX`;
       const ast = parseOk(src);
       const mapping = (ast.statements[0] as PortDeclNode).configs[0].body[0] as MappingNode;
       expect(mapping.signalExprs).toHaveLength(2);
@@ -576,6 +734,289 @@ reserve: PA0`;
     });
   });
 
+  // ========== Port Templates ==========
+
+  describe('port templates', () => {
+    it('should parse port with from template', () => {
+      const ast = parseOk(`port ENC0 from encoder_port:
+  config "default":
+    A = TIM1_CH1`);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.name).toBe('ENC0');
+      expect(port.template).toBe('encoder_port');
+    });
+
+    it('should parse port from template with color', () => {
+      const ast = parseOk(`port ENC0 from encoder_port color "blue":
+  channel A
+  config "default":
+    A = TIM1_CH1`);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.template).toBe('encoder_port');
+      expect(port.color).toBe('blue');
+    });
+
+    it('should parse body-less port from template', () => {
+      const ast = parseOk(`port ENC0 from encoder_port`);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.name).toBe('ENC0');
+      expect(port.template).toBe('encoder_port');
+      expect(port.channels).toHaveLength(0);
+      expect(port.configs).toHaveLength(0);
+    });
+  });
+
+  // ========== Macro Overloading ==========
+
+  describe('macro overloading', () => {
+    it('should parse macros with same name but different arity', () => {
+      const ast = parseOk(`macro spi_port(MOSI, MISO, SCK):
+  MOSI = SPI*_MOSI
+  MISO = SPI*_MISO
+  SCK = SPI*_SCK
+
+macro spi_port(MOSI, MISO, SCK, NSS):
+  spi_port(MOSI, MISO, SCK)
+  NSS = SPI*_NSS`);
+      const macros = ast.statements.filter(s => s.type === 'macro_decl') as MacroDeclNode[];
+      expect(macros).toHaveLength(2);
+      expect(macros[0].params).toHaveLength(3);
+      expect(macros[1].params).toHaveLength(4);
+    });
+  });
+
+  // ========== Macro Expansion ==========
+
+  describe('macro expansion', () => {
+    it('should expand macros with overloading by arity', () => {
+      // expandAllMacros imported at top
+      const ast = parseOk(`macro test(A):
+  A = USART*_TX
+
+macro test(A, B):
+  A = USART*_TX
+  B = USART*_RX
+
+port P:
+  channel X
+  channel Y
+  config "1arg":
+    test(X)
+  config "2arg":
+    test(X, Y)`);
+      const result = expandAllMacros(ast);
+      expect(result.errors).toHaveLength(0);
+      const port = result.ast.statements.find((s: any) => s.type === 'port_decl') as PortDeclNode;
+      const cfg1 = port.configs.find(c => c.name === '1arg')!;
+      const cfg2 = port.configs.find(c => c.name === '2arg')!;
+      // 1-arg version: 1 mapping
+      expect(cfg1.body.filter((b: any) => b.type === 'mapping')).toHaveLength(1);
+      // 2-arg version: 2 mappings
+      expect(cfg2.body.filter((b: any) => b.type === 'mapping')).toHaveLength(2);
+    });
+
+    it('should apply port template and merge channels/configs', () => {
+      // expandAllMacros imported at top
+      // Template port (has no "from")
+      const ast = parseOk(`port encoder_port:
+  channel A
+  channel B
+  config "quadrature":
+    A = TIM*_CH1
+    B = TIM*_CH2
+
+port ENC0 from encoder_port:
+  channel Z
+  config "with_index":
+    Z = TIM*_CH3`);
+      const result = expandAllMacros(ast);
+      expect(result.errors).toHaveLength(0);
+      const enc0 = result.ast.statements.find(
+        (s: any) => s.type === 'port_decl' && s.name === 'ENC0'
+      ) as PortDeclNode;
+      // Merged channels: A, B from template + Z from port
+      expect(enc0.channels.map(c => c.name)).toEqual(['A', 'B', 'Z']);
+      // Merged configs: "quadrature" from template + "with_index" from port
+      expect(enc0.configs.map(c => c.name)).toEqual(['quadrature', 'with_index']);
+      expect(enc0.template).toBeUndefined();
+    });
+
+    it('should report error for arity mismatch', () => {
+      // expandAllMacros imported at top
+      const ast = parseOk(`macro foo(A, B):
+  A = USART*_TX
+  B = USART*_RX
+
+port P:
+  channel X
+  config "default":
+    foo(X)`);
+      const result = expandAllMacros(ast);
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0].message).toContain('1 arguments not found');
+    });
+  });
+
+  // ========== Instance Binding @var ==========
+
+  describe('instance binding $var', () => {
+    it('should parse $var after signal pattern', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  channel RX
+  config "UART":
+    TX = USART*_TX $u
+    RX = USART*_RX $u`);
+      const port = ast.statements[0] as PortDeclNode;
+      const cfg = port.configs[0];
+      const m0 = cfg.body[0] as MappingNode;
+      const m1 = cfg.body[1] as MappingNode;
+      expect(m0.instanceBindings).toEqual(['u']);
+      expect(m1.instanceBindings).toEqual(['u']);
+    });
+
+    it('should desugar $var to same_instance require', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  channel RX
+  channel CTS
+  config "UART":
+    TX = USART*_TX $u
+    RX = USART*_RX $u
+    CTS = USART*_CTS $u`);
+      const result = expandAllMacros(ast);
+      expect(result.errors).toHaveLength(0);
+      const port = result.ast.statements[0] as PortDeclNode;
+      const cfg = port.configs[0];
+      // Should have 3 mappings + 1 require(same_instance)
+      const requires = cfg.body.filter((b: any) => b.type === 'require');
+      expect(requires.length).toBe(1);
+      const req = requires[0] as RequireNode;
+      expect(req.expression.type).toBe('function_call');
+      if (req.expression.type === 'function_call') {
+        expect(req.expression.name).toBe('same_instance');
+        expect(req.expression.args).toHaveLength(3);
+      }
+    });
+
+    it('should not generate require for single $var binding', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  config "UART":
+    TX = USART*_TX $u`);
+      const result = expandAllMacros(ast);
+      const port = result.ast.statements[0] as PortDeclNode;
+      const cfg = port.configs[0];
+      const requires = cfg.body.filter((b: any) => b.type === 'require');
+      expect(requires).toHaveLength(0);
+    });
+  });
+
+  // ========== Optional Mappings & Requires ==========
+
+  describe('optional mappings and requires', () => {
+    it('should parse ?= as optional mapping', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  channel CTS
+  config "UART":
+    TX = USART*_TX
+    CTS ?= USART*_CTS`);
+      const port = ast.statements[0] as PortDeclNode;
+      const cfg = port.configs[0];
+      const m0 = cfg.body[0] as MappingNode;
+      const m1 = cfg.body[1] as MappingNode;
+      expect(m0.optional).toBeUndefined();
+      expect(m1.optional).toBe(true);
+      expect(m1.channelName).toBe('CTS');
+    });
+
+    it('should parse require? as optional require', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  channel CTS
+  config "UART":
+    TX = USART*_TX
+    CTS ?= USART*_CTS
+    require? same_instance(TX, CTS)`);
+      const port = ast.statements[0] as PortDeclNode;
+      const cfg = port.configs[0];
+      const reqs = cfg.body.filter((b: any) => b.type === 'require');
+      expect(reqs).toHaveLength(1);
+      expect((reqs[0] as RequireNode).optional).toBe(true);
+    });
+  });
+
+  // ========== Numeric Expressions ==========
+
+  describe('numeric expressions in require', () => {
+    it('should parse comparison operators < > <= >=', () => {
+      const ast = parseOk(`port P:
+  channel A
+  channel B
+  config "default":
+    A = ADC*_IN[0-15]
+    B = ADC*_IN[0-15]
+    require channel_number(A) < channel_number(B)`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[2] as RequireNode;
+      expect(req.expression.type).toBe('binary_expr');
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.operator).toBe('<');
+      }
+    });
+
+    it('should parse <= operator', () => {
+      const ast = parseOk(`port P:
+  channel A
+  config "default":
+    A = TIM*_CH1
+    require instance_number(A) <= 5`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[1] as RequireNode;
+      expect(req.expression.type).toBe('binary_expr');
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.operator).toBe('<=');
+        expect(req.expression.right.type).toBe('number_literal');
+      }
+    });
+
+    it('should parse arithmetic expressions', () => {
+      const ast = parseOk(`port P:
+  channel A
+  channel B
+  config "default":
+    A = ADC*_IN[0-15]
+    B = ADC*_IN[0-15]
+    require pin_number(A) - pin_number(B) < 5`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[2] as RequireNode;
+      // Should be (pin_number(A) - pin_number(B)) < 5
+      expect(req.expression.type).toBe('binary_expr');
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.operator).toBe('<');
+        expect(req.expression.left.type).toBe('binary_expr');
+        if (req.expression.left.type === 'binary_expr') {
+          expect(req.expression.left.operator).toBe('-');
+        }
+      }
+    });
+
+    it('should parse number literals in expressions', () => {
+      const ast = parseOk(`port P:
+  channel A
+  config "default":
+    A = TIM*_CH1
+    require channel_number(A) != 3`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[1] as RequireNode;
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.operator).toBe('!=');
+        expect(req.expression.right).toEqual(expect.objectContaining({ type: 'number_literal', value: 3 }));
+      }
+    });
+  });
+
   // ========== parseSearchPattern ==========
 
   describe('parseSearchPattern', () => {
@@ -596,6 +1037,103 @@ reserve: PA0`;
     it('should return null for empty input', () => {
       expect(parseSearchPattern('')).toBeNull();
       expect(parseSearchPattern('  ')).toBeNull();
+    });
+  });
+
+  // ========== Pin Position Functions ==========
+
+  describe('pin position functions in require', () => {
+    it('should parse pin_row and pin_col', () => {
+      const ast = parseOk(`port P:
+  channel TX
+  channel RX
+  config "default":
+    TX = USART*_TX
+    RX = USART*_RX
+    require pin_row(TX) == pin_row(RX)`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[2] as RequireNode;
+      expect(req.expression.type).toBe('binary_expr');
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.operator).toBe('==');
+        expect(req.expression.left.type).toBe('function_call');
+        if (req.expression.left.type === 'function_call') {
+          expect(req.expression.left.name).toBe('pin_row');
+        }
+      }
+    });
+
+    it('should parse pin_distance', () => {
+      const ast = parseOk(`port P:
+  channel MOSI
+  channel MISO
+  config "SPI":
+    MOSI = SPI*_MOSI
+    MISO = SPI*_MISO
+    require pin_distance(MOSI, MISO) < 5`);
+      const port = ast.statements[0] as PortDeclNode;
+      const req = port.configs[0].body[2] as RequireNode;
+      expect(req.expression.type).toBe('binary_expr');
+      if (req.expression.type === 'binary_expr') {
+        expect(req.expression.left.type).toBe('function_call');
+        if (req.expression.left.type === 'function_call') {
+          expect(req.expression.left.name).toBe('pin_distance');
+          expect(req.expression.left.args).toHaveLength(2);
+        }
+      }
+    });
+  });
+
+  // ========== parseExpressionString ==========
+
+  describe('parseExpressionString', () => {
+    it('should parse a function call expression', () => {
+      const expr = parseExpressionString('instance(TX)');
+      expect(expr).not.toBeNull();
+      expect(expr!.type).toBe('function_call');
+      if (expr!.type === 'function_call') {
+        expect(expr!.name).toBe('instance');
+        expect(expr!.args).toHaveLength(1);
+      }
+    });
+
+    it('should parse arithmetic expressions', () => {
+      const expr = parseExpressionString('pin_number(A) + 1');
+      expect(expr).not.toBeNull();
+      expect(expr!.type).toBe('binary_expr');
+    });
+
+    it('should return null for empty input', () => {
+      expect(parseExpressionString('')).toBeNull();
+    });
+  });
+
+  // ========== Comment Interpolation ==========
+
+  describe('comment interpolation', () => {
+    it('should interpolate instance() from assignments', async () => {
+      const { interpolateCommentFromAssignments } = await import('../src/solver/comment-interpolation');
+      const assignments = [
+        { pinName: 'PA9', signalName: 'USART1_TX', portName: 'CMD', channelName: 'TX', configurationName: 'UART' },
+        { pinName: 'PA10', signalName: 'USART1_RX', portName: 'CMD', channelName: 'RX', configurationName: 'UART' },
+      ];
+      const result = interpolateCommentFromAssignments(
+        '${instance(TX)}_TX on pin ${gpio_pin(TX)}',
+        'CMD',
+        assignments as any
+      );
+      expect(result).toBe('USART1_TX on pin PA9');
+    });
+
+    it('should leave non-interpolated comments unchanged', async () => {
+      const { interpolateCommentFromAssignments } = await import('../src/solver/comment-interpolation');
+      expect(interpolateCommentFromAssignments('plain comment', 'P', [])).toBe('plain comment');
+    });
+
+    it('should replace unknown channels with ?', async () => {
+      const { interpolateCommentFromAssignments } = await import('../src/solver/comment-interpolation');
+      const result = interpolateCommentFromAssignments('${instance(UNKNOWN)}', 'P', []);
+      expect(result).toBe('?');
     });
   });
 });

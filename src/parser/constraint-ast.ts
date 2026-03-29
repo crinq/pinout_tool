@@ -20,6 +20,9 @@ export type StatementNode =
   | RamDeclNode
   | RomDeclNode
   | FreqDeclNode
+  | TempDeclNode
+  | VoltageDeclNode
+  | CoreDeclNode
   | ReserveDeclNode
   | PinDeclNode
   | PortDeclNode
@@ -40,24 +43,51 @@ export interface PackageDeclNode {
   loc: SourceLocation;
 }
 
-// ram: 1024K (minimum RAM in bytes)
+// ram: 1024K | ram: < 512K | ram: 256K < 1024K
 export interface RamDeclNode {
   type: 'ram_decl';
   minBytes: number;
+  maxBytes?: number;
   loc: SourceLocation;
 }
 
-// rom: 512K (minimum flash in bytes)
+// rom: 512K | rom: < 2M | rom: 256K < 2M
 export interface RomDeclNode {
   type: 'rom_decl';
   minBytes: number;
+  maxBytes?: number;
   loc: SourceLocation;
 }
 
-// freq: 480 (minimum frequency in MHz)
+// freq: 480 | freq: < 200 | freq: 100 < 480
 export interface FreqDeclNode {
   type: 'freq_decl';
   minMHz: number;
+  maxMHz?: number;
+  loc: SourceLocation;
+}
+
+// temp: -40 < 85  (operating temperature range in °C)
+export interface TempDeclNode {
+  type: 'temp_decl';
+  minTemp?: number;
+  maxTemp?: number;
+  loc: SourceLocation;
+}
+
+// voltage: 1.8 < 3.3  (operating voltage range in V)
+export interface VoltageDeclNode {
+  type: 'voltage_decl';
+  minVoltage?: number;
+  maxVoltage?: number;
+  loc: SourceLocation;
+}
+
+// core: M4 | core: M4 | M7 | core: M4 + M7
+export interface CoreDeclNode {
+  type: 'core_decl';
+  /** Core patterns that must be present (AND, joined by +). Each inner list is alternatives (OR, joined by |). */
+  required: string[][];
   loc: SourceLocation;
 }
 
@@ -85,9 +115,11 @@ export interface PinDeclNode {
 }
 
 // port CMD: ...
+// port ENC0 from encoder_port:
 export interface PortDeclNode {
   type: 'port_decl';
   name: string;
+  template?: string;
   color?: string;
   comment?: string;
   channels: ChannelDeclNode[];
@@ -114,18 +146,24 @@ export interface ConfigDeclNode {
 
 export type ConfigBodyNode = MappingNode | RequireNode | MacroCallNode;
 
-// TX = USART*_TX & USART*_RX
+// TX = USART*_TX + USART*_RX
+// CTS ?= USART*_CTS  (optional mapping)
+// TX = USART*_TX $u   (instance variable binding)
 export interface MappingNode {
   type: 'mapping';
   channelName: string;
-  signalExprs: SignalExprNode[]; // joined by '&' (all required simultaneously)
+  signalExprs: SignalExprNode[]; // joined by '+' (all required simultaneously)
+  optional?: boolean; // ?= optional mapping
+  instanceBindings?: string[]; // $var bindings, one per wildcard in the pattern
   loc: SourceLocation;
 }
 
 // require same_instance(TX, RX)
+// require? same_instance(TX, CTS)  (optional require)
 export interface RequireNode {
   type: 'require';
   expression: ConstraintExprNode;
+  optional?: boolean; // require? — vacuous truth if referenced channels unassigned
   loc: SourceLocation;
 }
 
@@ -158,6 +196,7 @@ export type ConstraintExprNode =
   | UnaryExprNode
   | IdentNode
   | StringLiteralNode
+  | NumberLiteralNode
   | DotAccessNode;
 
 // same_instance(TX, RX)
@@ -168,10 +207,10 @@ export interface FunctionCallNode {
   loc: SourceLocation;
 }
 
-// expr == expr, expr & expr
+// expr == expr, expr & expr, expr < expr, expr + expr
 export interface BinaryExprNode {
   type: 'binary_expr';
-  operator: '==' | '!=' | '&' | '|' | '^';
+  operator: '==' | '!=' | '<' | '>' | '<=' | '>=' | '&' | '|' | '^' | '+' | '-';
   left: ConstraintExprNode;
   right: ConstraintExprNode;
   loc: SourceLocation;
@@ -204,6 +243,13 @@ export interface DotAccessNode {
 export interface StringLiteralNode {
   type: 'string_literal';
   value: string;
+  loc: SourceLocation;
+}
+
+// 42, 3
+export interface NumberLiteralNode {
+  type: 'number_literal';
+  value: number;
   loc: SourceLocation;
 }
 

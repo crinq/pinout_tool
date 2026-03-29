@@ -22,6 +22,34 @@ import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import type { SolverVariable } from './solver';
 
+/** Short display names for solver IDs, used in error/warning messages. */
+const SOLVER_LABELS: Record<string, string> = {
+  'backtracking': 'Backtracking',
+  'cost-guided': 'Cost-Guided',
+  'ac3': 'AC3',
+  'dynamic-mrv': 'Dynamic-MRV',
+  'priority-backtracking': 'Priority-BT',
+  'randomized-restarts': 'Randomized',
+  'two-phase': 'Two-Phase',
+  'diverse-instances': 'Diverse',
+  'priority-two-phase': 'Priority-TP',
+  'priority-diverse': 'Priority-Diverse',
+  'priority-group': 'Priority-Group',
+  'mrv-group': 'MRV-Group',
+  'ratio-mrv-group': 'Ratio-MRV',
+  'hybrid': 'Hybrid',
+};
+
+function tagErrors(result: SolverResult, solverId: string): SolverResult {
+  const label = SOLVER_LABELS[solverId] ?? solverId;
+  for (const err of result.errors) {
+    if (!err.message.startsWith(`${label}: `)) {
+      err.message = `${label}: ${err.message}`;
+    }
+  }
+  return result;
+}
+
 export interface SolverWorkerRequest {
   ast: ProgramNode;
   mcu: Mcu;
@@ -105,35 +133,38 @@ function runSingleSolver(
     skipGpioMapping: config.skipGpioMapping,
   });
 
+  let result: SolverResult;
   switch (st) {
-    case 'two-phase': return solveTwoPhase(ast, mcu, buildTP());
-    case 'randomized-restarts': return solveRandomizedRestarts(ast, mcu, {
+    case 'two-phase': result = solveTwoPhase(ast, mcu, buildTP()); break;
+    case 'randomized-restarts': result = solveRandomizedRestarts(ast, mcu, {
       numRestarts: randomizedConfig?.numRestarts ?? 5,
       maxSolutions: config.maxSolutions ?? 100, timeoutMs: effectiveTimeoutMs,
       costWeights: config.costWeights ?? new Map(), skipGpioMapping: config.skipGpioMapping,
-    });
-    case 'cost-guided': return solveCostGuided(ast, mcu, adjustedConfig);
-    case 'diverse-instances': return solveDiverseInstances(ast, mcu, buildTP());
-    case 'ac3': return solveAC3(ast, mcu, adjustedConfig);
-    case 'dynamic-mrv': return solveDynamicMRV(ast, mcu, adjustedConfig);
-    case 'priority-backtracking': return solvePriorityBacktracking(ast, mcu, adjustedConfig);
-    case 'priority-two-phase': return solvePriorityTwoPhase(ast, mcu, buildTP());
-    case 'priority-diverse': return solvePriorityDiverse(ast, mcu, {
+    }); break;
+    case 'cost-guided': result = solveCostGuided(ast, mcu, adjustedConfig); break;
+    case 'diverse-instances': result = solveDiverseInstances(ast, mcu, buildTP()); break;
+    case 'ac3': result = solveAC3(ast, mcu, adjustedConfig); break;
+    case 'dynamic-mrv': result = solveDynamicMRV(ast, mcu, adjustedConfig); break;
+    case 'priority-backtracking': result = solvePriorityBacktracking(ast, mcu, adjustedConfig); break;
+    case 'priority-two-phase': result = solvePriorityTwoPhase(ast, mcu, buildTP()); break;
+    case 'priority-diverse': result = solvePriorityDiverse(ast, mcu, {
       numRestarts: randomizedConfig?.numRestarts ?? 25,
       maxSolutions: config.maxSolutions ?? 100, timeoutMs: effectiveTimeoutMs,
       costWeights: config.costWeights ?? new Map(), skipGpioMapping: config.skipGpioMapping,
-    });
-    case 'priority-group': return solvePriorityGroup(ast, mcu, buildTP());
-    case 'mrv-group': return solveMrvGroup(ast, mcu, buildTP());
-    case 'ratio-mrv-group': return solveRatioMrvGroup(ast, mcu, buildTP());
-    case 'hybrid': return solveHybrid(ast, mcu, buildTP());
-    default: return solveConstraints(ast, mcu, adjustedConfig);
+    }); break;
+    case 'priority-group': result = solvePriorityGroup(ast, mcu, buildTP()); break;
+    case 'mrv-group': result = solveMrvGroup(ast, mcu, buildTP()); break;
+    case 'ratio-mrv-group': result = solveRatioMrvGroup(ast, mcu, buildTP()); break;
+    case 'hybrid': result = solveHybrid(ast, mcu, buildTP()); break;
+    default: result = solveConstraints(ast, mcu, adjustedConfig); break;
   }
+  return tagErrors(result, st);
 }
 
 self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
   try {
     const { ast, mcu, config, solverType, solverTypes, twoPhaseConfig, randomizedConfig } = e.data;
+
     const complexity = estimateComplexity(ast, mcu);
 
     // A2: Multi-solver mode - shared Phase 1 for two-phase solvers
@@ -162,17 +193,17 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
             const startTime = performance.now();
             const sortFn = getPhase2SortFn(st, costWeights);
             const result = runPhase2Only(phase1, mcu, tpConfig, startTime, sortFn);
-            labeled.push({ solverId: st, result });
+            labeled.push({ solverId: st, result: tagErrors(result, st) });
           }
         } else {
           // Phase 1 failed - report error for each solver
-          const emptyResult: SolverResult = {
-            mcuRef: mcu.refName, solutions: [],
-            errors: phase1?.errors ?? [{ type: 'error', message: 'Phase 1: No valid assignments' }],
-            statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
-          };
           for (const st of sharedTypes) {
-            labeled.push({ solverId: st, result: emptyResult });
+            const emptyResult: SolverResult = {
+              mcuRef: mcu.refName, solutions: [],
+              errors: phase1?.errors?.map(e => ({ ...e })) ?? [{ type: 'error', message: 'Phase 1: No valid assignments' }],
+              statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+            };
+            labeled.push({ solverId: st, result: tagErrors(emptyResult, st) });
           }
         }
       }

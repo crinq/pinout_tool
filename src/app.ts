@@ -17,9 +17,13 @@ import { serializeSolution, deserializeSolution, migrateProjectData, seedDefault
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
+import { runPreSolveChecks } from './solver/solver';
+import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { filterStoredMcus, extractMcuFilters } from './mcu-matcher';
-import { startTutorial, shouldShowTutorial } from './ui/tutorial';
+import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
+import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
+import type { TutorialStep } from '../ts_lib/src/tutorial';
 import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
 
 // ============================================================
@@ -143,6 +147,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     debug_pin_penalty: 0.0,
     pin_clustering: 0.0,
     pin_proximity: 1,
+    optional_fulfillment: 5,
   },
   minZoom: 0.5,
   maxZoom: 2,
@@ -241,8 +246,12 @@ export class App {
     seedMacroLibrary();
 
     // Show tutorial for first-time users
-    if (shouldShowTutorial()) {
-      requestAnimationFrame(() => startTutorial(() => this.loadTutorialExample()));
+    if (shouldShowTutorial('tutorial-seen')) {
+      requestAnimationFrame(() => startTutorial({
+        steps: this.getTutorialSteps(),
+        storageKey: 'tutorial-seen',
+        onStart: () => this.loadTutorialExample(),
+      }));
     }
   }
 
@@ -265,7 +274,7 @@ export class App {
           // Update header
           const mcuInfo = document.getElementById('mcu-info');
           if (mcuInfo) {
-            mcuInfo.textContent = `${cachedMcu.refName} | ${cachedMcu.package} | ${cachedMcu.core} @ ${cachedMcu.frequency}MHz | ${cachedMcu.flash}KB Flash | ${cachedMcu.ram}KB RAM`;
+            mcuInfo.textContent = `${cachedMcu.refName} | ${cachedMcu.package} | ${cachedMcu.cores.join(' + ')} @ ${cachedMcu.frequency}MHz | ${cachedMcu.flash}KB Flash | ${cachedMcu.ram}KB RAM`;
           }
           this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu: cachedMcu });
         }
@@ -288,7 +297,7 @@ export class App {
         }
       }
       const portColors = this.getPortColors();
-      const channelComments = this.getChannelComments();
+      const channelComments = interpolateAllComments(this.getChannelComments(), assignments);
       const compatibility = this.checkSolutionCompatibility(assignments, solution.mcuRef);
       this.layout.broadcastStateChange({
         type: 'solution-selected', assignments, portColors, channelComments,
@@ -428,6 +437,26 @@ export class App {
     const solverTypes = this.settings.solverTypes;
     if (solverTypes.length === 0) {
       this.showStatus('No solvers selected', 'error');
+      return;
+    }
+
+    // Run pre-solve validation checks before starting workers
+    const preErrors = runPreSolveChecks(parseResult.ast, mcuList[0]);
+    const fatalErrors = preErrors.filter(e => e.type === 'error');
+    if (fatalErrors.length > 0) {
+      const statusBar = this.constraintEditor.getSolverStatusBar();
+      if (statusBar) {
+        statusBar.innerHTML = preErrors
+          .map((e: { type: string; message: string }) => {
+            const m = e.message.match(/^([A-Za-z0-9_-]+): (.*)$/);
+            if (m) {
+              return `<span class="st-${e.type}"><span class="st-sender">${m[1]}:</span> ${m[2]}</span>`;
+            }
+            return `<span class="st-${e.type}">${e.message}</span>`;
+          })
+          .join(' ');
+      }
+      this.showStatus(fatalErrors[0].message, 'error');
       return;
     }
 
@@ -619,7 +648,13 @@ export class App {
     if (statusBar) {
       if (result.errors.length > 0) {
         statusBar.innerHTML = result.errors
-          .map((e: { type: string; message: string }) => `<span class="st-${e.type}">${e.message}</span>`)
+          .map((e: { type: string; message: string }) => {
+            const m = e.message.match(/^([A-Za-z0-9_-]+): (.*)$/);
+            if (m) {
+              return `<span class="st-${e.type}"><span class="st-sender">${m[1]}:</span> ${m[2]}</span>`;
+            }
+            return `<span class="st-${e.type}">${e.message}</span>`;
+          })
           .join(' ');
       } else {
         statusBar.textContent = '';
@@ -642,7 +677,7 @@ export class App {
       const partialError = result.errors.find((e: { partialSolution?: unknown[] }) => e.partialSolution && e.partialSolution.length > 0);
       if (partialError?.partialSolution) {
         const portColors = this.getPortColors();
-        const channelComments = this.getChannelComments();
+        const channelComments = interpolateAllComments(this.getChannelComments(), partialError.partialSolution as Assignment[]);
         this.layout.broadcastStateChange({
           type: 'solution-selected',
           assignments: partialError.partialSolution,
@@ -749,34 +784,24 @@ export class App {
     header.querySelector('#btn-settings')!.addEventListener('click', () => this.showSettingsModal());
 
     // Theme toggle (light → dark → auto → light …)
+    // Migrate old 'theme' key to 'theme-mode' used by ts_lib
+    const oldTheme = localStorage.getItem('theme');
+    if (oldTheme && !localStorage.getItem('theme-mode')) {
+      localStorage.setItem('theme-mode', oldTheme);
+      localStorage.removeItem('theme');
+    }
+
+    initTheme();
     const themeBtn = header.querySelector('#btn-theme-toggle')!;
-    const themeModes = ['light', 'dark', 'auto'] as const;
-    const themeLabels: Record<string, string> = { light: 'Light', dark: 'Dark', auto: 'Auto' };
+    themeBtn.textContent = themeModeLabel(getThemeMode());
 
-    const applyTheme = (mode: string): void => {
-      let effective = mode;
-      if (mode === 'auto') {
-        effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      }
-      document.documentElement.setAttribute('data-theme', effective);
-      themeBtn.textContent = themeLabels[mode] || mode;
+    onThemeChange((mode) => {
+      themeBtn.textContent = themeModeLabel(mode);
       this.layout.broadcastStateChange({ type: 'theme-changed' });
-    };
-
-    const savedTheme = localStorage.getItem('theme') || 'auto';
-    applyTheme(savedTheme);
-
-    // Listen for system theme changes when in auto mode
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-      if (localStorage.getItem('theme') === 'auto') applyTheme('auto');
     });
 
     themeBtn.addEventListener('click', () => {
-      const current = localStorage.getItem('theme') || 'auto';
-      const idx = themeModes.indexOf(current as typeof themeModes[number]);
-      const next = themeModes[(idx + 1) % themeModes.length];
-      localStorage.setItem('theme', next);
-      applyTheme(next);
+      cycleThemeMode();
     });
   }
 
@@ -871,7 +896,7 @@ export class App {
     // Update header
     const mcuInfo = document.getElementById('mcu-info');
     if (mcuInfo) {
-      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.core} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
     }
 
     // Broadcast to all panels
@@ -954,6 +979,114 @@ export class App {
         this.constraintEditor.setText(text);
       })
       .catch(() => { /* Example not available */ });
+  }
+
+  private getTutorialSteps(): TutorialStep[] {
+    const findPanel = (id: string) => document.querySelector(`[data-panel-id="${id}"]`) as HTMLElement | null;
+    return [
+      {
+        target: () => document.querySelector('.app-header') as HTMLElement,
+        title: 'Welcome',
+        body: `This tool helps you assign STM32 peripheral signals to MCU pins using constraint-based solving.<br><br>
+          Let's walk through the basics.`,
+        placement: 'bottom',
+      },
+      {
+        target: '#btn-import-xml',
+        title: 'Import MCU Data',
+        body: `Start by importing an MCU XML file from your STM32CubeMX installation
+          (<code>db/mcu/</code> folder). You can also drag & drop <code>.xml</code> or <code>.ioc</code> files anywhere.<br><br>
+          The XML defines which pins and peripheral signals are available.
+          Importing a <code>.ioc</code> file adds its pin assignments as <code>pin</code> declarations to your constraints.`,
+        placement: 'bottom',
+      },
+      {
+        target: () => findPanel('package-viewer'),
+        title: 'Package Viewer',
+        body: `Once an MCU is loaded, its package appears here. Scroll to zoom, drag to pan, and click pins to see available signals.<br><br>
+          Use the search field to highlight pins by signal pattern (e.g. <code>SPI*_SCK</code>).
+          Click <b>Export</b> to save your pinout as PNG, SVG, text, JSON, or a custom format.`,
+        placement: 'right',
+      },
+      {
+        target: () => findPanel('constraint-editor'),
+        title: 'Write Constraints',
+        body: `Define your peripheral requirements here. A minimal example:<br>
+          <pre style="margin:8px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:3px;font-size:11px;line-height:1.4">port CMD:
+  channel TX
+  channel RX
+
+  config "UART":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)</pre>
+          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click the <b>Help</b> button for the full syntax reference.`,
+        placement: 'left',
+      },
+      {
+        target: '#btn-solve',
+        title: 'Solve',
+        body: `Press <b>Ctrl+Enter</b> or click <b>Solve</b> to find valid pin assignments.
+          Multiple solvers run in parallel and results are merged.`,
+        placement: 'left',
+      },
+      {
+        target: () => findPanel('solver-solutions'),
+        title: 'Solver Solutions',
+        body: `Solutions appear here, grouped by peripheral instance assignment.
+          Use <b>arrow keys</b> to navigate between groups and solutions.<br><br>
+          Each group represents a different combination of peripheral instances (e.g. SPI1+UART2 vs SPI3+UART5).
+          Selecting a solution highlights the assigned pins on the package viewer.`,
+        placement: 'top',
+      },
+      {
+        target: () => findPanel('project-solutions'),
+        title: 'Project Solutions',
+        body: `Save interesting solutions here for later comparison.
+          Select a solver solution and press <b>Enter</b> to add it to the project.<br><br>
+          Project solutions persist across solver runs and are included when you save the project.`,
+        placement: 'top',
+      },
+      {
+        target: () => findPanel('peripheral-summary'),
+        title: 'Peripheral Summary',
+        body: `Shows which peripheral instances are used by the selected solution and how they map to ports.<br><br>
+          Helps you quickly compare solutions to see which peripherals are consumed and which remain free.`,
+        placement: 'top',
+      },
+      {
+        target: '#project-select',
+        title: 'Projects',
+        body: `Your work is organized into projects. Use the dropdown to switch between projects.<br><br>
+          <b>New</b> &mdash; start an empty project<br>
+          <b>Save</b> &mdash; save constraints, MCU, and project solutions<br>
+          <b>Save As</b> &mdash; save under a new name, or as a new version with the old name<br><br>
+          Each save as creates a <b>version</b>, so you can go back to previous states.
+          Projects are stored in your browser's local storage.`,
+        placement: 'bottom',
+      },
+      {
+        target: '#btn-data-manager',
+        title: 'Data Manager',
+        body: `View and manage stored MCU data, DMA files, projects, custom export functions, and the macro library.
+          You can edit the shared macro library to add or modify macros available in all constraints.`,
+        placement: 'bottom',
+      },
+      {
+        target: '#btn-settings',
+        title: 'Settings',
+        body: `Configure solver algorithms, timeouts, cost function weights, and display options.<br><br>
+          You can also replay this tutorial from here.`,
+        placement: 'bottom',
+      },
+      {
+        target: () => document.querySelector('.app-header') as HTMLElement,
+        title: 'Ready!',
+        body: `That's everything. Import an MCU XML to get started.<br><br>
+          You can replay this tutorial anytime from <b>Settings</b>.`,
+        placement: 'bottom',
+      },
+    ];
   }
 
   private loadDmaXml(xmlString: string, fileName: string): void {
@@ -1647,7 +1780,11 @@ export class App {
 
     modal.querySelector('#set-show-tutorial')!.addEventListener('click', () => {
       close();
-      startTutorial(() => this.loadTutorialExample());
+      startTutorial({
+        steps: this.getTutorialSteps(),
+        storageKey: 'tutorial-seen',
+        onStart: () => this.loadTutorialExample(),
+      });
     });
 
     modal.querySelector('#set-apply')!.addEventListener('click', () => {
@@ -1710,7 +1847,7 @@ export class App {
 
       const mcuInfo = document.getElementById('mcu-info');
       if (mcuInfo) {
-        mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.core} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+        mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
       }
 
       this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
@@ -2449,7 +2586,7 @@ function serializeMcu(mcu: Mcu): Record<string, unknown> {
     family: mcu.family,
     line: mcu.line,
     package: mcu.package,
-    core: mcu.core,
+    cores: mcu.cores,
     frequency: mcu.frequency,
     flash: mcu.flash,
     ram: mcu.ram,

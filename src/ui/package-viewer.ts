@@ -151,7 +151,8 @@ export class PackageViewer implements Panel {
     resizeObserver.observe(this.container);
   }
 
-  onStateChange(change: StateChange): void {
+  onStateChange(raw: Record<string, unknown>): void {
+    const change = raw as unknown as StateChange;
     if (change.type === 'mcu-loaded' && change.mcu) {
       this.setMcu(change.mcu);
     }

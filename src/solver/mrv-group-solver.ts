@@ -13,11 +13,11 @@
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros } from '../parser/stdlib-macros';
+import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations, validateConstraints,
+  generateConfigCombinations,
   emptyResult, pushSolverWarnings, finalizeSolutions,
   createPinTracker,
   partitionGpioVariables, isGpioVariable,
@@ -198,7 +198,7 @@ export function solveMrvGroup(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -213,8 +213,6 @@ export function solveMrvGroup(
     reservedPinSet.add(pa.pinName);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;

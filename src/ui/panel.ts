@@ -1,5 +1,8 @@
 import type { Mcu, Assignment, SolverResult, CompatibilityResult } from '../types';
 
+// Re-export the generic Panel interface from ts_lib
+export type { Panel } from '../../ts_lib/src/panel';
+
 export type StateChangeType =
   | 'mcu-loaded'
   | 'solution-selected'
@@ -24,15 +27,4 @@ export interface StateChange {
   highlightPins?: Set<string>;
   /** Color for the highlighted pins */
   highlightColor?: string;
-}
-
-export interface Panel {
-  readonly id: string;
-  readonly title: string;
-
-  createView(container: HTMLElement): void;
-  onActivate?(): void;
-  onDeactivate?(): void;
-  onStateChange?(change: StateChange): void;
-  destroy?(): void;
 }

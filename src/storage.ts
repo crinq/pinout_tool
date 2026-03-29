@@ -19,6 +19,8 @@ export interface SerializedSolution {
   costs: Record<string, number>;
   totalCost: number;
   gpioCount?: number;
+  optionalTotal?: number;
+  optionalFulfilled?: number;
 }
 
 export interface ProjectVersion {
@@ -92,6 +94,8 @@ export function deserializeSolution(data: SerializedSolution): Solution {
     costs: new Map(Object.entries(data.costs)),
     totalCost: data.totalCost,
     gpioCount: data.gpioCount ?? 0,
+    optionalTotal: data.optionalTotal ?? 0,
+    optionalFulfilled: data.optionalFulfilled ?? 0,
   };
 }
 

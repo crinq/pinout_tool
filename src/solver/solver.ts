@@ -22,11 +22,12 @@ import type {
   ConstraintExprNode, PatternPart,
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros } from '../parser/stdlib-macros';
+import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import { expandPatternToCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
 import {
   computeTotalCost, type IncrementalCostTracker,
   incrementCost, decrementCost, updateCostThreshold,
+  parseBgaPosition, parsePackagePinCount,
 } from './cost-functions';
 
 // ============================================================
@@ -159,6 +160,7 @@ export interface ConfigSpec {
 export interface MappingSpec {
   channelName: string;
   signalExprs: SignalExprSpec[];
+  optional?: boolean;
 }
 
 export interface SignalExprSpec {
@@ -174,6 +176,7 @@ export interface SolverVariable {
   patternRaw: string; // original pattern text for error messages
   candidates: SignalCandidate[];
   domain: number[]; // indices into candidates
+  optional?: boolean; // from ?= mapping
 }
 
 export interface VariableAssignment {
@@ -489,6 +492,7 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
               alternatives: expr.alternatives,
               candidates: [], // resolved later
             })),
+            optional: item.optional,
           });
         } else if (item.type === 'require') {
           requires.push(item);
@@ -655,7 +659,7 @@ export function resolveAllVariables(
       for (const mapping of config.mappings) {
         const channel = port.channels.get(mapping.channelName);
 
-        // Each &-separated signal expr creates a separate solver variable (multi-pin)
+        // Each +-separated signal expr creates a separate solver variable (multi-pin)
         for (let exprIdx = 0; exprIdx < mapping.signalExprs.length; exprIdx++) {
           const expr = mapping.signalExprs[exprIdx];
 
@@ -688,6 +692,7 @@ export function resolveAllVariables(
             patternRaw,
             candidates: allCandidates,
             domain: allCandidates.map((_, i) => i),
+            optional: mapping.optional,
           });
         }
       }
@@ -718,7 +723,7 @@ export interface GpioPartitionResult {
 // ============================================================
 
 export function estimateComplexity(ast: ProgramNode, mcu: Mcu): 'easy' | 'medium' | 'hard' | 'very-hard' {
-  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   const ports = extractPorts(expandedAst);
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const reservedPinSet = new Set(reserved.pins);
@@ -823,11 +828,38 @@ export function validateConstraints(ports: Map<string, PortSpec>, errors: Solver
     }
 
     for (const config of port.configs) {
+      // Build channel → peripheral type prefixes map for this config
+      const channelTypes = new Map<string, Set<string>>();
+      for (const mapping of config.mappings) {
+        const types = new Set<string>();
+        for (const expr of mapping.signalExprs) {
+          for (const alt of expr.alternatives) {
+            const prefix = extractTypePrefix(alt.instancePart);
+            if (prefix) types.add(normalizePeripheralType(prefix));
+          }
+        }
+        channelTypes.set(mapping.channelName, types);
+      }
+
       // Validate require constraints
       for (const req of config.requires) {
-        validateExpr(req.expression, portName, mappedChannels, config.name, errors);
+        validateExpr(req.expression, portName, mappedChannels, config.name, errors, channelTypes);
       }
     }
+  }
+}
+
+/** Extract the peripheral type prefix from a pattern part (e.g., "USART" from USART* or USART1) */
+function extractTypePrefix(part: PatternPart): string | null {
+  switch (part.type) {
+    case 'literal': {
+      // "USART1" → "USART", "TIM1" → "TIM"
+      const m = part.value.match(/^([A-Za-z_]+)\d*$/);
+      return m ? m[1] : part.value;
+    }
+    case 'wildcard': return part.prefix || null; // "USART" from USART*
+    case 'range': return part.prefix || null;    // "TIM" from TIM[1,3]
+    case 'any': return null;                     // just * — any type
   }
 }
 
@@ -836,7 +868,8 @@ function validateExpr(
   portName: string,
   mappedChannels: Set<string>,
   configName: string,
-  errors: SolverError[]
+  errors: SolverError[],
+  channelTypes?: Map<string, Set<string>>
 ): void {
   switch (expr.type) {
     case 'function_call':
@@ -847,18 +880,40 @@ function validateExpr(
           source: `${portName}`,
         });
       }
+      // Check type filter compatibility
+      if (channelTypes && expr.args.length > 0) {
+        const lastArg = expr.args[expr.args.length - 1];
+        if (lastArg.type === 'string_literal') {
+          const filterType = normalizePeripheralType(lastArg.value);
+          for (let i = 0; i < expr.args.length - 1; i++) {
+            const arg = expr.args[i];
+            const chName = arg.type === 'ident' ? arg.name
+              : arg.type === 'dot_access' ? arg.property
+              : null;
+            if (!chName) continue;
+            const types = channelTypes.get(chName);
+            if (types && types.size > 0 && !types.has(filterType) && !types.has('*')) {
+              errors.push({
+                type: 'error',
+                message: `Type filter "${lastArg.value}" in ${expr.name}() will never match channel "${chName}" (mapped to ${[...types].join('/')}) in ${portName} config "${configName}"`,
+                source: `${portName}.${chName}`,
+              });
+            }
+          }
+        }
+      }
       for (const arg of expr.args) {
-        validateExpr(arg, portName, mappedChannels, configName, errors);
+        validateExpr(arg, portName, mappedChannels, configName, errors, channelTypes);
       }
       break;
 
     case 'binary_expr':
-      validateExpr(expr.left, portName, mappedChannels, configName, errors);
-      validateExpr(expr.right, portName, mappedChannels, configName, errors);
+      validateExpr(expr.left, portName, mappedChannels, configName, errors, channelTypes);
+      validateExpr(expr.right, portName, mappedChannels, configName, errors, channelTypes);
       break;
 
     case 'unary_expr':
-      validateExpr(expr.operand, portName, mappedChannels, configName, errors);
+      validateExpr(expr.operand, portName, mappedChannels, configName, errors, channelTypes);
       break;
 
     case 'ident':
@@ -881,6 +936,155 @@ function validateExpr(
   }
 }
 
+/**
+ * Check if the MCU has enough peripheral instances of each type to satisfy all ports.
+ * For each port+config, determines which peripheral types are needed (1 per port per type minimum).
+ * Then for the worst-case config combination, sums up needed instances across ports and compares
+ * against available MCU instances minus reserved peripherals.
+ */
+export function validatePeripheralAvailability(
+  ports: Map<string, PortSpec>,
+  mcu: Mcu,
+  reservedPeripherals: Set<string>,
+  errors: SolverError[],
+): void {
+  // For each port, for each config, collect the set of peripheral types needed
+  // A port needs at least 1 instance of each type used in its mappings
+  // (same_instance constraints mean multiple channels share one instance)
+  const portTypeNeeds = new Map<string, Map<string, Set<string>>>(); // port → config → Set<type>
+
+  for (const [portName, port] of ports) {
+    const configNeeds = new Map<string, Set<string>>();
+    for (const config of port.configs) {
+      const types = new Set<string>();
+      for (const mapping of config.mappings) {
+        if (mapping.optional) continue; // optional mappings don't require instances
+        for (const expr of mapping.signalExprs) {
+          for (const alt of expr.alternatives) {
+            const prefix = extractTypePrefix(alt.instancePart);
+            if (prefix) types.add(normalizePeripheralType(prefix));
+          }
+        }
+      }
+      configNeeds.set(config.name, types);
+    }
+    portTypeNeeds.set(portName, configNeeds);
+  }
+
+  // Build available instances per type, minus reserved
+  const availableByType = new Map<string, number>();
+  for (const [type, instances] of mcu.typeToInstances) {
+    const normType = normalizePeripheralType(type);
+    const available = instances.filter(inst => !reservedPeripherals.has(inst)).length;
+    availableByType.set(normType, (availableByType.get(normType) ?? 0) + available);
+  }
+
+  // For the worst case, sum up needed instances per type across all ports
+  // Each port contributes 1 instance per type it needs (minimum)
+  // Use the config that needs the most types per port (worst case)
+  const totalNeeded = new Map<string, { count: number; ports: string[] }>();
+
+  for (const [portName, configNeeds] of portTypeNeeds) {
+    // Merge types across all configs (any config might be active)
+    // Use union of all configs' types as conservative estimate
+    const allTypes = new Set<string>();
+    for (const types of configNeeds.values()) {
+      for (const t of types) allTypes.add(t);
+    }
+
+    for (const type of allTypes) {
+      const entry = totalNeeded.get(type) ?? { count: 0, ports: [] };
+      entry.count++;
+      entry.ports.push(portName);
+      totalNeeded.set(type, entry);
+    }
+  }
+
+  // Compare needed vs available
+  for (const [type, { count, ports: needPorts }] of totalNeeded) {
+    const available = availableByType.get(type) ?? 0;
+    if (count > available) {
+      const portList = needPorts.join(', ');
+      errors.push({
+        type: 'error',
+        message: `Not enough ${type} instances: ${count} needed (ports: ${portList}) but only ${available} available on ${mcu.refName}${available === 0 ? '' : ` (${available} instance${available === 1 ? '' : 's'})`}`,
+      });
+    }
+  }
+}
+
+/**
+ * Validate DMA constraints: check that DMA data is available when dma() is used,
+ * and that enough DMA streams exist for the number of dma() requirements.
+ */
+export function validateDmaAvailability(
+  ports: Map<string, PortSpec>,
+  mcu: Mcu,
+  errors: SolverError[],
+): void {
+  if (!configsHaveDma(ports)) return;
+
+  if (!mcu.dma) {
+    errors.push({
+      type: 'error',
+      message: `Constraints use dma() but no DMA data is available for ${mcu.refName}. Load the DMA XML file for this MCU.`,
+    });
+    return;
+  }
+
+  const totalStreams = mcu.dma.streams.length;
+
+  // For each config combination, count DMA channels needed.
+  // Use worst case: max across all configs per port, summed across ports.
+  let maxNeeded = 0;
+  const portDmaCounts: { portName: string; configName: string; count: number }[] = [];
+
+  for (const [portName, port] of ports) {
+    let portMax = 0;
+    let portMaxConfig = '';
+    for (const config of port.configs) {
+      const dmaChannels = collectDmaChannels(config.requires);
+      if (dmaChannels.size > portMax) {
+        portMax = dmaChannels.size;
+        portMaxConfig = config.name;
+      }
+    }
+    if (portMax > 0) {
+      portDmaCounts.push({ portName, configName: portMaxConfig, count: portMax });
+      maxNeeded += portMax;
+    }
+  }
+
+  if (maxNeeded > totalStreams) {
+    const details = portDmaCounts.map(p => `${p.portName}: ${p.count}`).join(', ');
+    errors.push({
+      type: 'error',
+      message: `Not enough DMA streams: ${maxNeeded} needed (${details}) but only ${totalStreams} available`,
+    });
+  }
+}
+
+/**
+ * Run all pre-solve validation checks once (before dispatching to solvers).
+ * Returns errors found. If any have type 'error', the caller should abort.
+ */
+export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
+  const errors: SolverError[] = [];
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  for (const me of macroErrors) {
+    errors.push({ type: 'error', message: me.message, source: me.macroName });
+  }
+  const ports = extractPorts(expandedAst);
+  const reserved = resolveReservePatterns(expandedAst, mcu);
+  const reservedPeripheralSet = new Set(reserved.peripherals);
+
+  validateConstraints(ports, errors);
+  validatePeripheralAvailability(ports, mcu, reservedPeripheralSet, errors);
+  validateDmaAvailability(ports, mcu, errors);
+
+  return errors;
+}
+
 // ============================================================
 // Shared Solver Context
 // ============================================================
@@ -900,6 +1104,7 @@ export interface SolverContext {
   deepest: { depth: number; assignments: VariableAssignment[] };
   gpioCountPerConfig: Map<string, number>;
   dmaData?: DmaData;
+  mcuInfo?: EvalMcuInfo;
 }
 
 /**
@@ -911,7 +1116,7 @@ export function prepareSolverContext(
   ast: ProgramNode, mcu: Mcu, errors: SolverError[],
   skipGpioMapping?: boolean
 ): SolverContext | null {
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -927,14 +1132,12 @@ export function prepareSolverContext(
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
-  validateConstraints(ports, errors);
-
   const configCombinations = generateConfigCombinations(ports);
   const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
   if (allVariables.length === 0) return null;
 
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',
@@ -944,7 +1147,9 @@ export function prepareSolverContext(
     return null;
   }
 
-  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!skipGpioMapping);
+  // Remove optional variables with empty domains (they'll remain unassigned)
+  const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
+  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(nonEmptyVars, !!skipGpioMapping);
 
   if (variables.length === 0 && gpioVars.length === 0) return null;
 
@@ -955,8 +1160,11 @@ export function prepareSolverContext(
     });
   }
 
-  // Sort by MRV
-  variables.sort((a, b) => a.domain.length - b.domain.length);
+  // Sort by MRV, optional variables last
+  variables.sort((a, b) => {
+    if (a.optional !== b.optional) return a.optional ? 1 : -1;
+    return a.domain.length - b.domain.length;
+  });
 
   // Pre-compute last variable index per (port, config)
   const lastVarOfConfig = new Map<string, number>();
@@ -988,11 +1196,19 @@ export function prepareSolverContext(
   // Only pass DMA data when configs actually use dma() constraints
   const hasDmaConstraints = mcu.dma && configsHaveDma(ports);
 
+  // Build MCU info for pin position functions
+  const pinByName = new Map<string, { position: string }>();
+  for (const pin of mcu.pins) {
+    pinByName.set(pin.name, { position: pin.position });
+  }
+  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
+
   return {
     expandedAst, ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns,
     configCombinations, variables, lastVarOfConfig, configRequiresMap,
     tracker, stats, deepest, gpioCountPerConfig,
     dmaData: hasDmaConstraints ? mcu.dma : undefined,
+    mcuInfo,
   };
 }
 
@@ -1013,7 +1229,7 @@ export function solveConstraints(
 
 
   // Expand macros (including stdlib) before extracting ports
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -1028,8 +1244,7 @@ export function solveConstraints(
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
-  // Validate constraints before solving
-  validateConstraints(ports, errors);
+
 
   const configCombinations = generateConfigCombinations(ports);
 
@@ -1051,8 +1266,8 @@ export function solveConstraints(
     };
   }
 
-  // Check for empty domains
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  // Check for empty domains (skip optional variables — they can be left unassigned)
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',
@@ -1073,7 +1288,9 @@ export function solveConstraints(
     };
   }
 
-  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!cfg.skipGpioMapping);
+  // Remove optional variables with empty domains (they'll remain unassigned)
+  const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
+  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(nonEmptyVars, !!cfg.skipGpioMapping);
 
   if (gpioVars.length > 0) {
     errors.push({
@@ -1082,8 +1299,11 @@ export function solveConstraints(
     });
   }
 
-  // Sort by MRV (minimum remaining values)
-  variables.sort((a, b) => a.domain.length - b.domain.length);
+  // Sort by MRV (minimum remaining values), optional variables last
+  variables.sort((a, b) => {
+    if (a.optional !== b.optional) return a.optional ? 1 : -1;
+    return a.domain.length - b.domain.length;
+  });
 
   // Pre-compute: last variable index per (port, config) in MRV order
   // When we reach this index, all variables for that config are assigned
@@ -1118,12 +1338,19 @@ export function solveConstraints(
   // Only pass DMA data when configs actually use dma() constraints
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
 
+  // Build MCU info for pin position functions
+  const pinByName = new Map<string, { position: string }>();
+  for (const pin of mcu.pins) {
+    pinByName.set(pin.name, { position: pin.position });
+  }
+  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
+
   // Backtracking search over ALL variables simultaneously
   solveBacktrack(
     variables, 0, tracker, [],
     configCombinations, ports, pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, stats, deepest,
-    lastVarOfConfig, configRequiresMap, dmaData
+    lastVarOfConfig, configRequiresMap, dmaData, undefined, undefined, mcuInfo
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -1176,7 +1403,8 @@ export function solveBacktrack(
   configRequiresMap: Map<string, RequireNode[]>,
   dmaData?: DmaData,
   propagationCtx?: PropagationContext,
-  costTracker?: IncrementalCostTracker
+  costTracker?: IncrementalCostTracker,
+  mcuInfo?: EvalMcuInfo
 ): void {
   // Iterative backtracking with explicit stack (avoids stack overflow on large problems)
   const totalVars = variables.length;
@@ -1209,7 +1437,7 @@ export function solveBacktrack(
     if (vi === totalVars) {
       stats.evaluatedCombinations++;
       const dmaAssignmentsOut: Map<string, string>[] = [];
-      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut)) {
+      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut, mcuInfo)) {
         const solution = buildSolution(
           current, configCombinations, ports, pinnedAssignments, solutions.length, dmaAssignmentsOut
         );
@@ -1310,7 +1538,12 @@ export function solveBacktrack(
             const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
             channelInfo.set(v.portName, portChannels);
             for (const req of requires) {
-              if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+              // Skip if any referenced channel is unassigned (from ?= mapping)
+              if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
+                continue;
+              }
+              if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
+                if (req.optional) continue; // require? — soft constraint, ignore failure
                 pruned = true;
                 break;
               }
@@ -1355,10 +1588,19 @@ export function solveBacktrack(
     }
 
     if (!found) {
-      // No more candidates - backtrack: pop this frame
-      stackVarIdx.length = sp;
-      stackDomPos.length = sp;
-      stackAssigned.length = sp;
+      if (v.optional && stackAssigned[sp] !== -2) {
+        // Optional variable: skip it (leave unassigned) and advance
+        stackAssigned[sp] = -2; // mark as skipped (not assigned)
+        stackDomPos[sp] = domLen; // exhausted
+        stackVarIdx.push(vi + 1);
+        stackDomPos.push(0);
+        stackAssigned.push(-1);
+      } else {
+        // No more candidates - backtrack: pop this frame
+        stackVarIdx.length = sp;
+        stackDomPos.length = sp;
+        stackAssigned.length = sp;
+      }
     }
   }
 }
@@ -1372,7 +1614,8 @@ export function evaluateAllConstraints(
   configCombinations: Map<string, string>[],
   ports: Map<string, PortSpec>,
   dmaData?: DmaData,
-  dmaAssignmentsOut?: Map<string, string>[]
+  dmaAssignmentsOut?: Map<string, string>[],
+  mcuInfo?: EvalMcuInfo
 ): boolean {
   // Build per-config assignment lookup:
   // port -> config -> channel -> VariableAssignment[]
@@ -1408,7 +1651,12 @@ export function evaluateAllConstraints(
       if (!config) continue;
 
       for (const req of config.requires) {
-        if (!evaluateExpr(req.expression, portName, channelInfo, dmaData)) {
+        // Skip if any referenced channel is unassigned (from ?= mapping)
+        if (isOptionalRequireVacuous(req.expression, portName, channelInfo)) {
+          continue;
+        }
+        if (!evaluateExpr(req.expression, portName, channelInfo, dmaData, mcuInfo)) {
+          if (req.optional) continue; // require? — soft constraint, ignore failure
           return false;
         }
       }
@@ -1429,36 +1677,82 @@ export function evaluateAllConstraints(
   return true;
 }
 
+/**
+ * Check if an optional require should be vacuously true.
+ * Returns true if the expression references a channel with no assignments.
+ */
+export function isOptionalRequireVacuous(
+  expr: ConstraintExprNode,
+  portName: string,
+  channelInfo: Map<string, Map<string, VariableAssignment[]>>
+): boolean {
+  const portChannels = channelInfo.get(portName);
+  switch (expr.type) {
+    case 'ident':
+      // Channel reference — check if it has any assignments
+      return !portChannels?.has(expr.name) || portChannels.get(expr.name)!.length === 0;
+    case 'dot_access':
+      // Cross-port reference
+      return !channelInfo.get(expr.object)?.has(expr.property) ||
+        channelInfo.get(expr.object)!.get(expr.property)!.length === 0;
+    case 'function_call':
+      // If any channel arg is unassigned, vacuous
+      return expr.args.some(arg => isOptionalRequireVacuous(arg, portName, channelInfo));
+    case 'binary_expr':
+      return isOptionalRequireVacuous(expr.left, portName, channelInfo) ||
+        isOptionalRequireVacuous(expr.right, portName, channelInfo);
+    case 'unary_expr':
+      return isOptionalRequireVacuous(expr.operand, portName, channelInfo);
+    default:
+      return false;
+  }
+}
+
+export interface EvalMcuInfo {
+  package: string;
+  pinByName: Map<string, { position: string }>;
+}
+
 export function evaluateExpr(
   expr: ConstraintExprNode,
   currentPort: string,
   channelInfo: Map<string, Map<string, VariableAssignment[]>>,
-  dmaData?: DmaData
-): boolean | string {
+  dmaData?: DmaData,
+  mcuInfo?: EvalMcuInfo
+): boolean | string | number {
   switch (expr.type) {
     case 'function_call':
-      return evaluateFunctionCall(expr.name, expr.args, currentPort, channelInfo, dmaData);
+      return evaluateFunctionCall(expr.name, expr.args, currentPort, channelInfo, dmaData, mcuInfo);
 
     case 'binary_expr': {
-      const left = evaluateExpr(expr.left, currentPort, channelInfo, dmaData);
-      const right = evaluateExpr(expr.right, currentPort, channelInfo, dmaData);
+      const left = evaluateExpr(expr.left, currentPort, channelInfo, dmaData, mcuInfo);
+      const right = evaluateExpr(expr.right, currentPort, channelInfo, dmaData, mcuInfo);
       switch (expr.operator) {
         case '==': return left === right;
         case '!=': return left !== right;
         case '&': return !!left && !!right;
         case '|': return !!left || !!right;
         case '^': return !!left !== !!right;
+        case '<': return typeof left === 'number' && typeof right === 'number' && left < right;
+        case '>': return typeof left === 'number' && typeof right === 'number' && left > right;
+        case '<=': return typeof left === 'number' && typeof right === 'number' && left <= right;
+        case '>=': return typeof left === 'number' && typeof right === 'number' && left >= right;
+        case '+': return typeof left === 'number' && typeof right === 'number' ? left + right : false;
+        case '-': return typeof left === 'number' && typeof right === 'number' ? left - right : false;
       }
       return false;
     }
 
     case 'unary_expr':
-      return !evaluateExpr(expr.operand, currentPort, channelInfo, dmaData);
+      return !evaluateExpr(expr.operand, currentPort, channelInfo, dmaData, mcuInfo);
 
     case 'ident':
       return expr.name;
 
     case 'string_literal':
+      return expr.value;
+
+    case 'number_literal':
       return expr.value;
 
     case 'dot_access': {
@@ -1473,8 +1767,9 @@ function evaluateFunctionCall(
   args: ConstraintExprNode[],
   currentPort: string,
   channelInfo: Map<string, Map<string, VariableAssignment[]>>,
-  dmaData?: DmaData
-): boolean | string {
+  dmaData?: DmaData,
+  mcuInfo?: EvalMcuInfo
+): boolean | string | number {
   const resolveChannel = (arg: ConstraintExprNode): VariableAssignment[] => {
     if (arg.type === 'ident') {
       return channelInfo.get(currentPort)?.get(arg.name) || [];
@@ -1631,9 +1926,133 @@ function evaluateFunctionCall(
       return !hasMatchingVa;
     }
 
+    case 'pin_number': {
+      // Returns the physical pin number (position) for a channel
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const pos = va.candidate.pin.position;
+          if (pos !== undefined) return pos;
+        }
+      }
+      return 0;
+    }
+
+    case 'channel_number': {
+      // Returns the peripheral channel/input number (e.g., 3 for ADC1_IN3)
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const func = va.candidate.signal.signalFunction || '';
+          const numMatch = func.match(/(\d+)$/);
+          if (numMatch) return parseInt(numMatch[1], 10);
+        }
+      }
+      return 0;
+    }
+
+    case 'instance_number': {
+      // Returns the peripheral instance number (e.g., 2 for SPI2)
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const num = va.candidate.signal.instanceNumber;
+          if (num !== undefined) return num;
+        }
+      }
+      return 0;
+    }
+
+    case 'pin_row': {
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const pos = va.candidate.pin.position;
+          const bga = parseBgaPosition(pos);
+          if (bga) return bga.row + 1; // A=1, B=2, ...
+          // LQFP: compute side-based row (y-component)
+          if (mcuInfo) {
+            const totalPins = parsePackagePinCount(mcuInfo.package);
+            if (totalPins > 0) {
+              const n = parseInt(pos, 10);
+              if (!isNaN(n)) return qfpY(n, totalPins);
+            }
+          }
+        }
+      }
+      return 0;
+    }
+
+    case 'pin_col': {
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const pos = va.candidate.pin.position;
+          const bga = parseBgaPosition(pos);
+          if (bga) return bga.col;
+          // LQFP: compute side-based col (x-component)
+          if (mcuInfo) {
+            const totalPins = parsePackagePinCount(mcuInfo.package);
+            if (totalPins > 0) {
+              const n = parseInt(pos, 10);
+              if (!isNaN(n)) return qfpX(n, totalPins);
+            }
+          }
+        }
+      }
+      return 0;
+    }
+
+    case 'pin_distance': {
+      if (args.length === 2) {
+        const vasA = resolveChannel(args[0]);
+        const vasB = resolveChannel(args[1]);
+        if (vasA.length > 0 && vasB.length > 0) {
+          const posA = vasA[0].candidate.pin.position;
+          const posB = vasB[0].candidate.pin.position;
+          const bgaA = parseBgaPosition(posA);
+          const bgaB = parseBgaPosition(posB);
+          if (bgaA && bgaB) {
+            const dr = bgaA.row - bgaB.row;
+            const dc = bgaA.col - bgaB.col;
+            return Math.round(Math.sqrt(dr * dr + dc * dc));
+          }
+          // LQFP: circular distance
+          const nA = parseInt(posA, 10);
+          const nB = parseInt(posB, 10);
+          if (!isNaN(nA) && !isNaN(nB) && mcuInfo) {
+            const totalPins = parsePackagePinCount(mcuInfo.package);
+            if (totalPins > 0) {
+              const diff = Math.abs(nA - nB);
+              return Math.min(diff, totalPins - diff);
+            }
+          }
+        }
+      }
+      return 0;
+    }
+
     default:
       return false;
   }
+}
+
+/** QFP x-component: pin number to x position on a rectangle */
+function qfpX(pin: number, total: number): number {
+  const side = total / 4;
+  if (pin <= side) return pin;              // bottom: left to right
+  if (pin <= 2 * side) return side;         // right side
+  if (pin <= 3 * side) return 3 * side - pin; // top: right to left
+  return 0;                                  // left side
+}
+
+/** QFP y-component: pin number to y position on a rectangle */
+function qfpY(pin: number, total: number): number {
+  const side = total / 4;
+  if (pin <= side) return 0;                // bottom
+  if (pin <= 2 * side) return pin - side;   // right: bottom to top
+  if (pin <= 3 * side) return side;         // top
+  return 4 * side - pin;                    // left: top to bottom
 }
 
 // ============================================================
@@ -1861,6 +2280,75 @@ function assignDmaStreams(
 }
 
 // ============================================================
+// Optional Fulfillment Counting
+// ============================================================
+
+function countOptionalFulfillment(
+  varAssignments: VariableAssignment[],
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+): { optionalTotal: number; optionalFulfilled: number } {
+  // Use first config combination (they share the same optional structure)
+  const combo = configCombinations[0];
+  if (!combo) return { optionalTotal: 0, optionalFulfilled: 0 };
+
+  // Build set of assigned (port, channel, config) tuples for quick lookup
+  const assignedKeys = new Set<string>();
+  for (const va of varAssignments) {
+    assignedKeys.add(`${va.variable.portName}\0${va.variable.channelName}\0${va.variable.configName}`);
+  }
+
+  // Build channelInfo for require evaluation
+  const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
+  for (const va of varAssignments) {
+    if (combo.get(va.variable.portName) !== va.variable.configName) continue;
+    let portMap = channelInfo.get(va.variable.portName);
+    if (!portMap) { portMap = new Map(); channelInfo.set(va.variable.portName, portMap); }
+    let arr = portMap.get(va.variable.channelName);
+    if (!arr) { arr = []; portMap.set(va.variable.channelName, arr); }
+    arr.push(va);
+  }
+
+  let optionalTotal = 0;
+  let optionalFulfilled = 0;
+
+  for (const [portName, port] of ports) {
+    const activeConfig = combo.get(portName);
+    for (const config of port.configs) {
+      if (config.name !== activeConfig) continue;
+
+      // Count optional mappings
+      for (const mapping of config.mappings) {
+        if (!mapping.optional) continue;
+        optionalTotal++;
+        // Check if any expr for this mapping was assigned
+        const key = `${portName}\0${mapping.channelName}\0${config.name}`;
+        if (assignedKeys.has(key)) {
+          optionalFulfilled++;
+        }
+      }
+
+      // Count optional requires
+      for (const req of config.requires) {
+        if (!req.optional) continue;
+        optionalTotal++;
+        // Skip vacuous requires (reference unassigned channels)
+        if (isOptionalRequireVacuous(req.expression, portName, channelInfo)) continue;
+        // Evaluate the require — fulfilled if it passes
+        try {
+          const result = evaluateExpr(req.expression, portName, channelInfo);
+          if (result === true) optionalFulfilled++;
+        } catch {
+          // evaluation error — count as not fulfilled
+        }
+      }
+    }
+  }
+
+  return { optionalTotal, optionalFulfilled };
+}
+
+// ============================================================
 // Solution Building
 // ============================================================
 
@@ -1914,6 +2402,11 @@ export function buildSolution(
     configurationName: va.variable.configName,
   }));
 
+  // Count optional mappings and requires fulfillment
+  const { optionalTotal, optionalFulfilled } = countOptionalFulfillment(
+    varAssignments, configCombinations, _ports
+  );
+
   const solution: Solution = {
     id,
     mcuRef: '',  // set by solveConstraints after building
@@ -1922,6 +2415,8 @@ export function buildSolution(
     costs: new Map(),
     totalCost: 0,
     gpioCount: 0,  // set by validateGpioAvailability
+    optionalTotal,
+    optionalFulfilled,
   };
 
   return solution;

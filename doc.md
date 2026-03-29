@@ -115,22 +115,55 @@ Filter MCUs by package type. Same glob syntax as `mcu:`. Can be combined with `m
 ### Memory Filters
 
 ```
-ram: 256K
+ram: 256K           # minimum 256KB
+ram: < 1M           # maximum 1MB
+ram: 128K < 512K    # between 128KB and 512KB
 rom: 512K
-ram: 1M
-rom: 2048KB
+rom: 256K < 2M
 ```
 
-Specify minimum RAM and ROM (flash) requirements. Supports suffixes: `K`/`KB` (×1024), `M`/`MB` (×1024²). Without a suffix, the value is in bytes. MCUs with less memory are excluded from the search.
+Specify RAM and ROM (flash) requirements. Supports suffixes: `K`/`KB` (×1024), `M`/`MB` (×1024²). Without a suffix, the value is in bytes. Use `<` for upper bounds or ranges.
 
 ### Frequency Filter
 
 ```
-freq: 200
-freq: 480
+freq: 200           # minimum 200 MHz
+freq: < 480         # maximum 480 MHz
+freq: 100 < 480     # between 100 and 480 MHz
 ```
 
-Specify a minimum CPU frequency in MHz. MCUs with a lower maximum frequency are excluded from the search.
+Specify CPU frequency requirements in MHz. Use `<` for upper bounds or ranges.
+
+### Temperature Filter
+
+```
+temp: -40           # MCU must support down to -40°C
+temp: < 125         # MCU must support up to 125°C
+temp: -40 < 85      # MCU must cover -40°C to 85°C range
+```
+
+Filters MCUs by operating temperature range. The MCU's supported range must cover the specified value(s).
+
+### Voltage Filter
+
+```
+voltage: 1.8        # minimum 1.8V (MCU must support 1.8V and above)
+voltage: < 3.6      # maximum 3.6V
+voltage: 1.8 < 3.6  # MCU must cover 1.8V to 3.6V range
+voltage: 3.3V       # optional V suffix ignored
+```
+
+Filters MCUs by operating voltage range. Same `min`, `< max`, `min < max` syntax as ram/rom/freq. Supports decimal values. An optional `V` unit suffix is accepted and ignored.
+
+### Core Filter
+
+```
+core: M4            # MCU must have a Cortex-M4 core
+core: M4 | M7      # MCU must have M4 OR M7
+core: M4 + M7      # MCU must have both M4 AND M7 (dual-core)
+```
+
+Filters MCUs by CPU core type. The pattern is matched case-insensitively against core names (e.g., "M4" matches "Arm Cortex-M4"). Use `|` for alternatives and `+` for requiring multiple cores.
 
 ### Pin Reservations
 
@@ -175,7 +208,8 @@ A **port** groups related channels. A **channel** represents one logical signal 
 port CMD:
   channel TX
   channel RX
-  channel CTS @ PA0, PA1    # optional: restrict to specific pins
+  channel CTS @ PA0, PA1    # pin-restricted to PA0/PA1
+  channel RTS
 
 port MOTOR:
   channel PWM_A
@@ -255,16 +289,69 @@ TX = USART*_TX
 COMM = SPI*_MOSI | I2C*_SDA
 ```
 
-**AND multi-pin** (`&`): the channel requires a SEPARATE pin for EACH sub-expression:
+**Multi-pin** (`+`): the channel requires a SEPARATE pin for EACH sub-expression:
 ```
-TX = USART*_TX & USART*_RX    # channel gets 2 pins
+TX = USART*_TX + USART*_RX    # channel gets 2 pins
 ```
 
-**Operator precedence:** `|` binds more tightly than `&`:
+**Operator precedence:** `|` binds more tightly than `+`:
 ```
-# This means: (USART*_TX | UART*_TX) & (USART*_RX | UART*_RX)
-TX = USART*_TX | UART*_TX & USART*_RX | UART*_RX
+# This means: (USART*_TX | UART*_TX) + (USART*_RX | UART*_RX)
+TX = USART*_TX | UART*_TX + USART*_RX | UART*_RX
 ```
+
+### Instance Binding ($)
+
+Use `$name` after a signal pattern to bind the resolved peripheral instance. All mappings sharing the same `$name` within a port are automatically constrained to use the same instance:
+
+```
+config "UART":
+  TX = USART*_TX $u
+  RX = USART*_RX $u
+  CTS ?= USART*_CTS $u
+```
+
+This is equivalent to:
+```
+config "UART":
+  TX = USART*_TX
+  RX = USART*_RX
+  CTS ?= USART*_CTS
+  require same_instance(TX, RX, CTS)
+```
+
+Different `$name`s are independent. Instance bindings are scoped to the port (collected across all configs). Use `diff_instance()` explicitly if two groups must be different instances.
+
+### Optional Mappings and Requires
+
+Use `?=` for optional mappings — assigned if possible, skipped if no valid pin exists:
+
+```
+config "UART full":
+  TX = USART*_TX
+  RX = USART*_RX
+  CTS ?= USART*_CTS
+  RTS ?= USART*_RTS
+  require same_instance(TX, RX)
+  require same_instance(TX, CTS)
+  require dma(CTS)
+```
+
+**`?=` semantics:** The channel is assigned if possible, skipped without error if not. Any `require` statement that references an unassigned `?=` channel is automatically skipped (vacuous truth). This applies to both `require` and `require?`.
+
+**`require?` semantics:** A soft constraint — if it evaluates to false, it is ignored (no error). This is independent of `?=`. Use `require?` for "nice to have" constraints that shouldn't block solutions.
+
+### String Interpolation in Comments
+
+Comments on channels can include `${expr}` expressions that are evaluated per-solution during export:
+
+```
+port CMD:
+  channel TX    # ${instance(TX)}_TX on pin ${gpio_pin(TX)}
+  channel RX    # ${instance(RX)}_RX on pin ${gpio_pin(RX)}
+```
+
+After solving, these become e.g. `USART1_TX on pin PA9`. Supported functions: `instance()`, `gpio_pin()`, `type()`, or any channel name (resolves to signal name). If evaluation fails, `?` is substituted.
 
 ### Constraints (require)
 
@@ -277,16 +364,17 @@ require type(A) == "TIM"
 require gpio_port(LED) == "GPIO2"
 ```
 
-#### Logical operators
+#### Operators
 
 | Operator | Meaning | Precedence |
 |----------|---------|------------|
 | `\|` | OR | lowest |
 | `^` | XOR | |
 | `&` | AND | |
-| `==` | Equal | |
-| `!=` | Not equal | |
-| `!` | NOT (prefix) | highest |
+| `==` `!=` | Equality | |
+| `<` `>` `<=` `>=` | Comparison | |
+| `+` `-` | Arithmetic | highest (binary) |
+| `!` | NOT (prefix) | highest (unary) |
 
 Parentheses override precedence: `(A | B) & C`.
 
@@ -322,8 +410,27 @@ port DEBUG:
 | `version(ch)` | 1 channel | string | Peripheral version string |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
 | `dma(ch, "TYPE")` | 1 channel + type | boolean | DMA check filtered by peripheral type |
+| `pin_number(ch)` | 1 channel | number | Physical pin number (position) |
+| `pin_row(ch)` | 1 channel | number | BGA: row (A=1, B=2, ...). LQFP: y-component |
+| `pin_col(ch)` | 1 channel | number | BGA: column number. LQFP: x-component |
+| `pin_distance(a, b)` | 2 channels | number | Distance between two pins (Euclidean for BGA, circular for LQFP) |
+| `channel_number(ch)` | 1 channel | number | Peripheral channel/input number (e.g., 3 for IN3) |
+| `instance_number(ch)` | 1 channel | number | Peripheral instance number (e.g., 2 for SPI2) |
 
 **GPIO port mapping:** A=GPIO1, B=GPIO2, C=GPIO3, D=GPIO4, etc.
+
+#### Numeric expressions
+
+Numeric functions can be used with comparison and arithmetic operators:
+
+```
+require channel_number(V_SENSE) < channel_number(I_SENSE)
+require instance_number(ENC0.mosi) < instance_number(ENC1.mosi)
+require pin_number(A) - pin_number(B) < 5
+require channel_number(IA) != channel_number(IB)
+require pin_row(TX) == pin_row(RX)
+require pin_distance(MOSI, MISO) < 5
+```
 
 #### DMA constraints
 
@@ -340,6 +447,8 @@ require dma(RX, "USART")        # RX must have DMA, only considering USART signa
 - Different configurations of the same port may reuse a stream (since configs are mutually exclusive)
 
 The solver automatically verifies that a consistent DMA stream assignment exists across all channels that require DMA.
+
+**Note:** Using `dma()` requires loading the MCU's DMA modes XML file (separate from the MCU pinout XML). If no DMA data is loaded, the solver reports an error and does not start.
 
 ### Macros
 
@@ -374,6 +483,56 @@ port CMD:
 
 Parameters are textually substituted. Macros expand before constraint evaluation.
 
+#### Macro overloading
+
+Macros can be overloaded by argument count. The correct version is selected based on the number of arguments at each call site:
+
+```
+macro spi_port(MOSI, MISO, SCK):
+  MOSI = SPI*_MOSI
+  MISO = SPI*_MISO
+  SCK = SPI*_SCK
+  require same_instance(MOSI, MISO, SCK, "SPI")
+
+macro spi_port(MOSI, MISO, SCK, NSS):
+  spi_port(MOSI, MISO, SCK)        # calls 3-arg version
+  NSS = SPI*_NSS
+  require same_instance(MOSI, NSS, "SPI")
+```
+
+### Port Templates
+
+Define a port once, instantiate it multiple times with `from`. This avoids repeating identical channel/config blocks:
+
+```
+port encoder_port:
+  channel A
+  channel B
+  config "quadrature":
+    encoder(A, B)
+
+port ENC0 from encoder_port color "orange"
+port ENC1 from encoder_port color "green"
+port ENC2 from encoder_port color "red"
+```
+
+**Override semantics:** If the derived port re-declares a config with the same name, it replaces the template's version. Additional channels/configs are appended:
+
+```
+port ENC3 from encoder_port color "blue":
+  channel Z                          # added channel
+  config "quadrature":               # replaces template's "quadrature"
+    A = TIM[1-3]_CH1
+    B = TIM[1-3]_CH2
+  config "with_index":               # new config
+    encoder(A, B, Z)
+```
+
+Body-less ports (no colon, no body) simply clone the template as-is:
+```
+port ENC0 from encoder_port color "orange"
+```
+
 ### Standard Library
 
 Pre-defined macros available in all projects. The macro library can be edited via the **Data Manager** (click Edit under "Macro Library"). Changes apply to all projects. Use Reset to restore the defaults.
@@ -383,10 +542,10 @@ Pre-defined macros available in all projects. The macro library can be edited vi
 | `uart_port(TX, RX)` | 2 channels | USART full-duplex, same instance |
 | `uart_half_duplex(TX)` | 1 channel | USART TX only |
 | `spi_port(MOSI, MISO, SCK)` | 3 channels | SPI master 3-wire, same instance |
-| `spi_port_cs(MOSI, MISO, SCK, NSS)` | 4 channels | SPI master with chip select |
+| `spi_port(MOSI, MISO, SCK, NSS)` | 4 channels | SPI master with chip select (overload) |
 | `i2c_port(SDA, SCL)` | 2 channels | I2C, same instance |
 | `encoder(A, B)` | 2 channels | Timer encoder CH1+CH2, same instance |
-| `encoder_with_index(A, B, Z)` | 3 channels | Timer encoder CH1+CH2+CH3 |
+| `encoder(A, B, Z)` | 3 channels | Timer encoder with index CH3/4 (overload) |
 | `pwm(CH)` | 1 channel | PWM on any timer channel 1-4 |
 | `dac(OUT)` | 1 channel | DAC output 1-2 |
 | `adc(IN)` | 1 channel | ADC input 0-15 |
@@ -417,7 +576,7 @@ port SENSOR color "#dc2626":
   channel CS
 
   config "SPI":
-    spi_port_cs(MOSI, MISO, SCK, CS)
+    spi_port(MOSI, MISO, SCK, CS)
 
 port ENCODER color "#16a34a":
   channel A
@@ -572,12 +731,27 @@ Matching pins pulse with an amber glow animation. Press **Escape** to clear the 
 
 All solvers share the same preprocessing pipeline:
 
-1. **Expand patterns** -- each channel's signal pattern is expanded to a set of candidate (pin, signal) pairs
-2. **Generate config combinations** -- all permutations of configs across ports
-3. **Search** -- each solver applies its own strategy to find valid pin assignments
-4. **Cost ranking** -- valid solutions are scored and sorted
+1. **Validate** -- pre-solve checks verify peripheral availability, DMA data, and constraint consistency
+2. **Expand patterns** -- each channel's signal pattern is expanded to a set of candidate (pin, signal) pairs
+3. **Generate config combinations** -- all permutations of configs across ports
+4. **Search** -- each solver applies its own strategy to find valid pin assignments
+5. **Cost ranking** -- valid solutions are scored and sorted
 
 Each solver runs in a separate **Web Worker** to keep the UI responsive. Multiple solvers can run in parallel. Click **Abort** to cancel all running solvers.
+
+### Pre-Solve Validation
+
+Before starting any solver, the tool runs validation checks on the constraints and MCU data. If any check fails (error), solver workers are not started and the error is displayed immediately.
+
+| Check | Type | Description |
+|-------|------|-------------|
+| **Type filter mismatch** | Error | A `require` function's type filter can never match the channel's mapped signal type (e.g., `require same_instance(TX, MOSI, "USART")` where MOSI is mapped to `SPI*_MOSI`). |
+| **Peripheral availability** | Error | More peripheral instances of a type are needed than the MCU provides (e.g., 3 ports need SPI but only 2 SPI instances exist). |
+| **DMA data missing** | Error | Constraints use `dma()` but no DMA modes XML is loaded for the MCU. |
+| **DMA stream count** | Error | More DMA channels are needed across all ports than the MCU has DMA streams. |
+| **Unknown channel reference** | Warning | A `require` expression references a channel name that has no mapping in the port. |
+
+Error messages include the sender (solver name) to identify which component produced them.
 
 ### Solver Algorithms
 

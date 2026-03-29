@@ -123,6 +123,51 @@ describe('DMA XML Parser', () => {
   });
 });
 
+// ============================================================
+// STM32H7 DMA (range-based streams, all peripherals on all streams)
+// ============================================================
+
+const H7_DMA_XML_PATH = join(__dirname, '../example/mcu_data/STM32H7/DMA-STM32H753_dma2_v1_3_Modes.xml');
+
+describe('H7 DMA XML Parser (range-based streams)', () => {
+  const h7DmaXml = readFileSync(H7_DMA_XML_PATH, 'utf-8');
+  let h7DmaData: DmaData;
+
+  it('should detect H7 DMA XML', () => {
+    expect(isDmaXml(h7DmaXml)).toBe(true);
+  });
+
+  it('should parse H7 DMA XML without errors', () => {
+    h7DmaData = parseDmaXml(h7DmaXml);
+    expect(h7DmaData.version).toBe('STM32H753_dma2_v1_3');
+  });
+
+  it('should expand stream ranges to 16 streams (DMA1: 8, DMA2: 8)', () => {
+    h7DmaData = parseDmaXml(h7DmaXml);
+    expect(h7DmaData.streams.length).toBe(16);
+    const dma1 = h7DmaData.streams.filter(s => s.controller === 'DMA1');
+    const dma2 = h7DmaData.streams.filter(s => s.controller === 'DMA2');
+    expect(dma1.length).toBe(8);
+    expect(dma2.length).toBe(8);
+  });
+
+  it('should make every peripheral available on all 16 streams', () => {
+    h7DmaData = parseDmaXml(h7DmaXml);
+    const usart1tx = findDmaStreamsForSignal(h7DmaData, 'USART1_TX');
+    expect(usart1tx.length).toBe(16);
+    const spi1rx = findDmaStreamsForSignal(h7DmaData, 'SPI1_RX');
+    expect(spi1rx.length).toBe(16);
+  });
+
+  it('should have signal lookup entries for H7 peripherals', () => {
+    h7DmaData = parseDmaXml(h7DmaXml);
+    expect(h7DmaData.signalToDmaStreams.has('USART1_TX')).toBe(true);
+    expect(h7DmaData.signalToDmaStreams.has('SPI3_RX')).toBe(true);
+    expect(h7DmaData.signalToDmaStreams.has('TIM1_CH1')).toBe(true);
+    expect(h7DmaData.signalToDmaStreams.has('I2C1_RX')).toBe(true);
+  });
+});
+
 describe('MCU-DMA version mapping', () => {
   it('should find DMA IP version in MCU XML', () => {
     const mcuXml = readFileSync(MCU_XML_PATH, 'utf-8');

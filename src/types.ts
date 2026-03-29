@@ -11,7 +11,7 @@ export interface Mcu {
   family: string;
   line: string;
   package: string;
-  core: string;
+  cores: string[];
   frequency: number;
   flash: number;
   ram: number;
@@ -170,6 +170,10 @@ export interface Solution {
   totalCost: number;
   gpioCount: number;
   clusterSize?: number;
+  /** Total number of optional mappings (?=) + optional requires (require?) across active configs */
+  optionalTotal: number;
+  /** Number of fulfilled optional mappings + satisfied optional requires */
+  optionalFulfilled: number;
 }
 
 export interface ConfigCombinationAssignment {

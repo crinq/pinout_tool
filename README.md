@@ -13,6 +13,7 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
 - **Pin group highlighting** -- hover/click port names or peripheral instances to highlight pins on the viewer
 - **Project management** -- save/load projects, store MCU data in browser localStorage
+- **DMA stream assignment** -- `dma()` constraints with automatic stream exclusivity checking (STM32F4 fixed mapping + STM32H7 DMAMUX)
 - **CubeMX .ioc import** -- import pin assignments from STM32CubeMX project files
 - **Editable macro library** -- customize and extend the standard library macros via Data Manager
 - **Custom export functions** -- user-defined JavaScript export functions for any output format

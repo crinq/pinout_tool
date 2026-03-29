@@ -9,12 +9,12 @@
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros } from '../parser/stdlib-macros';
+import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost } from './cost-functions';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations, validateConstraints,
+  generateConfigCombinations,
   emptyResult, pushSolverWarnings, finalizeSolutions,
   partitionGpioVariables, isGpioVariable,
   configsHaveDma,
@@ -36,7 +36,7 @@ export function solvePriorityTwoPhase(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -51,8 +51,6 @@ export function solvePriorityTwoPhase(
     reservedPinSet.add(pa.pinName);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;

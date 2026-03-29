@@ -9,15 +9,16 @@ import {
 export const TYPE_ALIASES: Record<string, string> = {
   'UART': 'USART',
   'LPUART': 'USART',
-  'TIM1_8': 'TIM',
-  'TIM6_7': 'TIM',
-  'TIM1_8G4': 'TIM',
-  'TIM6_7G4': 'TIM',
 };
 
+// STM32 XML uses versioned TIM type names like TIM1_8, TIM6_7, TIM1_8G4, TIM1_8H7, TIM6_7H7, etc.
+const TIM_TYPE_RE = /^TIM\d+_\d+/;
+
 export function normalizePeripheralType(type: string): string {
-  // Try exact match first (handles "TIM1_8" → "TIM", "UART" → "USART", etc.)
+  // Try exact match first (handles "UART" → "USART", etc.)
   if (TYPE_ALIASES[type] !== undefined) return TYPE_ALIASES[type];
+  // Versioned TIM types: TIM1_8, TIM6_7, TIM1_8G4, TIM1_8H7, etc. → "TIM"
+  if (TIM_TYPE_RE.test(type)) return 'TIM';
   // Handle compound types like "USART_RX", "SPI_TX" - extract base type before underscore
   if (type.includes('_')) {
     const base = type.substring(0, type.indexOf('_'));
@@ -190,7 +191,7 @@ export function parseMcuXml(xmlString: string): Mcu {
     return text ? parseFloat(text) : 0;
   };
 
-  const core = getText('Core');
+  const cores = Array.from(mcuEl.querySelectorAll('Core')).map(el => el.textContent?.trim() ?? '').filter(Boolean);
   const frequency = getNum('Frequency');
   const flash = getNum('Flash');
   const ram = getNum('Ram');
@@ -388,7 +389,7 @@ export function parseMcuXml(xmlString: string): Mcu {
     family,
     line,
     package: packageName,
-    core,
+    cores,
     frequency,
     flash,
     ram,

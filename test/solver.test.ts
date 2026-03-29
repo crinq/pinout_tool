@@ -4,7 +4,7 @@ import { join } from 'path';
 import { parseMcuXml } from '../src/parser/mcu-xml-parser';
 import { parseDmaXml, isDmaXml } from '../src/parser/dma-xml-parser';
 import { parseConstraints } from '../src/parser/constraint-parser';
-import { solveConstraints, extractSharedPatterns, isSharedInstance } from '../src/solver/solver';
+import { solveConstraints, extractSharedPatterns, isSharedInstance, validateDmaAvailability, extractPorts, configsHaveDma } from '../src/solver/solver';
 import { solveTwoPhase } from '../src/solver/two-phase-solver';
 import { solveRandomizedRestarts } from '../src/solver/randomized-solver';
 import { solveCostGuided } from '../src/solver/cost-guided-solver';
@@ -715,4 +715,175 @@ describe('Solver integration tests', () => {
       }
     });
   }
+});
+
+// ============================================================
+// DMA Validation Tests
+// ============================================================
+
+describe('DMA validation', () => {
+  const f405Dir = join(__dirname, 'f405v');
+  const mcuXml = readFileSync(join(f405Dir, 'STM32F405VGTx.xml'), 'utf-8');
+
+  function getMcuWithDma(): Mcu {
+    const mcu = parseMcuXml(mcuXml);
+    const dmaFile = readdirSync(f405Dir).find(f => f.startsWith('DMA-') && f.endsWith('.xml'));
+    if (dmaFile) {
+      const dmaXmlString = readFileSync(join(f405Dir, dmaFile), 'utf-8');
+      if (isDmaXml(dmaXmlString)) {
+        mcu.dma = parseDmaXml(dmaXmlString);
+      }
+    }
+    return mcu;
+  }
+
+  function getMcuWithoutDma(): Mcu {
+    return parseMcuXml(mcuXml);
+  }
+
+  it('should error when dma() used but no DMA data available', () => {
+    const mcu = getMcuWithoutDma();
+    const src = `
+port CMD:
+  channel TX
+  config "uart":
+    TX = USART*_TX
+    require dma(TX)
+`;
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const ports = extractPorts(expanded);
+    const errors: { type: string; message: string }[] = [];
+    validateDmaAvailability(ports, mcu, errors);
+    expect(errors.length).toBe(1);
+    expect(errors[0].type).toBe('error');
+    expect(errors[0].message).toContain('no DMA data is available');
+  });
+
+  it('should not error when no dma() constraints exist', () => {
+    const mcu = getMcuWithoutDma();
+    const src = `
+port CMD:
+  channel TX
+  config "uart":
+    TX = USART*_TX
+`;
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const ports = extractPorts(expanded);
+    const errors: { type: string; message: string }[] = [];
+    validateDmaAvailability(ports, mcu, errors);
+    expect(errors.length).toBe(0);
+  });
+
+  it('should warn when more DMA channels needed than available', () => {
+    const mcu = getMcuWithDma();
+    expect(mcu.dma).toBeDefined();
+    const totalStreams = mcu.dma!.streams.length; // 16 for STM32F405
+
+    // Create enough ports with dma() to exceed available streams
+    // Each port needs 1 DMA channel, create totalStreams + 1 ports
+    const portDefs = [];
+    for (let i = 0; i < totalStreams + 1; i++) {
+      portDefs.push(`
+port P${i}:
+  channel TX
+  config "x":
+    TX = USART*_TX
+    require dma(TX)
+`);
+    }
+    const src = portDefs.join('\n');
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const ports = extractPorts(expanded);
+    const errors: { type: string; message: string }[] = [];
+    validateDmaAvailability(ports, mcu, errors);
+    expect(errors.length).toBe(1);
+    expect(errors[0].type).toBe('error');
+    expect(errors[0].message).toContain('Not enough DMA streams');
+    expect(errors[0].message).toContain(`${totalStreams + 1} needed`);
+    expect(errors[0].message).toContain(`${totalStreams} available`);
+  });
+
+  it('should not warn when DMA channels fit within available streams', () => {
+    const mcu = getMcuWithDma();
+    expect(mcu.dma).toBeDefined();
+
+    const src = `
+port CMD:
+  channel TX
+  channel RX
+  config "uart":
+    TX = USART*_TX
+    RX = USART*_RX
+    require dma(TX)
+    require dma(RX)
+
+port SPI_PORT:
+  channel MOSI
+  config "spi":
+    MOSI = SPI*_TX
+    require dma(MOSI)
+`;
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const ports = extractPorts(expanded);
+    const errors: { type: string; message: string }[] = [];
+    validateDmaAvailability(ports, mcu, errors);
+    expect(errors.length).toBe(0);
+  });
+});
+
+describe('Optional fulfillment cost', () => {
+  const MCU_XML_PATH = join(__dirname, '../example/mcu_data/STM32F4/STM32F405VGTx.xml');
+  const mcuXml = readFileSync(MCU_XML_PATH, 'utf-8');
+  const mcu = parseMcuXml(mcuXml);
+
+  it('should track fulfilled optional mappings', () => {
+    const src = `
+port CMD:
+  channel TX
+  channel RX
+  channel OPT
+  config "uart":
+    TX = USART*_TX
+    RX = USART*_RX
+    OPT ?= USART*_CK
+    require same_instance(TX, RX)
+`;
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const result = solveConstraints(expanded, mcu, { maxSolutions: 10 });
+    expect(result.solutions.length).toBeGreaterThan(0);
+
+    for (const sol of result.solutions) {
+      // There's 1 optional mapping (?= OPT), no optional requires
+      expect(sol.optionalTotal).toBe(1);
+      // Fulfilled should be 0 or 1
+      expect(sol.optionalFulfilled).toBeGreaterThanOrEqual(0);
+      expect(sol.optionalFulfilled).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('should count 0 optionals when none defined', () => {
+    const src = `
+port CMD:
+  channel TX
+  channel RX
+  config "uart":
+    TX = USART*_TX
+    RX = USART*_RX
+    require same_instance(TX, RX)
+`;
+    const { ast } = parseConstraints(src);
+    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const result = solveConstraints(expanded, mcu, { maxSolutions: 5 });
+    expect(result.solutions.length).toBeGreaterThan(0);
+
+    for (const sol of result.solutions) {
+      expect(sol.optionalTotal).toBe(0);
+      expect(sol.optionalFulfilled).toBe(0);
+    }
+  });
 });

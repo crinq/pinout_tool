@@ -11,6 +11,9 @@ import type {
   RamDeclNode,
   RomDeclNode,
   FreqDeclNode,
+  TempDeclNode,
+  VoltageDeclNode,
+  CoreDeclNode,
   ReserveDeclNode,
   SharedDeclNode,
   PinDeclNode,
@@ -24,6 +27,7 @@ import type {
   SignalPatternNode,
   PatternPart,
   ConstraintExprNode,
+  BinaryExprNode,
   MacroDeclNode,
   MacroCallNode,
   SourceLocation,
@@ -52,13 +56,17 @@ type TokenType =
   | 'CARET'       // ^
   | 'BANG'         // !
   | 'AT'          // @
+  | 'DOLLAR'      // $
   | 'STAR'        // *
   | 'DOT'         // .
   | 'LPAREN'      // (
   | 'RPAREN'      // )
   | 'LBRACKET'    // [
   | 'RBRACKET'    // ]
+  | 'LT'          // <
+  | 'GT'          // >
   | 'DASH'        // -
+  | 'QUESTION'    // ?
   | 'UNDERSCORE'  // _
   | 'COMMENT'     // # inline comment text
   | 'NEWLINE'
@@ -74,7 +82,7 @@ interface Token {
 }
 
 const KEYWORDS = new Set([
-  'mcu', 'package', 'ram', 'rom', 'freq', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
+  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from',
 ]);
 
 // ============================================================
@@ -201,13 +209,17 @@ function tokenize(source: string): { tokens: Token[]; errors: ParseError[] } {
         '^': 'CARET',
         '!': 'BANG',
         '@': 'AT',
+        '$': 'DOLLAR',
         '*': 'STAR',
         '.': 'DOT',
         '(': 'LPAREN',
         ')': 'RPAREN',
         '[': 'LBRACKET',
         ']': 'RBRACKET',
+        '<': 'LT',
+        '>': 'GT',
         '-': 'DASH',
+        '?': 'QUESTION',
         '_': 'UNDERSCORE',
       };
 
@@ -332,6 +344,9 @@ class Parser {
         case 'ram': return this.parseMemoryDecl('ram');
         case 'rom': return this.parseMemoryDecl('rom');
         case 'freq': return this.parseFreqDecl();
+        case 'temp': return this.parseTempDecl();
+        case 'voltage': return this.parseVoltageDecl();
+        case 'core': return this.parseCoreDecl();
         case 'reserve': return this.parseReserveDecl();
         case 'shared': return this.parseSharedDecl();
         case 'pin': return this.parsePinDecl();
@@ -349,7 +364,7 @@ class Parser {
       return null;
     }
 
-    this.error(`Expected a declaration (mcu, package, ram, rom, freq, reserve, shared, pin, port, macro), got '${tok.value || tok.type}'`, tok);
+    this.error(`Expected a declaration (mcu, package, ram, rom, freq, temp, voltage, core, reserve, shared, pin, port, macro), got '${tok.value || tok.type}'`, tok);
     this.advance();
     return null;
   }
@@ -390,16 +405,46 @@ class Parser {
     return { type: 'package_decl', patterns, loc };
   }
 
-  // ram: 1024K  or  rom: 512K
+  // ram: 1024K | ram: < 512K | ram: 256K < 1024K
+  // rom: 512K  | rom: < 2M  | rom: 256K < 2M
   private parseMemoryDecl(keyword: 'ram' | 'rom'): RamDeclNode | RomDeclNode {
     const loc = this.loc();
     this.expectKeyword(keyword);
     this.expect('COLON');
 
+    let minBytes = 0;
+    let maxBytes: number | undefined;
+
+    if (this.check('LT')) {
+      // ram: < 100K (max only)
+      this.advance();
+      maxBytes = Math.floor(this.parseMemoryValue());
+    } else {
+      const value = this.parseMemoryValue();
+      if (this.check('LT')) {
+        // ram: 10K < 100K (min and max)
+        this.advance();
+        minBytes = Math.floor(value);
+        maxBytes = Math.floor(this.parseMemoryValue());
+      } else {
+        // ram: 10K (min only)
+        minBytes = Math.floor(value);
+      }
+    }
+
+    this.expectNewlineOrEnd();
+
+    if (keyword === 'ram') {
+      return { type: 'ram_decl', minBytes, maxBytes, loc } as RamDeclNode;
+    }
+    return { type: 'rom_decl', minBytes, maxBytes, loc } as RomDeclNode;
+  }
+
+  /** Parse a memory value with optional K/KB/M/MB suffix. */
+  private parseMemoryValue(): number {
     const numTok = this.expect('NUMBER');
     let value = parseFloat(numTok.value);
 
-    // Optional suffix: K, KB, M, MB (case-insensitive)
     if (this.check('IDENT') || this.check('KEYWORD')) {
       const suffix = this.peek().value.toUpperCase();
       if (suffix === 'K' || suffix === 'KB') {
@@ -409,29 +454,170 @@ class Parser {
         value *= 1024 * 1024;
         this.advance();
       }
-      // No suffix → raw value in bytes
     }
 
-    this.expectNewlineOrEnd();
-    const minBytes = Math.floor(value);
-
-    if (keyword === 'ram') {
-      return { type: 'ram_decl', minBytes, loc } as RamDeclNode;
-    }
-    return { type: 'rom_decl', minBytes, loc } as RomDeclNode;
+    return value;
   }
 
-  // freq: 480
+  // freq: 480 | freq: < 200 | freq: 100 < 480
   private parseFreqDecl(): FreqDeclNode {
     const loc = this.loc();
     this.expectKeyword('freq');
     this.expect('COLON');
 
-    const numTok = this.expect('NUMBER');
-    const minMHz = parseFloat(numTok.value);
+    let minMHz = 0;
+    let maxMHz: number | undefined;
+
+    if (this.check('LT')) {
+      // freq: < 200
+      this.advance();
+      maxMHz = parseFloat(this.expect('NUMBER').value);
+    } else {
+      const numTok = this.expect('NUMBER');
+      const value = parseFloat(numTok.value);
+      if (this.check('LT')) {
+        // freq: 100 < 480
+        this.advance();
+        minMHz = value;
+        maxMHz = parseFloat(this.expect('NUMBER').value);
+      } else {
+        // freq: 480
+        minMHz = value;
+      }
+    }
 
     this.expectNewlineOrEnd();
-    return { type: 'freq_decl', minMHz, loc };
+    return { type: 'freq_decl', minMHz, maxMHz, loc };
+  }
+
+  /** Parse a decimal number, possibly negative (e.g., -40, 3.3, 1.8). */
+  private parseDecimalNumber(): number {
+    let neg = false;
+    if (this.check('DASH')) {
+      neg = true;
+      this.advance();
+    }
+    const intPart = this.expect('NUMBER').value;
+    let value = parseFloat(intPart);
+    if (this.check('DOT')) {
+      this.advance();
+      if (this.check('NUMBER')) {
+        const fracPart = this.peek().value;
+        this.advance();
+        value = parseFloat(`${intPart}.${fracPart}`);
+      }
+    }
+    return neg ? -value : value;
+  }
+
+  // temp: -40 < 85 | temp: 85 | temp: < 125
+  private parseTempDecl(): TempDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('temp');
+    this.expect('COLON');
+
+    let minTemp: number | undefined;
+    let maxTemp: number | undefined;
+
+    if (this.check('LT')) {
+      this.advance();
+      maxTemp = this.parseDecimalNumber();
+    } else {
+      const value = this.parseDecimalNumber();
+      if (this.check('LT')) {
+        this.advance();
+        minTemp = value;
+        maxTemp = this.parseDecimalNumber();
+      } else {
+        minTemp = value;
+      }
+    }
+
+    this.expectNewlineOrEnd();
+    return { type: 'temp_decl', minTemp, maxTemp, loc };
+  }
+
+  // voltage: 1.8 < 3.3 | voltage: 3.3 | voltage: < 3.6
+  // Optional V suffix ignored (e.g., voltage: 3.3V, voltage: 1.8V < 3.6V)
+  private parseVoltageDecl(): VoltageDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('voltage');
+    this.expect('COLON');
+
+    const parseVoltageValue = (): number => {
+      const val = this.parseDecimalNumber();
+      // Skip optional V unit suffix
+      if (this.check('IDENT') && this.peek().value.toUpperCase() === 'V') {
+        this.advance();
+      }
+      return val;
+    };
+
+    let minVoltage: number | undefined;
+    let maxVoltage: number | undefined;
+
+    if (this.check('LT')) {
+      this.advance();
+      maxVoltage = parseVoltageValue();
+    } else {
+      const value = parseVoltageValue();
+      if (this.check('LT')) {
+        this.advance();
+        minVoltage = value;
+        maxVoltage = parseVoltageValue();
+      } else {
+        minVoltage = value;
+      }
+    }
+
+    this.expectNewlineOrEnd();
+    return { type: 'voltage_decl', minVoltage, maxVoltage, loc };
+  }
+
+  // core: M4 | core: M4 | M7 | core: M4 + M7
+  // + separates AND groups, | separates alternatives within a group
+  private parseCoreDecl(): CoreDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('core');
+    this.expect('COLON');
+
+    const required: string[][] = [];
+    const parseAlternatives = (): string[] => {
+      const alts: string[] = [];
+      alts.push(this.parseCorePattern());
+      while (this.check('PIPE')) {
+        this.advance();
+        alts.push(this.parseCorePattern());
+      }
+      return alts;
+    };
+
+    required.push(parseAlternatives());
+    while (this.check('PLUS')) {
+      this.advance();
+      required.push(parseAlternatives());
+    }
+
+    this.expectNewlineOrEnd();
+    return { type: 'core_decl', required, loc };
+  }
+
+  /** Parse a core pattern like M4, M7, M33. Consumes IDENT/KEYWORD + optional NUMBER. */
+  private parseCorePattern(): string {
+    let name = '';
+    if (this.check('IDENT') || this.check('KEYWORD')) {
+      name = this.peek().value;
+      this.advance();
+    }
+    if (this.check('NUMBER')) {
+      name += this.peek().value;
+      this.advance();
+    }
+    if (!name) {
+      this.error('Expected core name (e.g., M4, M7, M33)', this.peek());
+      return '<error>';
+    }
+    return name;
   }
 
   // Parse a glob pattern (sequence of ident, *, number, underscore, dash, brackets)
@@ -503,21 +689,45 @@ class Parser {
   }
 
   // port IDENT: NEWLINE INDENT port_body DEDENT
+  // port IDENT from TEMPLATE: ...
+  // port IDENT from TEMPLATE color "red"
   private parsePortDecl(): PortDeclNode {
     const loc = this.loc();
     this.expectKeyword('port');
     const name = this.parseCompoundIdent();
-    this.expect('COLON');
-    const comment = this.skipComment();
-    this.expectNewline();
+
+    // Optional: from TEMPLATE
+    let template: string | undefined;
+    if (this.check('KEYWORD') && this.peek().value === 'from') {
+      this.advance();
+      template = this.parseCompoundIdent();
+    }
 
     const channels: ChannelDeclNode[] = [];
     const configs: ConfigDeclNode[] = [];
     let color: string | undefined;
+    let comment: string | undefined;
+
+    // Inline color (before colon): port NAME from TMPL color "red"
+    if (this.check('KEYWORD') && this.peek().value === 'color') {
+      this.advance();
+      color = this.expectString();
+    }
+
+    // Port may have no body (template-only with just color)
+    if (this.check('NEWLINE') || this.check('EOF') || this.check('COMMENT')) {
+      comment = this.skipComment();
+      this.expectNewlineOrEnd();
+      return { type: 'port_decl', name, template, channels, configs, color, comment, loc };
+    }
+
+    this.expect('COLON');
+    comment = this.skipComment();
+    this.expectNewline();
 
     if (!this.check('INDENT')) {
       this.error('Expected indented block after port declaration', this.peek());
-      return { type: 'port_decl', name, channels, configs, loc };
+      return { type: 'port_decl', name, template, channels, configs, loc };
     }
     this.expect('INDENT');
 
@@ -544,7 +754,7 @@ class Parser {
       this.advance();
     }
 
-    return { type: 'port_decl', name, channels, configs, color, comment, loc };
+    return { type: 'port_decl', name, template, channels, configs, color, comment, loc };
   }
 
   // channel IDENT (@ pin_list)?
@@ -605,17 +815,20 @@ class Parser {
   private parseConfigBodyItem(): ConfigBodyNode | null {
     const tok = this.peek();
 
-    // require statement
+    // require or require? statement
     if (tok.type === 'KEYWORD' && tok.value === 'require') {
       return this.parseRequireStmt();
     }
 
-    // IDENT could be a mapping (IDENT = ...) or a macro call (IDENT(...))
+    // IDENT could be a mapping (IDENT = ... or IDENT ?= ...) or a macro call (IDENT(...))
     if (tok.type === 'IDENT' || tok.type === 'KEYWORD') {
-      // Look ahead past a possible compound ident to find '=' or '('
+      // Look ahead past a possible compound ident to find '=', '?=', or '('
       const lookAhead = this.peekPastCompoundIdent();
       if (lookAhead === 'EQUALS') {
         return this.parseMapping();
+      }
+      if (lookAhead === 'QUESTION') {
+        return this.parseMapping(); // ?= optional mapping
       }
       if (lookAhead === 'LPAREN') {
         return this.parseMacroCall();
@@ -652,31 +865,53 @@ class Parser {
     return null;
   }
 
-  // IDENT = signal_expr (& signal_expr)*
+  // IDENT = signal_expr (+ signal_expr)*  ($var)*
+  // IDENT ?= signal_expr ...  (optional mapping)
   private parseMapping(): MappingNode {
     const loc = this.loc();
     const channelName = this.parseCompoundIdent();
+
+    // Check for ?= (optional) or = (required)
+    let optional: boolean | undefined;
+    if (this.check('QUESTION')) {
+      this.advance();
+      optional = true;
+    }
     this.expect('EQUALS');
 
     const signalExprs: SignalExprNode[] = [];
     signalExprs.push(this.parseSignalExpr());
 
-    while (this.check('AMP')) {
+    while (this.check('PLUS')) {
       this.advance();
       signalExprs.push(this.parseSignalExpr());
     }
 
+    // Optional instance variable bindings: $var $var2 ...
+    let instanceBindings: string[] | undefined;
+    while (this.check('DOLLAR')) {
+      this.advance();
+      if (!instanceBindings) instanceBindings = [];
+      instanceBindings.push(this.parseCompoundIdent());
+    }
+
     this.expectNewlineOrEnd();
-    return { type: 'mapping', channelName, signalExprs, loc };
+    return { type: 'mapping', channelName, signalExprs, optional, instanceBindings, loc };
   }
 
   // require constraint_expr
+  // require? constraint_expr  (optional — vacuous truth if channels unassigned)
   private parseRequireStmt(): RequireNode {
     const loc = this.loc();
     this.expectKeyword('require');
+    let optional: boolean | undefined;
+    if (this.check('QUESTION')) {
+      this.advance();
+      optional = true;
+    }
     const expression = this.parseConstraintExpr();
     this.expectNewlineOrEnd();
-    return { type: 'require', expression, loc };
+    return { type: 'require', expression, optional, loc };
   }
 
   // signal_expr := signal_pattern (| signal_pattern)*
@@ -808,36 +1043,66 @@ class Parser {
   // Level 0: | (lowest)
   // Level 1: ^
   // Level 2: &
-  // Level 3: == !=
-  // Level 4: ! (unary, handled in parsePrimary)
+  // Level 3: == != < > <= >=
+  // Level 4: + - (arithmetic)
+  // Level 5: ! (unary, handled in parsePrimary)
   private readonly precedenceMap: Record<string, number> = {
     '|': 0,
     '^': 1,
     '&': 2,
     '==': 3,
     '!=': 3,
+    '<': 3,
+    '>': 3,
+    '<=': 3,
+    '>=': 3,
+    '+': 4,
+    '-': 4,
   };
 
-  private readonly tokenToOp: Record<string, '==' | '!=' | '&' | '|' | '^'> = {
+  private readonly tokenToOp: Record<string, BinaryExprNode['operator']> = {
     'EQEQ': '==',
     'BANGEQ': '!=',
     'AMP': '&',
     'PIPE': '|',
     'CARET': '^',
+    'PLUS': '+',
+    'DASH': '-',
   };
+
+  /** Try to read a binary operator from the token stream. Handles compound <= and >= */
+  private tryReadBinaryOp(): BinaryExprNode['operator'] | null {
+    const tok = this.peek();
+    // Check for compound <= and >= (two tokens: LT/GT + EQUALS)
+    if (tok.type === 'LT') {
+      if (this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].type === 'EQUALS') {
+        return '<=';
+      }
+      return '<';
+    }
+    if (tok.type === 'GT') {
+      if (this.pos + 1 < this.tokens.length && this.tokens[this.pos + 1].type === 'EQUALS') {
+        return '>=';
+      }
+      return '>';
+    }
+    return this.tokenToOp[tok.type] ?? null;
+  }
 
   private parseBinaryExpr(minPrec: number): ConstraintExprNode {
     let left = this.parsePrimaryExpr();
 
     while (true) {
-      const tok = this.peek();
-      const op = this.tokenToOp[tok.type];
+      const op = this.tryReadBinaryOp();
       if (!op) break;
 
       const prec = this.precedenceMap[op];
-      if (prec < minPrec) break;
+      if (prec === undefined || prec < minPrec) break;
 
+      // Consume operator token(s)
       this.advance();
+      if (op === '<=' || op === '>=') this.advance(); // consume second token (EQUALS)
+
       const right = this.parseBinaryExpr(prec + 1);
       const loc = left.loc;
       left = { type: 'binary_expr', operator: op, left, right, loc };
@@ -868,6 +1133,12 @@ class Parser {
     if (tok.type === 'STRING') {
       this.advance();
       return { type: 'string_literal', value: tok.value, loc: { line: tok.line, column: tok.column } };
+    }
+
+    // Number literal
+    if (tok.type === 'NUMBER') {
+      this.advance();
+      return { type: 'number_literal', value: parseInt(tok.value, 10), loc: { line: tok.line, column: tok.column } };
     }
 
     // IDENT/KEYWORD - could be function call, dot access, or plain identifier
@@ -1173,6 +1444,16 @@ class Parser {
       return null;
     }
   }
+
+  parseStandaloneExpr(): ConstraintExprNode | null {
+    this.skipNewlines();
+    if (this.isAtEnd()) return null;
+    try {
+      return this.parseConstraintExpr();
+    } catch {
+      return null;
+    }
+  }
 }
 
 // ============================================================
@@ -1194,4 +1475,12 @@ export function parseSearchPattern(input: string): SignalPatternNode | null {
   const { tokens } = tokenize(input);
   const parser = new Parser(tokens, []);
   return parser.parseStandaloneSignalPattern();
+}
+
+/** Parse a standalone constraint expression like "instance(TX)" or "pin_number(A) + 1" */
+export function parseExpressionString(input: string): ConstraintExprNode | null {
+  if (!input.trim()) return null;
+  const { tokens } = tokenize(input);
+  const parser = new Parser(tokens, []);
+  return parser.parseStandaloneExpr();
 }

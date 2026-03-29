@@ -14,11 +14,11 @@
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros } from '../parser/stdlib-macros';
+import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations, validateConstraints,
+  generateConfigCombinations,
   emptyResult, pushSolverWarnings, finalizeSolutions,
   partitionGpioVariables, isGpioVariable,
   configsHaveDma,
@@ -151,7 +151,7 @@ export function solveHybrid(
   const errors: SolverError[] = [];
 
   // ========== Setup (same as other two-phase solvers) ==========
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -164,8 +164,6 @@ export function solveHybrid(
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) reservedPinSet.add(pa.pinName);
   const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;

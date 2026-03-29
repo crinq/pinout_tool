@@ -7,7 +7,7 @@
 
 import { parseConstraints } from './constraint-parser';
 import { extractMacros } from './macro-expander';
-import type { MacroDeclNode } from './constraint-ast';
+import type { MacroDeclNode, PortDeclNode } from './constraint-ast';
 import { loadMacroLibrary, saveMacroLibrary } from '../storage';
 
 export const DEFAULT_MACRO_LIBRARY = `\
@@ -21,21 +21,18 @@ macro uart_port(TX, RX):
 macro uart_half_duplex(TX):
   TX = USART*_TX
 
-# SPI master (3-wire + optional CS)
+# SPI master (3-wire)
 macro spi_port(MOSI, MISO, SCK):
   MOSI = SPI*_MOSI
   MISO = SPI*_MISO
   SCK = SPI*_SCK
-  require same_instance(MOSI, MISO)
-  require same_instance(MOSI, SCK)
+  require same_instance(MOSI, MISO, SCK, "SPI")
 
-# SPI master with chip select
-macro spi_port_cs(MOSI, MISO, SCK, NSS):
-  MOSI = SPI*_MOSI
-  MISO = SPI*_MISO
-  SCK = SPI*_SCK
+# SPI master with chip select (overload)
+macro spi_port(MOSI, MISO, SCK, NSS):
+  spi_port(MOSI, MISO, SCK)
   NSS = SPI*_NSS
-  require same_instance(MOSI, MISO, SCK, NSS, "SPI")
+  require same_instance(MOSI, NSS, "SPI")
 
 # I2C port
 macro i2c_port(SDA, SCL):
@@ -50,13 +47,11 @@ macro encoder(A, B):
   require same_instance(A, B, "TIM")
   require instance(A, "TIM") == TIM[1-5,8,20]
 
-# Timer encoder with index
-macro encoder_with_index(A, B, Z):
-  A = TIM*_CH[1,2]
-  B = TIM*_CH[1,2]
+# Timer encoder with index (overload)
+macro encoder(A, B, Z):
+  encoder(A, B)
   Z = TIM*_CH[3,4]
-  require same_instance(A, B, Z, "TIM")
-  require instance(A, "TIM") == TIM[1-5,8,20]
+  require same_instance(A, Z, "TIM")
 
 # PWM output on a single timer channel
 macro pwm(CH):
@@ -78,6 +73,7 @@ macro can_port(TX, RX):
 `;
 
 let cachedStdlib: Map<string, MacroDeclNode> | null = null;
+let cachedTemplates: Map<string, PortDeclNode> | null = null;
 let cachedSource: string | null = null;
 
 /**
@@ -95,6 +91,7 @@ export function seedMacroLibrary(): void {
  */
 export function invalidateStdlibCache(): void {
   cachedStdlib = null;
+  cachedTemplates = null;
   cachedSource = null;
 }
 
@@ -112,20 +109,43 @@ export function getStdlibSource(): string {
  */
 export function getStdlibMacros(): Map<string, MacroDeclNode> {
   if (cachedStdlib) return cachedStdlib;
+  parseStdlib();
+  return cachedStdlib!;
+}
 
+/**
+ * Get port templates from the stdlib (parsed once, cached).
+ */
+export function getStdlibTemplates(): Map<string, PortDeclNode> {
+  if (cachedTemplates) return cachedTemplates;
+  parseStdlib();
+  return cachedTemplates!;
+}
+
+function parseStdlib(): void {
   const source = getStdlibSource();
   const result = parseConstraints(source);
   if (result.ast) {
     cachedStdlib = extractMacros(result.ast);
+    cachedTemplates = new Map();
+    for (const stmt of result.ast.statements) {
+      if (stmt.type === 'port_decl') {
+        cachedTemplates.set(stmt.name, stmt);
+      }
+    }
   } else {
     cachedStdlib = new Map();
+    cachedTemplates = new Map();
   }
-  return cachedStdlib;
 }
 
 /**
- * Get the names of all macros in the current library.
+ * Get the names of all macros in the current library (without arity suffix).
  */
 export function getStdlibMacroNames(): Set<string> {
-  return new Set(getStdlibMacros().keys());
+  const names = new Set<string>();
+  for (const key of getStdlibMacros().keys()) {
+    names.add(key.split('/')[0]);
+  }
+  return names;
 }

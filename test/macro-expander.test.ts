@@ -28,8 +28,8 @@ describe('Macro expander', () => {
   require same_instance(TX, RX)`);
       const macros = extractMacros(ast);
       expect(macros.size).toBe(1);
-      expect(macros.has('my_uart')).toBe(true);
-      expect(macros.get('my_uart')!.params).toEqual(['TX', 'RX']);
+      expect(macros.has('my_uart/2')).toBe(true);
+      expect(macros.get('my_uart/2')!.params).toEqual(['TX', 'RX']);
     });
 
     it('should extract multiple macros', () => {
@@ -147,7 +147,7 @@ port P:
     my_uart(A)`);
 
       const { errors } = expandAllMacros(ast);
-      expect(errors.some(e => e.message.includes('expects 2 arguments'))).toBe(true);
+      expect(errors.some(e => e.message.includes('not found') || e.message.includes('expects 2 arguments'))).toBe(true);
     });
 
     it('should detect recursive macros', () => {
@@ -171,15 +171,15 @@ port P:
       const macros = getStdlibMacros();
       expect(macros.size).toBeGreaterThan(0);
 
-      // Check known macros exist
-      expect(macros.has('uart_port')).toBe(true);
-      expect(macros.has('spi_port')).toBe(true);
-      expect(macros.has('i2c_port')).toBe(true);
-      expect(macros.has('encoder')).toBe(true);
-      expect(macros.has('pwm')).toBe(true);
-      expect(macros.has('dac')).toBe(true);
-      expect(macros.has('adc')).toBe(true);
-      expect(macros.has('can_port')).toBe(true);
+      // Check known macros exist (keys are name/arity)
+      expect(macros.has('uart_port/2')).toBe(true);
+      expect(macros.has('spi_port/3')).toBe(true);
+      expect(macros.has('i2c_port/2')).toBe(true);
+      expect(macros.has('encoder/2')).toBe(true);
+      expect(macros.has('pwm/1')).toBe(true);
+      expect(macros.has('dac/1')).toBe(true);
+      expect(macros.has('adc/1')).toBe(true);
+      expect(macros.has('can_port/2')).toBe(true);
     });
 
     it('should expand stdlib macro uart_port', () => {
@@ -216,8 +216,8 @@ port P:
 
       const port = expanded.statements[0] as PortDeclNode;
       const config = port.configs[0];
-      // 3 mappings + 2 require (same_instance(MOSI,MISO) + same_instance(MOSI,SCK))
-      expect(config.body).toHaveLength(5);
+      // 3 mappings + 1 require (same_instance(MOSI,MISO,SCK,"SPI"))
+      expect(config.body).toHaveLength(4);
     });
 
     it('should expand stdlib macro encoder', () => {

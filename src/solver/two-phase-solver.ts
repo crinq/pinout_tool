@@ -16,7 +16,7 @@ import type {
   ProgramNode, RequireNode, PatternPart, ConstraintExprNode,
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros } from '../parser/stdlib-macros';
+import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
@@ -25,11 +25,12 @@ import type {
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, isSharedInstance, resolveAllVariables,
-  generateConfigCombinations, validateConstraints,
+  generateConfigCombinations,
   solveBacktrack, createPinTracker,
   partitionGpioVariables, isGpioVariable,
   configsHaveDma, buildPropagationContext,
   pushSolverWarnings, finalizeSolutions,
+  isOptionalRequireVacuous,
 } from './solver';
 import { mulberry32, shuffleArray } from './solver-utils';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
@@ -91,7 +92,7 @@ export function solveTwoPhase(
   const solutions: Solution[] = [];
 
   // Expand macros
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -106,8 +107,6 @@ export function solveTwoPhase(
     reservedPinSet.add(pa.pinName);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
@@ -421,8 +420,12 @@ export function solvePhase1(
         channelInfo.set(v.portName, portChannels);
 
         for (const req of requires) {
+          if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
+            continue;
+          }
           const result = evaluateExprPhase1(req.expression, v.portName, channelInfo, dmaData);
           if (result === false) {
+            if (req.optional) continue;
             pruned = true;
             break;
           }
@@ -467,7 +470,7 @@ function evaluateExprPhase1(
   currentPort: string,
   channelInfo: Map<string, Map<string, VariableAssignment[]>>,
   dmaData?: DmaData
-): boolean | string {
+): boolean | string | number {
   switch (expr.type) {
     case 'function_call':
       return evaluateFunctionCallPhase1(expr.name, expr.args, currentPort, channelInfo, dmaData);
@@ -481,6 +484,12 @@ function evaluateExprPhase1(
         case '&': return !!left && !!right;
         case '|': return !!left || !!right;
         case '^': return !!left !== !!right;
+        case '<': return typeof left === 'number' && typeof right === 'number' && left < right;
+        case '>': return typeof left === 'number' && typeof right === 'number' && left > right;
+        case '<=': return typeof left === 'number' && typeof right === 'number' && left <= right;
+        case '>=': return typeof left === 'number' && typeof right === 'number' && left >= right;
+        case '+': return typeof left === 'number' && typeof right === 'number' ? left + right : false;
+        case '-': return typeof left === 'number' && typeof right === 'number' ? left - right : false;
       }
       return false;
     }
@@ -494,6 +503,9 @@ function evaluateExprPhase1(
     case 'string_literal':
       return expr.value;
 
+    case 'number_literal':
+      return expr.value;
+
     case 'dot_access':
       return `${expr.object}.${expr.property}`;
   }
@@ -505,7 +517,7 @@ function evaluateFunctionCallPhase1(
   currentPort: string,
   channelInfo: Map<string, Map<string, VariableAssignment[]>>,
   dmaData?: DmaData
-): boolean | string {
+): boolean | string | number {
   const resolveChannel = (arg: ConstraintExprNode): VariableAssignment[] => {
     if (arg.type === 'ident') {
       return channelInfo.get(currentPort)?.get(arg.name) || [];
@@ -614,6 +626,39 @@ function evaluateFunctionCallPhase1(
       }
       return true;
     }
+
+    case 'pin_number':
+      // Phase 1: no pin assigned yet, return 0 (vacuously pass)
+      return 0;
+
+    case 'channel_number': {
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const func = va.candidate.signal.signalFunction || '';
+          const numMatch = func.match(/(\d+)$/);
+          if (numMatch) return parseInt(numMatch[1], 10);
+        }
+      }
+      return 0;
+    }
+
+    case 'instance_number': {
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          const num = va.candidate.signal.instanceNumber;
+          if (num !== undefined) return num;
+        }
+      }
+      return 0;
+    }
+
+    // Phase 1: no pin assigned yet, return 0 (vacuously pass)
+    case 'pin_row':
+    case 'pin_col':
+    case 'pin_distance':
+      return 0;
 
     default:
       return false;
@@ -836,7 +881,7 @@ export function runSharedPhase1(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -849,8 +894,6 @@ export function runSharedPhase1(
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) reservedPinSet.add(pa.pinName);
   const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  validateConstraints(ports, errors);
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;

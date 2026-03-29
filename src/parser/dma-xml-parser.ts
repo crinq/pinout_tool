@@ -92,26 +92,21 @@ export function parseDmaXml(xmlString: string): DmaData {
   }
 
   // Iterate DMA controllers (DMA1, DMA2, ...)
+  // H7 uses "DMA1, DMA2" as a single controller group with range-based stream names
   for (const controllerMode of rootOperator.querySelectorAll(':scope > Mode')) {
-    const controllerName = controllerMode.getAttribute('Name') ?? '';
-    if (!controllerName.startsWith('DMA')) continue;
+    const controllerNameRaw = controllerMode.getAttribute('Name') ?? '';
+    if (!controllerNameRaw.startsWith('DMA')) continue;
 
     const controllerOp = controllerMode.querySelector(':scope > ModeLogicOperator');
     if (!controllerOp) continue;
 
-    // Iterate streams (DMA1_Stream0, DMA1_Stream1, ...)
+    // Iterate streams (DMA1_Stream0, ..., or range: "DMA1_Stream[0-7]:DMA2_Stream[0-7]")
     for (const streamMode of controllerOp.querySelectorAll(':scope > Mode')) {
-      const streamName = streamMode.getAttribute('Name') ?? '';
-      if (!streamName.includes('Stream')) continue;
+      const streamNameRaw = streamMode.getAttribute('Name') ?? '';
+      if (!streamNameRaw.includes('Stream')) continue;
 
-      // Extract stream number
-      const streamNumMatch = streamName.match(/Stream(\d+)$/);
-      if (!streamNumMatch) continue;
-      const streamNumber = parseInt(streamNumMatch[1], 10);
-
+      // Parse peripheral requests (shared across expanded streams)
       const requests: DmaRequest[] = [];
-
-      // Find the XOR operator listing peripheral requests
       const xorOp = streamMode.querySelector(':scope > ModeLogicOperator');
       if (!xorOp) continue;
 
@@ -126,16 +121,46 @@ export function parseDmaXml(xmlString: string): DmaData {
         });
       }
 
-      streams.push({
-        name: streamName,
-        controller: controllerName,
-        streamNumber,
-        requests,
-      });
+      // Expand stream name ranges (e.g., "DMA1_Stream[0-7]:DMA2_Stream[0-7]" → 16 streams)
+      const expandedStreams = expandStreamRange(streamNameRaw);
+
+      for (const { name, controller, streamNumber } of expandedStreams) {
+        streams.push({ name, controller, streamNumber, requests: [...requests] });
+      }
     }
   }
 
   return buildDmaData(version, streams);
+}
+
+/**
+ * Expand a stream name that may contain ranges.
+ * "DMA1_Stream0" → [{ name: "DMA1_Stream0", controller: "DMA1", streamNumber: 0 }]
+ * "DMA1_Stream[0-7]:DMA2_Stream[0-7]" → 16 entries (DMA1_Stream0..7, DMA2_Stream0..7)
+ */
+function expandStreamRange(raw: string): Array<{ name: string; controller: string; streamNumber: number }> {
+  // Split on ":" to handle multi-controller ranges
+  const segments = raw.split(':');
+  const result: Array<{ name: string; controller: string; streamNumber: number }> = [];
+
+  for (const segment of segments) {
+    const rangeMatch = segment.match(/^(DMA\d+)_Stream\[(\d+)-(\d+)\]$/);
+    if (rangeMatch) {
+      const controller = rangeMatch[1];
+      const lo = parseInt(rangeMatch[2], 10);
+      const hi = parseInt(rangeMatch[3], 10);
+      for (let i = lo; i <= hi; i++) {
+        result.push({ name: `${controller}_Stream${i}`, controller, streamNumber: i });
+      }
+    } else {
+      const numMatch = segment.match(/^(DMA\d+)_Stream(\d+)$/);
+      if (numMatch) {
+        result.push({ name: segment, controller: numMatch[1], streamNumber: parseInt(numMatch[2], 10) });
+      }
+    }
+  }
+
+  return result;
 }
 
 function buildDmaData(version: string, streams: DmaStreamInfo[]): DmaData {
