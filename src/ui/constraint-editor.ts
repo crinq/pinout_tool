@@ -5,7 +5,7 @@ import { getStdlibMacroNames } from '../parser/stdlib-macros';
 import { escapeHtml, escapeRegex, createModal } from '../utils';
 
 const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from']);
-const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'version', 'IN', 'OUT', 'dma']);
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma']);
 const DEBOUNCE_MS = 300;
 
 /** Syntax-highlight a single line of constraint code (no comment handling). */
@@ -39,7 +39,7 @@ function highlightCodeLine(code: string): string {
       result += `<span class="ce-number">${escapeHtml(code.substring(start, i))}</span>`;
       continue;
     }
-    if ('=!&|^*@'.includes(code[i])) {
+    if ('=!&|^*@$?'.includes(code[i])) {
       result += `<span class="ce-operator">${escapeHtml(code[i])}</span>`;
       i++; continue;
     }
@@ -558,37 +558,55 @@ MOSI = SPI*_MOSI + GPIO[1-2]_*</pre>
             <tr><td><code>gpio_pin(A, "SPI")</code></td><td>Get pin name, filtered by type</td></tr>
             <tr><td><code>pin_number(A)</code></td><td>Physical pin number (integer)</td></tr>
             <tr><td><code>channel_number(A)</code></td><td>Peripheral channel/input number</td></tr>
+            <tr><td><code>channel_signal(A)</code></td><td>Signal function name (e.g., "TX", "CH3")</td></tr>
             <tr><td><code>instance_number(A)</code></td><td>Peripheral instance number</td></tr>
+            <tr><td><code>pin_row(A)</code></td><td>BGA row / LQFP y-component</td></tr>
+            <tr><td><code>pin_col(A)</code></td><td>BGA column / LQFP x-component</td></tr>
+            <tr><td><code>pin_distance(A, B)</code></td><td>Physical distance between pins</td></tr>
+            <tr><td><code>dma(A)</code></td><td>DMA stream available for channel</td></tr>
           </table>
           <p>Numeric functions support comparison: <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>+</code>, <code>-</code></p>
           <pre class="ce-help-code">require channel_number(A) < channel_number(B)
-require pin_number(A) - pin_number(B) < 5</pre>
+require pin_number(A) - pin_number(B) < 5
+require dma(TX)</pre>
         </section>
 
         <section>
-          <h3>Instance Binding (@)</h3>
-          <p>Use <code>@name</code> after a signal pattern to bind the instance. Channels with the same <code>@name</code> automatically get a <code>same_instance</code> constraint:</p>
-          <pre class="ce-help-code">config "UART":
-  TX = USART*_TX @u
-  RX = USART*_RX @u
-  CTS = USART*_CTS @u
-# Equivalent to adding: require same_instance(TX, RX, CTS)</pre>
+          <h3>Variable Assignment ($)</h3>
+          <p>Use <code>$name</code> after a mapping to assign the resolved value to a variable.
+          Variables map positionally to wildcards (instance first, then function).
+          Channels sharing the same <code>$name</code> must resolve to the same value.
+          Scoped to the port (across all configs).</p>
+          <pre class="ce-help-code"># Instance wildcard: $u → same_instance(TX, RX)
+TX = USART*_TX $u
+RX = USART*_RX $u
+
+# Function wildcard: $ch → channel_signal(A) == channel_signal(B)
+A = TIM1_CH* $ch
+B = TIM1_CH* $ch
+
+# Both: $t → same_instance, $ch → channel_signal ==
+A = TIM*_CH* $t $ch
+B = TIM*_CH* $t $ch</pre>
         </section>
 
         <section>
-          <h3>Optional Channels</h3>
-          <p>Use <code>channel?</code> for channels the solver assigns if possible but skips if not:</p>
+          <h3>Optional Mappings and Requires</h3>
+          <p>Use <code>?=</code> for optional mappings &mdash; assigned if possible, skipped without error if not.
+          Any <code>require</code> referencing an unassigned optional channel is automatically skipped (vacuous truth).</p>
           <pre class="ce-help-code">port CMD:
   channel TX
   channel RX
-  channel? CTS           # optional
-  channel? RTS           # optional
+  channel CTS
+  channel RTS
 
   config "UART":
-    TX = USART*_TX
-    RX = USART*_RX
-    CTS = USART*_CTS
-    RTS = USART*_RTS</pre>
+    TX = USART*_TX $u
+    RX = USART*_RX $u
+    CTS ?= USART*_CTS $u
+    RTS ?= USART*_RTS $u</pre>
+          <p>Use <code>require?</code> for soft constraints &mdash; ignored if they evaluate to false:</p>
+          <pre class="ce-help-code">require? gpio_port(TX) == gpio_port(RX)</pre>
         </section>
 
         <section>
@@ -615,6 +633,7 @@ port ENC2 from encoder_port color "red":
           <p>Pre-defined macros for common peripherals. Edit via <b>Data Manager &gt; Macro Library</b>.</p>
           <table>
             <tr><td><code>uart_port(TX, RX)</code></td><td>USART full-duplex (same instance)</td></tr>
+            <tr><td><code>uart_half_duplex(TX)</code></td><td>USART TX only</td></tr>
             <tr><td><code>spi_port(MOSI, MISO, SCK)</code></td><td>SPI master 3-wire</td></tr>
             <tr><td><code>spi_port(MOSI, MISO, SCK, NSS)</code></td><td>SPI master with chip select</td></tr>
             <tr><td><code>i2c_port(SDA, SCL)</code></td><td>I2C port</td></tr>

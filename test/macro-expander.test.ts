@@ -261,4 +261,109 @@ port P:
       expect(pattern.instancePart.type).toBe('literal');
     });
   });
+
+  describe('variable binding desugaring', () => {
+    it('should desugar instance wildcard $var to same_instance', () => {
+      const ast = parseOk(`
+port CMD:
+  channel TX
+  channel RX
+  config "UART":
+    TX = USART*_TX $u
+    RX = USART*_RX $u
+`);
+      const { ast: expanded, errors } = expandAllMacros(ast, getStdlibMacros());
+      expect(errors).toHaveLength(0);
+
+      const port = expanded.statements.find(s => s.type === 'port_decl') as PortDeclNode;
+      const requires = port.configs[0].body.filter(b => b.type === 'require') as RequireNode[];
+      expect(requires.length).toBeGreaterThanOrEqual(1);
+      // Should have same_instance(TX, RX) or same_instance(RX, TX)
+      const sameInst = requires.find(r =>
+        r.expression.type === 'function_call' && r.expression.name === 'same_instance'
+      );
+      expect(sameInst).toBeDefined();
+    });
+
+    it('should desugar function wildcard $var to channel_signal equality', () => {
+      const ast = parseOk(`
+port ENC:
+  channel A
+  channel B
+  config "quadrature":
+    A = TIM1_CH* $ch
+    B = TIM1_CH* $ch
+`);
+      const { ast: expanded, errors } = expandAllMacros(ast, getStdlibMacros());
+      expect(errors).toHaveLength(0);
+
+      const port = expanded.statements.find(s => s.type === 'port_decl') as PortDeclNode;
+      const requires = port.configs[0].body.filter(b => b.type === 'require') as RequireNode[];
+      expect(requires.length).toBeGreaterThanOrEqual(1);
+      // Should have channel_signal(A) == channel_signal(B), NOT same_instance
+      const sameInst = requires.find(r =>
+        r.expression.type === 'function_call' && r.expression.name === 'same_instance'
+      );
+      expect(sameInst).toBeUndefined();
+      const chNumEq = requires.find(r =>
+        r.expression.type === 'binary_expr' && r.expression.operator === '=='
+      );
+      expect(chNumEq).toBeDefined();
+    });
+
+    it('should desugar mixed wildcards: $t for instance, $ch for function', () => {
+      const ast = parseOk(`
+port ENC:
+  channel A
+  channel B
+  config "quadrature":
+    A = TIM*_CH* $t $ch
+    B = TIM*_CH* $t $ch
+`);
+      const { ast: expanded, errors } = expandAllMacros(ast, getStdlibMacros());
+      expect(errors).toHaveLength(0);
+
+      const port = expanded.statements.find(s => s.type === 'port_decl') as PortDeclNode;
+      const requires = port.configs[0].body.filter(b => b.type === 'require') as RequireNode[];
+      // Should have both same_instance (for $t) and channel_number == (for $ch)
+      const sameInst = requires.find(r =>
+        r.expression.type === 'function_call' && r.expression.name === 'same_instance'
+      );
+      const chNumEq = requires.find(r =>
+        r.expression.type === 'binary_expr' && r.expression.operator === '=='
+      );
+      expect(sameInst).toBeDefined();
+      expect(chNumEq).toBeDefined();
+    });
+
+    it('should error when more $vars than wildcards', () => {
+      const ast = parseOk(`
+port CMD:
+  channel TX
+  config "UART":
+    TX = USART1_TX $u $extra
+`);
+      const { errors } = expandAllMacros(ast, getStdlibMacros());
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(errors[0].message).toContain('wildcard');
+    });
+
+    it('should strip $var bindings from expanded AST', () => {
+      const ast = parseOk(`
+port CMD:
+  channel TX
+  channel RX
+  config "UART":
+    TX = USART*_TX $u
+    RX = USART*_RX $u
+`);
+      const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+      const port = expanded.statements.find(s => s.type === 'port_decl') as PortDeclNode;
+      for (const item of port.configs[0].body) {
+        if (item.type === 'mapping') {
+          expect((item as MappingNode).instanceBindings).toBeUndefined();
+        }
+      }
+    });
+  });
 });

@@ -643,6 +643,16 @@ function evaluateFunctionCallPhase1(
       return 0;
     }
 
+    case 'channel_signal': {
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          return va.candidate.signal.signalFunction || '';
+        }
+      }
+      return '';
+    }
+
     case 'instance_number': {
       if (args.length === 1) {
         const vas = resolveChannel(args[0]);

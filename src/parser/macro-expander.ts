@@ -12,6 +12,8 @@ import type {
   ConfigDeclNode,
   ConfigBodyNode,
   ConstraintExprNode,
+  MappingNode,
+  PatternPart,
 } from './constraint-ast';
 
 const MAX_EXPANSION_DEPTH = 10;
@@ -97,8 +99,8 @@ export function expandAllMacros(
       return { ...cfg, body: expandedBody };
     });
 
-    // Desugar $var instance bindings (port-scoped: collected across all configs)
-    const desugaredConfigs = desugarInstanceBindings(newConfigs);
+    // Desugar $var bindings (port-scoped: collected across all configs)
+    const desugaredConfigs = desugarVariableBindings(newConfigs, errors);
 
     return { ...port, configs: desugaredConfigs };
   });
@@ -138,65 +140,126 @@ function applyTemplate(port: PortDeclNode, template: PortDeclNode): PortDeclNode
 }
 
 /**
- * Desugar $var instance bindings into same_instance() require statements.
- * Port-scoped: collects $var usages across ALL configs of a port, then
- * appends same_instance() to each config that uses channels from the group.
+ * Check if a PatternPart contains a wildcard (wildcard, any, or range — not literal).
  */
-function desugarInstanceBindings(configs: ConfigDeclNode[]): ConfigDeclNode[] {
-  // Collect channels by $var name across all configs
-  const bindingGroups = new Map<string, Set<string>>();
+function isWildcard(part: PatternPart): boolean {
+  return part.type !== 'literal';
+}
+
+/**
+ * Count wildcard positions in a mapping and return their types in order.
+ * For each signal expression (+ segment), checks instance and function parts
+ * of the first alternative.
+ */
+function getWildcardPositions(mapping: MappingNode): Array<'instance' | 'function'> {
+  const positions: Array<'instance' | 'function'> = [];
+  for (const expr of mapping.signalExprs) {
+    if (expr.alternatives.length === 0) continue;
+    const pattern = expr.alternatives[0];
+    if (isWildcard(pattern.instancePart)) positions.push('instance');
+    if (isWildcard(pattern.functionPart)) positions.push('function');
+  }
+  return positions;
+}
+
+/**
+ * Desugar $var bindings into require statements.
+ * Port-scoped: collects $var usages across ALL configs of a port, then
+ * appends appropriate constraints to each config.
+ *
+ * - Instance wildcards (e.g. USART*_TX $u) → same_instance()
+ * - Function wildcards (e.g. TIM1_CH* $ch) → channel_signal() == channel_signal()
+ */
+function desugarVariableBindings(configs: ConfigDeclNode[], errors: MacroError[]): ConfigDeclNode[] {
+  // Collect channels by ($var name, wildcard type) across all configs
+  type BindingInfo = { channels: Set<string>; type: 'instance' | 'function' };
+  const bindingGroups = new Map<string, BindingInfo>();
+
   for (const cfg of configs) {
     for (const item of cfg.body) {
-      if (item.type === 'mapping' && item.instanceBindings) {
-        for (const varName of item.instanceBindings) {
-          let group = bindingGroups.get(varName);
-          if (!group) {
-            group = new Set();
-            bindingGroups.set(varName, group);
-          }
-          group.add(item.channelName);
+      if (item.type !== 'mapping' || !item.instanceBindings || item.instanceBindings.length === 0) continue;
+
+      const wildcardPositions = getWildcardPositions(item);
+
+      if (item.instanceBindings.length > wildcardPositions.length) {
+        errors.push({
+          message: `Mapping '${item.channelName}' has ${item.instanceBindings.length} variable(s) ($${item.instanceBindings.join(', $')}) but pattern only has ${wildcardPositions.length} wildcard(s)`,
+          macroName: '$' + item.instanceBindings[0],
+        });
+        continue;
+      }
+
+      for (let i = 0; i < item.instanceBindings.length; i++) {
+        const varName = item.instanceBindings[i];
+        const wildcardType = wildcardPositions[i];
+        const key = varName + '\0' + wildcardType;
+        let group = bindingGroups.get(key);
+        if (!group) {
+          group = { channels: new Set(), type: wildcardType };
+          bindingGroups.set(key, group);
         }
+        group.channels.add(item.channelName);
       }
     }
   }
 
-  // No bindings → return as-is
-  const hasBindings = [...bindingGroups.values()].some(g => g.size >= 2);
-  if (!hasBindings) return configs;
-
-  // Build require nodes for groups with 2+ channels
-  const groupRequires = new Map<string, ConfigBodyNode>();
-  for (const [, channels] of bindingGroups) {
-    if (channels.size < 2) continue;
-    const loc = { line: 0, column: 0 };
-    const channelArr = [...channels];
-    const req: ConfigBodyNode = {
-      type: 'require',
-      expression: {
-        type: 'function_call',
-        name: 'same_instance',
-        args: channelArr.map(name => ({ type: 'ident' as const, name, loc })),
-        loc,
-      },
-      loc,
-    };
-    // Key by sorted channel names for dedup
-    groupRequires.set(channelArr.sort().join(','), req);
-  }
+  // No usable bindings → return as-is
+  const hasBindings = [...bindingGroups.values()].some(g => g.channels.size >= 2);
+  if (!hasBindings) return stripBindings(configs);
 
   return configs.map(cfg => {
-    // Find which binding groups this config touches
     const cfgChannels = new Set(
       cfg.body.filter(b => b.type === 'mapping').map(b => (b as { channelName: string }).channelName)
     );
 
     const extraRequires: ConfigBodyNode[] = [];
-    for (const [key, req] of groupRequires) {
-      const groupChannels = key.split(',');
-      // Add the require if this config maps at least 2 channels from the group
-      const overlap = groupChannels.filter(ch => cfgChannels.has(ch));
-      if (overlap.length >= 2) {
-        extraRequires.push(req);
+
+    for (const [, group] of bindingGroups) {
+      if (group.channels.size < 2) continue;
+      const channelArr = [...group.channels].sort();
+
+      // Only add if this config maps at least 2 channels from the group
+      const overlap = channelArr.filter(ch => cfgChannels.has(ch));
+      if (overlap.length < 2) continue;
+
+      const loc = { line: 0, column: 0 };
+
+      if (group.type === 'instance') {
+        extraRequires.push({
+          type: 'require',
+          expression: {
+            type: 'function_call',
+            name: 'same_instance',
+            args: overlap.map(name => ({ type: 'ident' as const, name, loc })),
+            loc,
+          },
+          loc,
+        });
+      } else {
+        // Pairwise channel_signal equality for overlapping channels
+        for (let i = 0; i < overlap.length - 1; i++) {
+          extraRequires.push({
+            type: 'require',
+            expression: {
+              type: 'binary_expr',
+              operator: '==',
+              left: {
+                type: 'function_call',
+                name: 'channel_signal',
+                args: [{ type: 'ident' as const, name: overlap[i], loc }],
+                loc,
+              },
+              right: {
+                type: 'function_call',
+                name: 'channel_signal',
+                args: [{ type: 'ident' as const, name: overlap[i + 1], loc }],
+                loc,
+              },
+              loc,
+            },
+            loc,
+          });
+        }
       }
     }
 
@@ -212,6 +275,19 @@ function desugarInstanceBindings(configs: ConfigDeclNode[]): ConfigDeclNode[] {
     if (extraRequires.length === 0) return { ...cfg, body: cleanedBody };
     return { ...cfg, body: [...cleanedBody, ...extraRequires] };
   });
+}
+
+function stripBindings(configs: ConfigDeclNode[]): ConfigDeclNode[] {
+  return configs.map(cfg => ({
+    ...cfg,
+    body: cfg.body.map(item => {
+      if (item.type === 'mapping' && item.instanceBindings) {
+        const { instanceBindings: _, ...rest } = item;
+        return rest;
+      }
+      return item;
+    }),
+  }));
 }
 
 /**

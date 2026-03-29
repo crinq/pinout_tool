@@ -300,9 +300,9 @@ TX = USART*_TX + USART*_RX    # channel gets 2 pins
 TX = USART*_TX | UART*_TX + USART*_RX | UART*_RX
 ```
 
-### Instance Binding ($)
+### Variable Assignment ($)
 
-Use `$name` after a signal pattern to bind the resolved peripheral instance. All mappings sharing the same `$name` within a port are automatically constrained to use the same instance:
+Use `$name` after a mapping to assign the resolved value to a variable. All channels sharing the same `$name` are constrained to resolve to the same value. Variables map positionally to wildcards in the pattern — instance wildcards first, then function wildcards:
 
 ```
 config "UART":
@@ -311,7 +311,7 @@ config "UART":
   CTS ?= USART*_CTS $u
 ```
 
-This is equivalent to:
+Here `$u` maps to the instance wildcard (`USART*`), equivalent to:
 ```
 config "UART":
   TX = USART*_TX
@@ -320,7 +320,26 @@ config "UART":
   require same_instance(TX, RX, CTS)
 ```
 
-Different `$name`s are independent. Instance bindings are scoped to the port (collected across all configs). Use `diff_instance()` explicitly if two groups must be different instances.
+When a variable maps to a function wildcard, it constrains the signal function instead:
+```
+config "quadrature":
+  A = TIM1_CH* $ch
+  B = TIM1_CH* $ch
+  # $ch maps to CH* → require channel_signal(A) == channel_signal(B)
+```
+
+Both wildcard types can be combined with multiple variables:
+```
+config "quadrature":
+  A = TIM*_CH* $t $ch
+  B = TIM*_CH* $t $ch
+  # $t → same_instance(A, B)
+  # $ch → channel_signal(A) == channel_signal(B)
+```
+
+It is an error to use more variables than there are wildcards in the pattern.
+
+**Scoping:** Variables are scoped to the port, collected across all configs. If two configs in the same port both use `$u`, they share the same constraint group. Different `$name`s are independent. Variables from different ports do not interact — use cross-port references (`require instance(PORTA.TX) == instance(PORTB.TX)`) to relate ports. Use `diff_instance()` explicitly if two groups must use different instances.
 
 ### Optional Mappings and Requires
 
@@ -407,7 +426,6 @@ port DEBUG:
 | `gpio_pin(ch, "TYPE")` | 1 channel + type | string | Pin name filtered by signal type |
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
 | `gpio_port(ch, "TYPE")` | 1 channel + type | string | GPIO port filtered by signal type |
-| `version(ch)` | 1 channel | string | Peripheral version string |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
 | `dma(ch, "TYPE")` | 1 channel + type | boolean | DMA check filtered by peripheral type |
 | `pin_number(ch)` | 1 channel | number | Physical pin number (position) |
@@ -415,6 +433,7 @@ port DEBUG:
 | `pin_col(ch)` | 1 channel | number | BGA: column number. LQFP: x-component |
 | `pin_distance(a, b)` | 2 channels | number | Distance between two pins (Euclidean for BGA, circular for LQFP) |
 | `channel_number(ch)` | 1 channel | number | Peripheral channel/input number (e.g., 3 for IN3) |
+| `channel_signal(ch)` | 1 channel | string | Signal function name (e.g., "TX" for USART1_TX, "CH3" for TIM1_CH3) |
 | `instance_number(ch)` | 1 channel | number | Peripheral instance number (e.g., 2 for SPI2) |
 
 **GPIO port mapping:** A=GPIO1, B=GPIO2, C=GPIO3, D=GPIO4, etc.
@@ -795,6 +814,7 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 | **debug_pin_penalty** | Penalize using debug pins (PA13/PA14/PA15/PB3/PB4) |
 | **pin_clustering** | Prefer numerically adjacent pins |
 | **pin_proximity** | Prefer pins that are physically close on the package |
+| **optional_fulfillment** | Prefer solutions with more optional mappings (`?=`) and requires (`require?`) satisfied |
 
 Weights are configurable: `0` = disabled, `1` = normal, higher values = more impact.
 
@@ -803,12 +823,12 @@ Weights are configurable: `0` = disabled, `1` = normal, higher values = more imp
 Access via the **Settings** button:
 
 - **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle)
-- **Max solutions** -- stop after finding this many (default: 300)
-- **Max groups** -- limit the number of solution groups (default: 50)
-- **Max solutions per group** -- limit solutions within each group (default: 10)
-- **Num restarts** -- number of restarts for randomized-restarts solver (default: 5)
-- **Timeout** -- abort after this many milliseconds (default: 5000)
-- **Cost weights** -- adjust the ranking formula for all 6 cost functions
+- **Max solutions** -- stop after finding this many (default: 5000)
+- **Max groups** -- limit the number of solution groups (default: 500)
+- **Max solutions per group** -- limit solutions within each group (default: 100)
+- **Num restarts** -- number of restarts for randomized-restarts solver (default: 150)
+- **Timeout** -- abort after this many milliseconds (default: 2500)
+- **Cost weights** -- adjust the ranking formula for all 7 cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
 
 ---

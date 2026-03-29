@@ -814,7 +814,9 @@ export function validateGpioAvailability(
 
 const KNOWN_FUNCTIONS = new Set([
   'same_instance', 'diff_instance', 'instance', 'type',
-  'gpio_pin', 'gpio_port', 'dma',
+  'gpio_pin', 'gpio_port', 'dma', 'channel_signal',
+  'channel_number', 'instance_number', 'pin_number',
+  'pin_row', 'pin_col', 'pin_distance',
 ]);
 
 export function validateConstraints(ports: Map<string, PortSpec>, errors: SolverError[]): void {
@@ -1949,6 +1951,17 @@ function evaluateFunctionCall(
         }
       }
       return 0;
+    }
+
+    case 'channel_signal': {
+      // Returns the signal function string (e.g., "TX" for USART1_TX, "CH3" for TIM1_CH3)
+      if (args.length === 1) {
+        const vas = resolveChannel(args[0]);
+        for (const va of vas) {
+          return va.candidate.signal.signalFunction || '';
+        }
+      }
+      return '';
     }
 
     case 'instance_number': {

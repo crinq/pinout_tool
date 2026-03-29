@@ -148,13 +148,13 @@ export type ConfigBodyNode = MappingNode | RequireNode | MacroCallNode;
 
 // TX = USART*_TX + USART*_RX
 // CTS ?= USART*_CTS  (optional mapping)
-// TX = USART*_TX $u   (instance variable binding)
+// TX = USART*_TX $u   (variable assignment)
 export interface MappingNode {
   type: 'mapping';
   channelName: string;
   signalExprs: SignalExprNode[]; // joined by '+' (all required simultaneously)
   optional?: boolean; // ?= optional mapping
-  instanceBindings?: string[]; // $var bindings, one per wildcard in the pattern
+  instanceBindings?: string[]; // $var bindings — channels sharing a $name get same_instance constraint
   loc: SourceLocation;
 }
 
