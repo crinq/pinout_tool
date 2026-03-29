@@ -350,6 +350,106 @@ describe('Constraint parser', () => {
       expect(port.configs[0].name).toBe('USART');
       expect(port.configs[1].name).toBe('SPI');
     });
+
+    it('should parse inline mapping on channel line', () => {
+      const src = `port debug:
+  channel SWDIO = *_SWDIO $dbg
+  channel SWCLK = *_SWCLK $dbg`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.channels).toHaveLength(2);
+      expect(port.configs).toHaveLength(1);
+      expect(port.configs[0].name).toBe('debug');
+      expect(port.configs[0].body).toHaveLength(2);
+      const m = port.configs[0].body[0] as MappingNode;
+      expect(m.type).toBe('mapping');
+      expect(m.channelName).toBe('SWDIO');
+      expect(m.instanceBindings).toEqual(['dbg']);
+    });
+
+    it('should parse inline mapping with require', () => {
+      const src = `port COMM:
+  channel TX = USART*_TX
+  channel RX = USART*_RX
+  require same_instance(TX, RX)`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.configs).toHaveLength(1);
+      expect(port.configs[0].name).toBe('COMM');
+      expect(port.configs[0].body).toHaveLength(3);
+      expect((port.configs[0].body[2] as RequireNode).type).toBe('require');
+    });
+
+    it('should parse inline mapping with macro call', () => {
+      const src = `macro uart_base(tx, rx):
+  tx = USART*_TX
+  rx = USART*_RX
+  require same_instance(tx, rx)
+
+port COMM:
+  channel TX
+  channel RX
+  uart_base(TX, RX)`;
+      const ast = parseOk(src);
+      const port = ast.statements[1] as PortDeclNode;
+      expect(port.configs).toHaveLength(1);
+      expect(port.configs[0].name).toBe('COMM');
+      expect((port.configs[0].body[0] as MacroCallNode).type).toBe('macro_call');
+    });
+
+    it('should parse inline mapping with color', () => {
+      const src = `port debug:
+  color "green"
+  channel SWDIO = *_SWDIO
+  channel SWCLK = *_SWCLK`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.color).toBe('green');
+      expect(port.channels).toHaveLength(2);
+      expect(port.configs).toHaveLength(1);
+      expect(port.configs[0].body).toHaveLength(2);
+    });
+
+    it('should parse optional inline mapping with ?=', () => {
+      const src = `port SENS:
+  channel TEMP ?= ADC*_IN[0-7]`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      const m = port.configs[0].body[0] as MappingNode;
+      expect(m.optional).toBe(true);
+      expect(m.channelName).toBe('TEMP');
+    });
+
+    it('should parse inline mapping with pin restriction', () => {
+      const src = `port CMD:
+  channel TX @ PA9, PA2 = USART*_TX`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.channels[0].allowedPins).toEqual(['PA9', 'PA2']);
+      expect(port.configs).toHaveLength(1);
+      expect((port.configs[0].body[0] as MappingNode).channelName).toBe('TX');
+    });
+
+    it('should parse standalone mappings in port body (separate lines)', () => {
+      const src = `port COMM:
+  channel TX
+  channel RX
+  TX = USART*_TX
+  RX = USART*_RX`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.channels).toHaveLength(2);
+      expect(port.configs).toHaveLength(1);
+      expect(port.configs[0].body).toHaveLength(2);
+    });
+
+    it('should error when mixing explicit config and inline mappings', () => {
+      const src = `port P:
+  channel A = USART*_TX
+  config "SPI":
+    A = SPI*_MOSI`;
+      parseErr(src);
+    });
   });
 
   // ========== channel declaration ==========

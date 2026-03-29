@@ -139,7 +139,7 @@ export class ConstraintEditor implements Panel {
     this.textarea.spellcheck = false;
     this.textarea.autocapitalize = 'off';
     this.textarea.autocomplete = 'off';
-    this.textarea.placeholder = 'Enter constraints here...\n\n# Example:\nport CMD:\n  channel TX\n  channel RX\n\n  config "UART":\n    TX = USART*_TX\n    RX = USART*_RX\n    require same_instance(TX, RX)';
+    this.textarea.placeholder = 'Enter constraints here...\n\n# Example:\nport CMD:\n  channel TX = USART*_TX\n  channel RX = USART*_RX\n  require same_instance(TX, RX)';
     codeArea.appendChild(this.textarea);
 
     this.highlight = document.createElement('pre');
@@ -566,15 +566,26 @@ shared: ADC[1,2], TIM[1-4]</pre>
 
         <section>
           <h3>Ports, Channels &amp; Configs</h3>
-          <pre class="ce-help-code">port CMD:
-  channel TX          # unconstrained
-  channel RX @ PA3    # pin-restricted
+          <pre class="ce-help-code"># Inline config (single config ports):
+port CMD:
+  channel TX = USART*_TX
+  channel RX @ PA3 = USART*_RX  # pin-restricted
+  require same_instance(TX, RX)
+
+# Explicit configs (multiple alternatives):
+port CMD:
+  channel TX
+  channel RX
 
   config "UART full duplex":
     TX = USART*_TX
     RX = USART*_RX
-    require same_instance(TX, RX)</pre>
-          <p>Configs are mutually exclusive per port. The solver tries all combinations.
+    require same_instance(TX, RX)
+
+  config "UART half duplex":
+    TX = USART*_TX</pre>
+          <p>For single-config ports, write mappings on the <code>channel</code> line with <code>=</code> (creates an implicit config named after the port).
+          For multiple alternatives, use explicit <code>config</code> blocks &mdash; the solver tries all combinations.
           Inline <code>#</code> comments on port, channel, and pin lines are available in custom export functions.</p>
         </section>
 

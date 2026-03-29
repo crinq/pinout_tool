@@ -17,6 +17,7 @@ import { serializeSolution, deserializeSolution, migrateProjectData, seedDefault
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
+import { fromWire, type WireSolverResult } from './solver/solution-transfer';
 import { runPreSolveChecks } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
@@ -553,8 +554,15 @@ export class App {
 
       const jobLabel = `${mcu.refName}:${job.types.join('+')}`;
 
+      const workerStartTime = performance.now();
       worker.onmessage = (e) => {
-        const solverResult = e.data as SolverResult;
+        const receiveTime = performance.now();
+        const wireData = e.data as WireSolverResult | SolverResult;
+        const solverResult = '_wire' in wireData ? fromWire(wireData as WireSolverResult) : wireData as SolverResult;
+        const solveMs = solverResult.statistics.solveTimeMs;
+        const totalMs = receiveTime - workerStartTime;
+        const transferMs = totalMs - solveMs;
+        if (transferMs > 50) console.log(`[perf] ${jobLabel}: solve=${solveMs.toFixed(0)}ms, overhead≈${transferMs.toFixed(0)}ms, ${solverResult.solutions.length} solutions`);
         results.push({ solverId: jobLabel, result: solverResult });
         for (const st of job.types) {
           this.debugOverlay.solverComplete(st, solverResult);
@@ -630,7 +638,10 @@ export class App {
   private onAllSolversComplete(results: LabeledSolverResult[]): void {
     this.terminateWorkers();
 
+    const t0 = performance.now();
     const result = mergeResults(results, this.settings.maxSolutions);
+    const mergeMs = performance.now() - t0;
+    if (mergeMs > 50) console.log(`[perf] mergeResults: ${mergeMs.toFixed(0)}ms (${result.solutions.length} solutions)`);
 
     // Dynamic timeout retry: if 0 solutions and multiplier > 1 and not already a retry
     const mult = this.settings.dynamicTimeoutMultiplier;

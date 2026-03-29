@@ -264,6 +264,8 @@ export class ConstraintMinimap {
       }
 
       for (const config of block.configs) {
+        // Skip config label when it matches the port name (inline config shorthand)
+        if (block.port && config.name === block.port.name) continue;
         const cy = lineToY(config.startLine);
         const ch = Math.max(2, (config.endLine - config.startLine + 1) * LINE_HEIGHT * scale);
         if (ch > 8) {

@@ -380,6 +380,16 @@ export class SolverSolutions implements Panel {
       group.solutions.push(sol);
     }
 
+    // Pre-compute cached counts for sort performance
+    if (this.sortKey === 'pins' || this.sortKey === 'peripherals') {
+      for (const group of groupMap.values()) {
+        for (const sol of group.solutions) {
+          this.countPins(sol);
+          this.countPeripherals(sol);
+        }
+      }
+    }
+
     // Sort solutions within each group
     for (const group of groupMap.values()) {
       group.solutions.sort((a, b) => {
@@ -387,8 +397,8 @@ export class SolverSolutions implements Panel {
         switch (this.sortKey) {
           case 'id': cmp = a.id - b.id; break;
           case 'cost': cmp = a.totalCost - b.totalCost; break;
-          case 'pins': cmp = this.countPins(a) - this.countPins(b); break;
-          case 'peripherals': cmp = this.countPeripherals(a) - this.countPeripherals(b); break;
+          case 'pins': cmp = a._pinCount! - b._pinCount!; break;
+          case 'peripherals': cmp = a._peripheralCount! - b._peripheralCount!; break;
         }
         return this.sortDir === 'asc' ? cmp : -cmp;
       });
@@ -447,20 +457,24 @@ export class SolverSolutions implements Panel {
   }
 
   private countPins(solution: Solution): number {
+    if (solution._pinCount != null) return solution._pinCount;
     const pins = new Set<string>();
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
         if (a.portName !== '<pinned>') pins.add(a.pinName);
       }
     }
+    solution._pinCount = pins.size;
     return pins.size;
   }
 
   private countPeripherals(solution: Solution): number {
+    if (solution._peripheralCount != null) return solution._peripheralCount;
     let count = 0;
     for (const peripherals of solution.portPeripherals.values()) {
       count += peripherals.size;
     }
+    solution._peripheralCount = count;
     return count;
   }
 

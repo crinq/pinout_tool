@@ -731,21 +731,41 @@ class Parser {
     }
     this.expect('INDENT');
 
+    // Collect inline config body items (mappings, requires, macro calls)
+    // that appear directly in the port body without an explicit config block
+    const inlineConfigBody: ConfigBodyNode[] = [];
+
     while (!this.check('DEDENT') && !this.isAtEnd()) {
       this.skipNewlines();
       if (this.check('DEDENT') || this.isAtEnd()) break;
 
       const tok = this.peek();
       if (tok.type === 'KEYWORD' && tok.value === 'channel') {
-        channels.push(this.parseChannelDecl());
+        const [ch, mapping] = this.parseChannelDecl();
+        channels.push(ch);
+        if (mapping) inlineConfigBody.push(mapping);
       } else if (tok.type === 'KEYWORD' && tok.value === 'config') {
         configs.push(this.parseConfigDecl());
       } else if (tok.type === 'KEYWORD' && tok.value === 'color') {
         this.advance();
         color = this.expectString();
         this.expectNewlineOrEnd();
+      } else if (tok.type === 'KEYWORD' && tok.value === 'require') {
+        // Inline require → goes into implicit config
+        inlineConfigBody.push(this.parseRequireStmt());
+      } else if (tok.type === 'IDENT' || tok.type === 'KEYWORD') {
+        // Could be a mapping (NAME = ...) or macro call (NAME(...))
+        const lookAhead = this.peekPastCompoundIdent();
+        if (lookAhead === 'EQUALS' || lookAhead === 'QUESTION') {
+          inlineConfigBody.push(this.parseMapping());
+        } else if (lookAhead === 'LPAREN') {
+          inlineConfigBody.push(this.parseMacroCall());
+        } else {
+          this.error(`Expected 'channel', 'config', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
+          this.skipToNextLine();
+        }
       } else {
-        this.error(`Expected 'channel', 'config', or 'color' inside port, got '${tok.value || tok.type}'`, tok);
+        this.error(`Expected 'channel', 'config', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
         this.skipToNextLine();
       }
     }
@@ -754,11 +774,26 @@ class Parser {
       this.advance();
     }
 
+    // If inline config body items were found, wrap them in an implicit config
+    // named after the port
+    if (inlineConfigBody.length > 0) {
+      if (configs.length > 0) {
+        this.error(`Port '${name}' cannot have both explicit config blocks and inline mappings/requires`, this.tokens[this.pos - 1] ?? this.peek());
+      }
+      configs.push({
+        type: 'config_decl',
+        name,
+        body: inlineConfigBody,
+        loc,
+      });
+    }
+
     return { type: 'port_decl', name, template, channels, configs, color, comment, loc };
   }
 
-  // channel IDENT (@ pin_list)?
-  private parseChannelDecl(): ChannelDeclNode {
+  // channel IDENT (@ pin_list)? (= signal_expr ($var)* )?
+  // Returns [channel, optionalInlineMapping]
+  private parseChannelDecl(): [ChannelDeclNode, MappingNode | null] {
     const loc = this.loc();
     this.expectKeyword('channel');
     const name = this.parseCompoundIdent();
@@ -774,9 +809,36 @@ class Parser {
       }
     }
 
+    // Inline mapping: channel X = SIGNAL $var
+    let inlineMapping: MappingNode | null = null;
+    if (this.check('EQUALS') || this.check('QUESTION')) {
+      let optional: boolean | undefined;
+      if (this.check('QUESTION')) {
+        this.advance();
+        optional = true;
+      }
+      this.expect('EQUALS');
+
+      const signalExprs: SignalExprNode[] = [];
+      signalExprs.push(this.parseSignalExpr());
+      while (this.check('PLUS')) {
+        this.advance();
+        signalExprs.push(this.parseSignalExpr());
+      }
+
+      let instanceBindings: string[] | undefined;
+      while (this.check('DOLLAR')) {
+        this.advance();
+        if (!instanceBindings) instanceBindings = [];
+        instanceBindings.push(this.parseCompoundIdent());
+      }
+
+      inlineMapping = { type: 'mapping', channelName: name, signalExprs, optional, instanceBindings, loc };
+    }
+
     const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return { type: 'channel_decl', name, allowedPins, comment, loc };
+    return [{ type: 'channel_decl', name, allowedPins, comment, loc }, inlineMapping];
   }
 
   // config STRING: NEWLINE INDENT config_body DEDENT

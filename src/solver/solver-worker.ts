@@ -18,6 +18,7 @@ import { getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { computePortPriority } from './port-priority';
 import { estimateCandidateCost } from './cost-functions';
+import { toWire } from './solution-transfer';
 import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import type { SolverVariable } from './solver';
@@ -215,7 +216,7 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
       }
 
       const merged = mergeResults(labeled, config.maxSolutions ?? 100);
-      self.postMessage(merged);
+      self.postMessage(toWire(merged));
       return;
     }
 
@@ -224,13 +225,14 @@ self.onmessage = (e: MessageEvent<SolverWorkerRequest>) => {
       solverType ?? 'backtracking', ast, mcu, config,
       twoPhaseConfig, randomizedConfig, complexity
     );
-    self.postMessage(result);
+    self.postMessage(toWire(result));
   } catch (err) {
     self.postMessage({
       mcuRef: '',
       solutions: [],
       errors: [{ type: 'error', message: `Solver crashed: ${err instanceof Error ? err.message : String(err)}` }],
       statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+      _wire: true,
     });
   }
 };

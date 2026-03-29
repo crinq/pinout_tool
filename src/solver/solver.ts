@@ -2439,26 +2439,31 @@ export function buildSolution(
 // Deduplication
 // ============================================================
 
+/** Compute or return cached dedup fingerprint for a solution. */
+export function solutionDedupKey(sol: Solution): string {
+  if (sol._dedupKey) return sol._dedupKey;
+  const parts: string[] = [];
+  for (const ca of sol.configAssignments) {
+    const configParts: string[] = [];
+    for (const [port, config] of ca.activeConfigs) {
+      configParts.push(`${port}=${config}`);
+    }
+    const assignParts = ca.assignments
+      .filter(a => a.portName !== '<pinned>')
+      .map(a => `${a.portName}.${a.channelName}:${a.pinName}=${a.signalName}`)
+      .sort();
+    parts.push(`[${configParts.sort().join(',')}]{${assignParts.join(',')}}`);
+  }
+  sol._dedupKey = parts.sort().join('|');
+  return sol._dedupKey;
+}
+
 export function deduplicateSolutions(solutions: Solution[]): Solution[] {
   const seen = new Set<string>();
   const result: Solution[] = [];
 
   for (const sol of solutions) {
-    // Create a fingerprint from all config assignments
-    const parts: string[] = [];
-    for (const ca of sol.configAssignments) {
-      const configParts: string[] = [];
-      for (const [port, config] of ca.activeConfigs) {
-        configParts.push(`${port}=${config}`);
-      }
-      const assignParts = ca.assignments
-        .filter(a => a.portName !== '<pinned>')
-        .map(a => `${a.portName}.${a.channelName}:${a.pinName}=${a.signalName}`)
-        .sort();
-      parts.push(`[${configParts.sort().join(',')}]{${assignParts.join(',')}}`);
-    }
-    const key = parts.sort().join('|');
-
+    const key = solutionDedupKey(sol);
     if (!seen.has(key)) {
       seen.add(key);
       result.push(sol);

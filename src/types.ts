@@ -174,6 +174,12 @@ export interface Solution {
   optionalTotal: number;
   /** Number of fulfilled optional mappings + satisfied optional requires */
   optionalFulfilled: number;
+  /** Cached dedup fingerprint (set during finalizeSolutions, reused by mergeResults) */
+  _dedupKey?: string;
+  /** Cached unique pin count */
+  _pinCount?: number;
+  /** Cached unique peripheral count */
+  _peripheralCount?: number;
 }
 
 export interface ConfigCombinationAssignment {

@@ -250,6 +250,34 @@ port CMD:
 
 Only one config per port is active in each solution. If a port has multiple configs, the solver evaluates all combinations.
 
+**Inline config shorthand**: For ports with only one config, you can write mappings directly on the channel line and requires/macro calls in the port body, omitting the `config` block. The parser creates an implicit config named after the port.
+
+```
+port debug:
+  color "green"
+  channel SWDIO = *_SWDIO $dbg
+  channel SWCLK = *_SWCLK $dbg
+  require same_instance(SWDIO, SWCLK)
+```
+
+This is equivalent to:
+
+```
+port debug:
+  color "green"
+  channel SWDIO
+  channel SWCLK
+
+  config "debug":
+    SWDIO = *_SWDIO $dbg
+    SWCLK = *_SWCLK $dbg
+    require same_instance(SWDIO, SWCLK)
+```
+
+Pin restrictions work with inline mappings: `channel TX @ PA9, PA2 = USART*_TX`
+
+You cannot mix inline mappings with explicit `config` blocks in the same port.
+
 ### Signal Patterns
 
 Signal patterns match against MCU signal names (e.g., `USART1_TX`, `TIM3_CH2`, `ADC1_IN5`).
