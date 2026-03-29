@@ -218,7 +218,7 @@ export class ConstraintMinimap {
   // Painting
   // ====================
 
-  private paint(): void {
+  paint(): void {
     const w = MINIMAP_WIDTH;
     const h = this.canvas.height / (window.devicePixelRatio || 1);
     const ctx = this.ctx;

@@ -161,6 +161,7 @@ export interface MappingSpec {
   channelName: string;
   signalExprs: SignalExprSpec[];
   optional?: boolean;
+  line?: number;
 }
 
 export interface SignalExprSpec {
@@ -493,6 +494,7 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
               candidates: [], // resolved later
             })),
             optional: item.optional,
+            line: item.loc.line,
           });
         } else if (item.type === 'require') {
           requires.push(item);
@@ -821,6 +823,8 @@ const KNOWN_FUNCTIONS = new Set([
 
 export function validateConstraints(ports: Map<string, PortSpec>, errors: SolverError[]): void {
   for (const [portName, port] of ports) {
+    const declaredChannels = new Set(port.channels.keys());
+
     // Collect all channel names that have mappings in any config
     const mappedChannels = new Set<string>();
     for (const config of port.configs) {
@@ -830,6 +834,19 @@ export function validateConstraints(ports: Map<string, PortSpec>, errors: Solver
     }
 
     for (const config of port.configs) {
+      // Check mappings reference declared channels
+      for (const mapping of config.mappings) {
+        if (!declaredChannels.has(mapping.channelName)) {
+          const lineRef = mapping.line ? `line ${mapping.line}: ` : '';
+          errors.push({
+            type: 'error',
+            message: `${lineRef}Mapping references undefined channel "${mapping.channelName}" in ${portName} config "${config.name}". Declared channels: ${[...declaredChannels].join(', ') || 'none'}`,
+            source: `${portName}.${mapping.channelName}`,
+            line: mapping.line,
+          });
+        }
+      }
+
       // Build channel → peripheral type prefixes map for this config
       const channelTypes = new Map<string, Set<string>>();
       for (const mapping of config.mappings) {
@@ -845,7 +862,7 @@ export function validateConstraints(ports: Map<string, PortSpec>, errors: Solver
 
       // Validate require constraints
       for (const req of config.requires) {
-        validateExpr(req.expression, portName, mappedChannels, config.name, errors, channelTypes);
+        validateExpr(req.expression, portName, declaredChannels, mappedChannels, config.name, errors, ports, channelTypes);
       }
     }
   }
@@ -868,9 +885,11 @@ function extractTypePrefix(part: PatternPart): string | null {
 function validateExpr(
   expr: ConstraintExprNode,
   portName: string,
+  declaredChannels: Set<string>,
   mappedChannels: Set<string>,
   configName: string,
   errors: SolverError[],
+  ports: Map<string, PortSpec>,
   channelTypes?: Map<string, Set<string>>
 ): void {
   switch (expr.type) {
@@ -878,8 +897,9 @@ function validateExpr(
       if (!KNOWN_FUNCTIONS.has(expr.name)) {
         errors.push({
           type: 'error',
-          message: `Unknown function "${expr.name}" in ${portName} config "${configName}"`,
+          message: `line ${expr.loc.line}: Unknown function "${expr.name}" in ${portName} config "${configName}"`,
           source: `${portName}`,
+          line: expr.loc.line,
         });
       }
       // Check type filter compatibility
@@ -905,33 +925,57 @@ function validateExpr(
         }
       }
       for (const arg of expr.args) {
-        validateExpr(arg, portName, mappedChannels, configName, errors, channelTypes);
+        validateExpr(arg, portName, declaredChannels, mappedChannels, configName, errors, ports, channelTypes);
       }
       break;
 
     case 'binary_expr':
-      validateExpr(expr.left, portName, mappedChannels, configName, errors, channelTypes);
-      validateExpr(expr.right, portName, mappedChannels, configName, errors, channelTypes);
+      validateExpr(expr.left, portName, declaredChannels, mappedChannels, configName, errors, ports, channelTypes);
+      validateExpr(expr.right, portName, declaredChannels, mappedChannels, configName, errors, ports, channelTypes);
       break;
 
     case 'unary_expr':
-      validateExpr(expr.operand, portName, mappedChannels, configName, errors, channelTypes);
+      validateExpr(expr.operand, portName, declaredChannels, mappedChannels, configName, errors, ports, channelTypes);
       break;
 
     case 'ident':
-      // Check if this identifier refers to a known channel in this port
-      if (!mappedChannels.has(expr.name)) {
+      if (!declaredChannels.has(expr.name)) {
+        errors.push({
+          type: 'error',
+          message: `line ${expr.loc.line}: Undefined channel "${expr.name}" in require of ${portName} config "${configName}"`,
+          source: `${portName}`,
+          line: expr.loc.line,
+        });
+      } else if (!mappedChannels.has(expr.name)) {
         errors.push({
           type: 'warning',
-          message: `Channel "${expr.name}" referenced in require but has no mapping in ${portName}`,
+          message: `line ${expr.loc.line}: Channel "${expr.name}" referenced in require but has no mapping in ${portName}`,
           source: `${portName}`,
+          line: expr.loc.line,
         });
       }
       break;
 
-    case 'dot_access':
-      // Cross-port reference - we'd need the other port's channels to validate
+    case 'dot_access': {
+      const targetPortName = expr.object;
+      const targetPort = ports.get(targetPortName);
+      if (!targetPort) {
+        errors.push({
+          type: 'error',
+          message: `line ${expr.loc.line}: Undefined port "${targetPortName}" in cross-port reference ${targetPortName}.${expr.property} in ${portName} config "${configName}"`,
+          source: `${portName}`,
+          line: expr.loc.line,
+        });
+      } else if (!targetPort.channels.has(expr.property)) {
+        errors.push({
+          type: 'error',
+          message: `line ${expr.loc.line}: Undefined channel "${expr.property}" in port "${targetPortName}" (referenced from ${portName} config "${configName}")`,
+          source: `${portName}`,
+          line: expr.loc.line,
+        });
+      }
       break;
+    }
 
     case 'string_literal':
       break;
@@ -1664,15 +1708,16 @@ export function evaluateAllConstraints(
       }
     }
 
-    // After require checks pass, compute DMA stream assignment for this combo
-    if (dmaData) {
-      const dmaAssignment = computeDmaAssignmentForCombo(combo, ports, channelInfo, dmaData);
-      if (dmaAssignment === null) {
-        return false;
-      }
-      if (dmaAssignmentsOut) {
-        dmaAssignmentsOut.push(dmaAssignment);
-      }
+  }
+
+  // After ALL combos pass require checks, compute a globally consistent DMA assignment
+  if (dmaData) {
+    const globalResult = computeGlobalDmaAssignment(
+      configCombinations, ports, byPortConfig, dmaData
+    );
+    if (!globalResult) return false;
+    if (dmaAssignmentsOut) {
+      dmaAssignmentsOut.push(...globalResult);
     }
   }
 
@@ -2117,72 +2162,123 @@ interface DmaFilter {
 }
 
 /**
- * Compute a concrete DMA stream assignment for a config combination.
+ * Compute a globally consistent DMA stream assignment across ALL config combinations.
  *
  * Rules:
  * - A DMA stream is exclusive to one port (cross-port exclusivity)
- * - A DMA stream serves at most one channel within a config (within-config exclusivity)
+ * - Within a config combination, each dma() channel needs its own stream
  * - Different configs of the same port may reuse the same stream
  *
- * Returns the assignment map (signalName → stream name) if feasible, or null if not.
- * Only channels with dma() constraints are included.
+ * Returns an array of per-combo assignment maps, or null if infeasible.
  */
-function computeDmaAssignmentForCombo(
-  combo: Map<string, string>,
+function computeGlobalDmaAssignment(
+  configCombinations: Map<string, string>[],
   ports: Map<string, PortSpec>,
-  channelInfo: Map<string, Map<string, VariableAssignment[]>>,
-  dmaData: DmaData
-): Map<string, string> | null {
-  const requirements: DmaReq[] = [];
+  byPortConfig: Map<string, Map<string, Map<string, VariableAssignment[]>>>,
+  dmaData: DmaData,
+): Map<string, string>[] | null {
+  // Collect requirements per combo, tagged with combo index
+  interface TaggedReq extends DmaReq {
+    comboIdx: number;
+  }
+  const allReqs: TaggedReq[] = [];
 
-  for (const [portName, configName] of combo) {
-    const port = ports.get(portName);
-    if (!port) continue;
-    const config = port.configs.find(c => c.name === configName);
-    if (!config) continue;
+  for (let ci = 0; ci < configCombinations.length; ci++) {
+    const combo = configCombinations[ci];
+    // Build channelInfo for this combo
+    const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
+    for (const [portName, configName] of combo) {
+      const configChannels = byPortConfig.get(portName)?.get(configName);
+      if (configChannels) channelInfo.set(portName, configChannels);
+    }
 
-    // Check if this config has any dma() constraints
-    const dmaChannels = collectDmaChannels(config.requires);
-    if (dmaChannels.size === 0) continue;
+    for (const [portName, configName] of combo) {
+      const port = ports.get(portName);
+      if (!port) continue;
+      const config = port.configs.find(c => c.name === configName);
+      if (!config) continue;
 
-    const portChannels = channelInfo.get(portName);
-    if (!portChannels) continue;
+      const dmaChannels = collectDmaChannels(config.requires);
+      if (dmaChannels.size === 0) continue;
 
-    for (const [channelName, filter] of dmaChannels) {
-      const vas = portChannels.get(channelName) ?? [];
-      for (const va of vas) {
-        if (filter.peripheralType && va.candidate.peripheralType !== filter.peripheralType) continue;
-        const triggerName = getDmaTriggerName(
-          va.candidate.peripheralInstance, filter.triggerFunction, va.candidate.signalName
-        );
-        const streams = findDmaStreamsForSignal(
-          dmaData, triggerName, va.candidate.peripheralInstance
-        );
-        if (streams.length > 0) {
-          requirements.push({
-            portName, channelName,
-            signalName: va.candidate.signalName,
-            availableStreams: streams,
-          });
+      const portChannels = channelInfo.get(portName);
+      if (!portChannels) continue;
+
+      for (const [channelName, filter] of dmaChannels) {
+        const vas = portChannels.get(channelName) ?? [];
+        for (const va of vas) {
+          if (filter.peripheralType && va.candidate.peripheralType !== filter.peripheralType) continue;
+          const triggerName = getDmaTriggerName(
+            va.candidate.peripheralInstance, filter.triggerFunction, va.candidate.signalName
+          );
+          const streams = findDmaStreamsForSignal(
+            dmaData, triggerName, va.candidate.peripheralInstance
+          );
+          if (streams.length > 0) {
+            allReqs.push({
+              portName, channelName,
+              signalName: va.candidate.signalName,
+              availableStreams: streams,
+              comboIdx: ci,
+            });
+          }
         }
       }
     }
   }
 
-  if (requirements.length === 0) return new Map();
+  if (allReqs.length === 0) {
+    return configCombinations.map(() => new Map());
+  }
 
-  // Try to find a consistent assignment via backtracking
-  const assigned = new Array<DmaStreamInfo | null>(requirements.length).fill(null);
-  if (!assignDmaStreams(requirements, 0, new Map(), assigned)) return null;
+  // Backtracking assignment with global stream exclusivity
+  const assigned = new Array<DmaStreamInfo | null>(allReqs.length).fill(null);
+  // stream name → port that owns it
+  const streamOwner = new Map<string, string>();
+  // Per-combo used streams: comboIdx → Set<stream name> (within-combo exclusivity)
+  const comboUsed = new Map<number, Set<string>>();
 
-  // Build the result map: signalName → stream name
-  const result = new Map<string, string>();
-  for (let i = 0; i < requirements.length; i++) {
+  function solve(idx: number): boolean {
+    if (idx === allReqs.length) return true;
+    const req = allReqs[idx];
+
+    if (!comboUsed.has(req.comboIdx)) comboUsed.set(req.comboIdx, new Set());
+    const usedInCombo = comboUsed.get(req.comboIdx)!;
+
+    for (const stream of req.availableStreams) {
+      // Check cross-port exclusivity
+      const owner = streamOwner.get(stream.name);
+      if (owner !== undefined && owner !== req.portName) continue;
+
+      // Check within-combo exclusivity (each channel needs its own stream)
+      if (usedInCombo.has(stream.name)) continue;
+
+      // Assign
+      const wasOwner = streamOwner.has(stream.name);
+      if (!wasOwner) streamOwner.set(stream.name, req.portName);
+      usedInCombo.add(stream.name);
+      assigned[idx] = stream;
+
+      if (solve(idx + 1)) return true;
+
+      // Undo
+      assigned[idx] = null;
+      usedInCombo.delete(stream.name);
+      if (!wasOwner) streamOwner.delete(stream.name);
+    }
+    return false;
+  }
+
+  if (!solve(0)) return null;
+
+  // Build per-combo result maps
+  const results: Map<string, string>[] = configCombinations.map(() => new Map());
+  for (let i = 0; i < allReqs.length; i++) {
     if (assigned[i]) {
-      result.set(requirements[i].signalName, assigned[i]!.name);
+      results[allReqs[i].comboIdx].set(allReqs[i].signalName, assigned[i]!.name);
     }
   }
-  return result;
+  return results;
 }
 
 /**
@@ -2251,45 +2347,6 @@ function walkExprForDma(expr: ConstraintExprNode, result: Map<string, DmaFilter>
       walkExprForDma(expr.operand, result);
       break;
   }
-}
-
-/**
- * Backtracking assignment of DMA streams to requirements.
- * Each stream is used by at most one requirement in a config combination.
- * Cross-port: a stream can only belong to one port.
- * Within-config: each channel needs its own stream.
- *
- * Fills in the `assigned` array with the chosen stream for each requirement.
- */
-function assignDmaStreams(
-  requirements: DmaReq[],
-  index: number,
-  usedStreams: Map<string, string>,  // stream name -> "port\0channel" that claimed it
-  assigned: Array<DmaStreamInfo | null>
-): boolean {
-  if (index === requirements.length) return true;
-
-  const req = requirements[index];
-  const reqKey = `${req.portName}\0${req.channelName}`;
-
-  for (const stream of req.availableStreams) {
-    const claimedBy = usedStreams.get(stream.name);
-    if (claimedBy !== undefined) {
-      // Stream already claimed - check if it's the same port but different channel
-      const claimedPort = claimedBy.split('\0')[0];
-      if (claimedPort !== req.portName) continue; // cross-port conflict
-      // Same port, different channel in same config - conflict
-      continue;
-    }
-
-    usedStreams.set(stream.name, reqKey);
-    assigned[index] = stream;
-    if (assignDmaStreams(requirements, index + 1, usedStreams, assigned)) return true;
-    usedStreams.delete(stream.name);
-    assigned[index] = null;
-  }
-
-  return false;
 }
 
 // ============================================================

@@ -196,6 +196,9 @@ export class ConstraintEditor implements Panel {
     if (change['type'] === 'mcu-loaded') {
       this.minimap.setMcu(change['mcu'] as Mcu | null);
     }
+    if (change['type'] === 'theme-changed') {
+      this.minimap.paint();
+    }
     if (change['type'] === 'solution-selected') {
       this.minimap.setAssignments((change['assignments'] as Assignment[]) || null);
       // Repaint minimap to reflect solution state
@@ -235,6 +238,15 @@ export class ConstraintEditor implements Panel {
 
   getSolverStatusBar(): HTMLElement | null {
     return this.solverStatusBar ?? null;
+  }
+
+  /** Show pre-solve error lines in the minimap (merged with parser errors) */
+  setPreSolveErrorLines(lines: number[]): void {
+    if (!this.parseResult) return;
+    const parserErrors = this.parseResult.errors.map(e => e.line);
+    const allErrors = [...new Set([...parserErrors, ...lines])];
+    const totalLines = this.textarea.value.split('\n').length;
+    this.minimap.update(this.parseResult.ast, totalLines, allErrors);
   }
 
   /** Move cursor to the start of a given line (1-based) and scroll into view */

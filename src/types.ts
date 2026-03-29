@@ -201,6 +201,7 @@ export interface SolverError {
   type: 'error' | 'warning';
   message: string;
   source?: string;
+  line?: number;
   partialSolution?: Assignment[];
   suggestions?: string[];
 }

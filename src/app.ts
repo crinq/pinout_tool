@@ -463,6 +463,11 @@ export class App {
           })
           .join(' ');
       }
+      // Show error lines in minimap
+      const errorLines = preErrors.filter(e => e.line != null).map(e => e.line!);
+      if (errorLines.length > 0) {
+        this.constraintEditor.setPreSolveErrorLines(errorLines);
+      }
       this.showStatus(fatalErrors[0].message, 'error');
       return;
     }
