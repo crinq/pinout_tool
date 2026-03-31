@@ -1,5 +1,6 @@
 import type { Panel, StateChange } from './panel';
 import type { Mcu, Assignment } from '../types';
+import { lookupDmaStream } from '../solver/solver';
 
 export class PeripheralSummary implements Panel {
   readonly id = 'peripheral-summary';
@@ -94,7 +95,7 @@ export class PeripheralSummary implements Panel {
       const ui = a.signalName.indexOf('_');
       if (ui === -1) continue;
       const instance = a.signalName.substring(0, ui);
-      const stream = dmaMap.get(a.signalName);
+      const stream = lookupDmaStream(a.signalName, dmaMap);
       if (!stream) continue;
       const arr = result.get(instance) ?? [];
       const short = this.shortStream(stream);

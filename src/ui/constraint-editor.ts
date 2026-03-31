@@ -184,6 +184,7 @@ export class ConstraintEditor implements Panel {
     const resizeObserver = new ResizeObserver(() => {
       this.minimap.resize(editorWrapper.clientHeight);
       this.syncMinimapViewport();
+      this.syncLineNumbersHeight();
     });
     resizeObserver.observe(editorWrapper);
 
@@ -484,7 +485,19 @@ export class ConstraintEditor implements Panel {
     const lines = this.textarea.value.split('\n');
     this.lineNumbers.innerHTML = lines
       .map((_, i) => `<div class="ce-line-num">${i + 1}</div>`)
-      .join('');
+      .join('') + '<div class="ce-line-spacer"></div>';
+    this.syncLineNumbersHeight();
+  }
+
+  /** Ensure line numbers scrollHeight matches textarea scrollHeight so they scroll in sync */
+  private syncLineNumbersHeight(): void {
+    const spacer = this.lineNumbers.querySelector('.ce-line-spacer') as HTMLElement | null;
+    if (!spacer) return;
+    spacer.style.height = '0';
+    const diff = this.textarea.scrollHeight - this.lineNumbers.scrollHeight;
+    if (diff > 0) {
+      spacer.style.height = diff + 'px';
+    }
   }
 
   private updateErrors(errors: ParseError[]): void {
@@ -660,6 +673,7 @@ MOSI = SPI*_MOSI + GPIO[1-2]_*</pre>
             <tr><td><code>pin_col(A)</code></td><td>BGA column / LQFP x-component</td></tr>
             <tr><td><code>pin_distance(A, B)</code></td><td>Physical distance between pins</td></tr>
             <tr><td><code>dma(A)</code></td><td>DMA stream available for channel</td></tr>
+            <tr><td><code>dma(A, "USART")</code></td><td>DMA check filtered by type</td></tr>
           </table>
           <p>Numeric functions support comparison: <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>+</code>, <code>-</code></p>
           <pre class="ce-help-code">require channel_number(A) < channel_number(B)
@@ -775,13 +789,13 @@ require gpio_port(TX) == gpio_port(RX)</pre>
 
         <section>
           <h3>Comment Interpolation</h3>
-          <p>Channel comments are included in exports. Use <code>{}</code> placeholders for dynamic values:</p>
+          <p>Channel comments are included in exports. Use <code>\${expr}</code> for dynamic values:</p>
           <pre class="ce-help-code">port CMD:
-  channel TX  # UART TX: {signal} on {pin}
-  channel RX  # UART RX: {signal} on {pin}</pre>
-          <p>Available placeholders: <code>{pin}</code>, <code>{signal}</code>, <code>{port}</code>,
-          <code>{channel}</code>, <code>{config}</code>, <code>{instance}</code>, <code>{type}</code>,
-          <code>{function}</code>, <code>{number}</code>, <code>{gpio_port}</code></p>
+  channel TX  # \${instance(TX)}_TX on pin \${gpio_pin(TX)}
+  channel RX  # \${instance(RX)}_RX on pin \${gpio_pin(RX)}</pre>
+          <p>Supported expressions: <code>\${instance(CH)}</code>, <code>\${gpio_pin(CH)}</code>,
+          <code>\${type(CH)}</code>, or any channel name <code>\${CH}</code> (resolves to signal name).
+          If evaluation fails, <code>?</code> is substituted.</p>
         </section>
 
         <section>

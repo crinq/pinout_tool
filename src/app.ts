@@ -520,7 +520,6 @@ export class App {
     statusPrefix: string,
     onComplete: (results: LabeledSolverResult[]) => void,
   ): void {
-    const twoPhaseTypes = new Set(['two-phase', 'diverse-instances', 'priority-group', 'mrv-group', 'ratio-mrv-group']);
     const results: LabeledSolverResult[] = [];
     let completedCount = 0;
 
@@ -543,8 +542,14 @@ export class App {
 
     const totalCount = workerJobs.length;
 
+    // Scale per-worker solution cap so total across all workers stays bounded.
+    // Each worker gets at most 2× its fair share to allow headroom for dedup.
+    const perWorkerMax = totalCount > 1
+      ? Math.ceil(this.settings.maxSolutions / totalCount * 2)
+      : this.settings.maxSolutions;
+
     const baseConfig = {
-      maxSolutions: this.settings.maxSolutions,
+      maxSolutions: perWorkerMax,
       timeoutMs: this.settings.solverTimeoutMs,
       costWeights: new Map(Object.entries(this.settings.costWeights)),
       skipGpioMapping: this.settings.skipGpioMapping,
@@ -615,13 +620,10 @@ export class App {
         });
       } else {
         const solverType = job.types[0];
-        const effectiveMaxSolutions = twoPhaseTypes.has(solverType)
-          ? this.settings.maxSolutions
-          : this.settings.maxGroups * this.settings.maxSolutionsPerGroup;
 
         worker.postMessage({
           ast, mcu,
-          config: { ...baseConfig, maxSolutions: effectiveMaxSolutions },
+          config: baseConfig,
           solverType,
           twoPhaseConfig: {
             maxGroups: this.settings.maxGroups,
@@ -676,8 +678,9 @@ export class App {
           const solveNextMcu = () => {
             if (mcuIdx >= mcuList.length) {
               this.settings.solverTimeoutMs = savedTimeout;
-              this.isDynamicTimeoutRetry = false;
+              // Keep isDynamicTimeoutRetry = true so the recursive call won't retry again
               this.onAllSolversComplete(allRetryResults);
+              this.isDynamicTimeoutRetry = false;
               return;
             }
             const mcu = mcuList[mcuIdx];

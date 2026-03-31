@@ -98,7 +98,7 @@ export function solveBacktrackDynamic(
     // All variables assigned - check all config combinations
     stats.evaluatedCombinations++;
     const dmaOut1: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1, undefined, sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut1
       );
@@ -140,7 +140,7 @@ export function solveBacktrackDynamic(
     }
     stats.evaluatedCombinations++;
     const dmaOut2: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut2)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut2, undefined, sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut2
       );

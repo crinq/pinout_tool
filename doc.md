@@ -823,7 +823,7 @@ Error messages include the sender (solver name) to identify which component prod
 
 ### Parallel Multi-Solver
 
-Select multiple solvers in Settings to run them in parallel. Each solver runs in its own Web Worker with the full solution budget. When all solvers complete, their results are merged:
+Select multiple solvers in Settings to run them in parallel. Each solver runs in its own Web Worker with a scaled solution budget (total budget is distributed across workers to limit peak memory). When all solvers complete, their results are merged:
 
 1. Solutions are tagged with their solver origin
 2. All solutions are concatenated and sorted by cost

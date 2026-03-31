@@ -3,6 +3,7 @@ import { escapeHtml } from '../utils';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
+import { lookupDmaStream } from '../solver/solver';
 import { exportSvg } from './svg-export';
 import { loadCustomExports } from '../storage';
 
@@ -415,7 +416,7 @@ export class PackageViewer implements Panel {
           channelName: a.channelName,
           configurationName: a.configurationName,
         };
-        const stream = this.dmaAssignment.get(a.signalName);
+        const stream = lookupDmaStream(a.signalName, this.dmaAssignment);
         if (stream) {
           entry.dmaStream = stream;
         }
@@ -1233,7 +1234,7 @@ export class PackageViewer implements Panel {
         const label = a.portName !== '<pinned>'
           ? `${a.portName}.${a.channelName} [${a.configurationName}]`
           : 'pinned';
-        const stream = this.dmaAssignment.get(a.signalName);
+        const stream = lookupDmaStream(a.signalName, this.dmaAssignment);
         const dmaInfo = stream
           ? ` <span class="tooltip-dma">(${stream})</span>`
           : '';

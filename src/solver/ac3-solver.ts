@@ -92,7 +92,7 @@ function solveBacktrackAC3(
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
     const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, undefined, sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );

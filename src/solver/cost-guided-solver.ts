@@ -168,7 +168,7 @@ function solveBacktrackCostGuided(
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
     const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, undefined, tracker.sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );

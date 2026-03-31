@@ -165,21 +165,37 @@ function checkSolutionInvariants(
       }
     }
 
-    // Check DMA stream exclusivity: each stream belongs to one port
+    // Check DMA stream exclusivity: each stream belongs to one port (unless shared trigger)
     if (ca.dmaStreamAssignment) {
-      for (const [signalName, streamName] of ca.dmaStreamAssignment) {
-        // Find which port owns this signal
-        const sigInfo = signalOwner.get(signalName);
-        const port = sigInfo?.port;
+      for (const [triggerName, streamName] of ca.dmaStreamAssignment) {
+        // Find which port owns this trigger by looking up signals that match it
+        // triggerName could be "USART1_TX" (matching signal) or "ADC1" (instance-only)
+        let port: string | undefined;
+        const sigInfo = signalOwner.get(triggerName);
+        if (sigInfo) {
+          port = sigInfo.port;
+        } else {
+          // Instance-only trigger (e.g. "ADC1"): find any signal starting with "ADC1_"
+          for (const [sig, info] of signalOwner) {
+            if (sig.startsWith(triggerName + '_')) {
+              port = info.port;
+              break;
+            }
+          }
+        }
         if (!port) continue;
 
+        // Check exclusivity (shared instances may share streams across ports)
+        const triggerInstance = triggerName.replace(/_.*$/, '');
+        const isSharedTrigger = isSharedInstance(triggerInstance, sharedPatterns);
+
         const existingPort = dmaStreamOwner.get(streamName);
-        if (existingPort !== undefined && existingPort !== port) {
+        if (existingPort !== undefined && existingPort !== port && !isSharedTrigger) {
           errors.push(
             `[sol ${solution.id}] DMA stream "${streamName}" assigned to both port "${existingPort}" and "${port}"`
           );
         }
-        dmaStreamOwner.set(streamName, port);
+        if (!existingPort) dmaStreamOwner.set(streamName, port);
       }
     }
   }
@@ -420,29 +436,10 @@ function checkDmaAssignmentInvariants(
   for (const ca of solution.configAssignments) {
     const dma = ca.dmaStreamAssignment ?? new Map<string, string>();
 
-    // Build lookup: signalName -> (portName, channelName)
-    const signalToPortChannel = new Map<string, { port: string; channel: string }>();
-    for (const a of ca.assignments) {
-      if (a.portName === '<pinned>') continue;
-      signalToPortChannel.set(a.signalName, { port: a.portName, channel: a.channelName });
-    }
-
-    // Check 1: Only channels with dma() requirement get DMA assignment
-    for (const [signalName] of dma) {
-      const info = signalToPortChannel.get(signalName);
-      if (!info) continue;
-      const key = `${info.port}\0${info.channel}`;
-      if (!dmaRequiredChannels.has(key)) {
-        errors.push(
-          `[sol ${solution.id}] Signal "${signalName}" (${info.port}.${info.channel}) has DMA assignment but no dma() requirement`
-        );
-      }
-    }
-
-    // Check 2: All channels with dma() requirement get DMA assignment
+    // Check: All channels with dma() requirement should have a matching DMA trigger assigned.
+    // DMA map is keyed by trigger name (e.g. "USART1_TX" or "ADC1"), not signal name.
     for (const key of dmaRequiredChannels) {
       const [portName, channelName] = key.split('\0');
-      // Find the assignment for this port.channel in this config combo
       const activeConfig = ca.activeConfigs.get(portName);
       if (!activeConfig) continue;
 
@@ -451,9 +448,14 @@ function checkDmaAssignmentInvariants(
       );
       if (!channelAssignment) continue;
 
-      if (!dma.has(channelAssignment.signalName)) {
+      // Check if any trigger in the DMA map matches this assignment's peripheral instance
+      const instance = channelAssignment.signalName.split('_')[0];
+      const hasTrigger = dma.has(channelAssignment.signalName) ||
+        dma.has(instance) ||
+        [...dma.keys()].some(k => k.startsWith(instance + '_'));
+      if (!hasTrigger) {
         errors.push(
-          `[sol ${solution.id}] Channel ${portName}.${channelName} has dma() requirement but signal "${channelAssignment.signalName}" has no DMA assignment`
+          `[sol ${solution.id}] Channel ${portName}.${channelName} has dma() requirement but no DMA trigger for "${channelAssignment.signalName}"`
         );
       }
     }

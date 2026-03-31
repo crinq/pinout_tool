@@ -821,6 +821,51 @@ const KNOWN_FUNCTIONS = new Set([
   'pin_row', 'pin_col', 'pin_distance',
 ]);
 
+/**
+ * Check for duplicate channel declarations and duplicate channel mappings within a config.
+ * Runs on the expanded AST (after template merging).
+ */
+function validateDuplicates(ast: ProgramNode, errors: SolverError[]): void {
+  for (const stmt of ast.statements) {
+    if (stmt.type !== 'port_decl') continue;
+
+    // Check duplicate channel declarations
+    const seenChannels = new Map<string, number>(); // name → first line
+    for (const ch of stmt.channels) {
+      const prev = seenChannels.get(ch.name);
+      if (prev !== undefined) {
+        errors.push({
+          type: 'error',
+          message: `line ${ch.loc.line}: Duplicate channel "${ch.name}" in port "${stmt.name}" (first declared at line ${prev})`,
+          source: `${stmt.name}.${ch.name}`,
+          line: ch.loc.line,
+        });
+      } else {
+        seenChannels.set(ch.name, ch.loc.line);
+      }
+    }
+
+    // Check duplicate channel mappings within each config
+    for (const config of stmt.configs) {
+      const seenMappings = new Map<string, number>(); // channelName → first line
+      for (const item of config.body) {
+        if (item.type !== 'mapping') continue;
+        const prev = seenMappings.get(item.channelName);
+        if (prev !== undefined) {
+          errors.push({
+            type: 'error',
+            message: `line ${item.loc.line}: Duplicate mapping for channel "${item.channelName}" in ${stmt.name} config "${config.name}" (first mapped at line ${prev})`,
+            source: `${stmt.name}.${item.channelName}`,
+            line: item.loc.line,
+          });
+        } else {
+          seenMappings.set(item.channelName, item.loc.line);
+        }
+      }
+    }
+  }
+}
+
 export function validateConstraints(ports: Map<string, PortSpec>, errors: SolverError[]): void {
   for (const [portName, port] of ports) {
     const declaredChannels = new Set(port.channels.keys());
@@ -1111,6 +1156,189 @@ export function validateDmaAvailability(
 }
 
 /**
+ * Check if two ports can only map to the same peripheral instance without it being shared.
+ * For each config of each port, collect all possible peripheral instances from resolved candidates.
+ * If two ports' ONLY option for a given type is the same instance and it's not shared, error.
+ */
+function validateInstanceExclusivity(
+  variables: SolverVariable[],
+  sharedPatterns: PatternPart[],
+  ports: Map<string, PortSpec>,
+  errors: SolverError[],
+): void {
+  // For each port+config, collect the set of peripheral instances that could be used
+  // portName → configName → Set<instance>
+  const portConfigInstances = new Map<string, Map<string, Set<string>>>();
+  // Also track which line a mapping is on per port+config+instance (for error reporting)
+  const portLines = new Map<string, number | undefined>(); // portName → first mapping line
+
+  for (const v of variables) {
+    if (!portConfigInstances.has(v.portName)) portConfigInstances.set(v.portName, new Map());
+    const configMap = portConfigInstances.get(v.portName)!;
+    if (!configMap.has(v.configName)) configMap.set(v.configName, new Set());
+    const instances = configMap.get(v.configName)!;
+    for (const c of v.candidates) {
+      if (c.peripheralInstance) instances.add(c.peripheralInstance);
+    }
+
+    // Track first mapping line for the port
+    if (!portLines.has(v.portName)) {
+      const port = ports.get(v.portName);
+      if (port) {
+        for (const config of port.configs) {
+          for (const m of config.mappings) {
+            if (m.line && !portLines.has(v.portName)) {
+              portLines.set(v.portName, m.line);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // For each port, compute the intersection of instances across all configs
+  // (instances that the port MUST use regardless of config choice)
+  const portMustInstances = new Map<string, Set<string>>();
+  for (const [portName, configMap] of portConfigInstances) {
+    let intersection: Set<string> | null = null;
+    for (const instances of configMap.values()) {
+      if (intersection === null) {
+        intersection = new Set(instances);
+      } else {
+        for (const inst of intersection) {
+          if (!instances.has(inst)) intersection.delete(inst);
+        }
+      }
+    }
+    if (intersection && intersection.size > 0) {
+      portMustInstances.set(portName, intersection);
+    }
+  }
+
+  // Check pairs: if two ports' only possible instances for a type overlap
+  // and the overlapping instance is not shared
+  const portNames = [...portConfigInstances.keys()];
+  const reported = new Set<string>(); // avoid duplicate reports
+
+  for (let i = 0; i < portNames.length; i++) {
+    for (let j = i + 1; j < portNames.length; j++) {
+      const portA = portNames[i];
+      const portB = portNames[j];
+
+      // For each config combination, check if all configs force the same non-shared instance
+      const configsA = portConfigInstances.get(portA)!;
+      const configsB = portConfigInstances.get(portB)!;
+
+      for (const [, instancesA] of configsA) {
+        for (const [, instancesB] of configsB) {
+          // Find non-shared instances that appear in both
+          for (const inst of instancesA) {
+            if (!instancesB.has(inst)) continue;
+            if (isSharedInstance(inst, sharedPatterns)) continue;
+
+            // Only report if BOTH ports have no alternative for this normalized type.
+            // Use normalizePeripheralType so e.g. LPUART1 and USART2 are the same type.
+            const instType = normalizePeripheralType(inst.replace(/\d+$/, ''));
+            const sameTypeA = [...instancesA].filter(i2 => i2 !== inst && normalizePeripheralType(i2.replace(/\d+$/, '')) === instType);
+            const sameTypeB = [...instancesB].filter(i2 => i2 !== inst && normalizePeripheralType(i2.replace(/\d+$/, '')) === instType);
+
+            if (sameTypeA.length === 0 && sameTypeB.length === 0) {
+              const key = [portA, portB, inst].sort().join('\0');
+              if (reported.has(key)) continue;
+              reported.add(key);
+
+              const line = portLines.get(portA) ?? portLines.get(portB);
+              errors.push({
+                type: 'error',
+                message: `${line ? `line ${line}: ` : ''}Ports "${portA}" and "${portB}" both require ${inst} but it is not declared as shared. Add "shared: ${inst}" or use wildcard patterns to allow different instances.`,
+                source: `${portA}`,
+                line,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Check if two channels are forced to use the same peripheral signal.
+ * A variable is "locked" to a signal if ALL its candidates use the same signalName.
+ * Two locked variables conflict if they could be active simultaneously
+ * (same config, or different ports in any config combo).
+ */
+function validateSignalExclusivity(
+  variables: SolverVariable[],
+  ports: Map<string, PortSpec>,
+  errors: SolverError[],
+): void {
+  // Find variables locked to a single signal (all candidates share the same signalName)
+  interface LockedVar {
+    portName: string;
+    configName: string;
+    channelName: string;
+    signalName: string;
+    line?: number;
+  }
+  const locked: LockedVar[] = [];
+
+  for (const v of variables) {
+    if (v.candidates.length === 0) continue;
+    const sig = v.candidates[0].signalName;
+    if (v.candidates.every(c => c.signalName === sig)) {
+      // Find the mapping line for error reporting
+      const port = ports.get(v.portName);
+      const config = port?.configs.find(c => c.name === v.configName);
+      const mapping = config?.mappings.find(m => m.channelName === v.channelName);
+      locked.push({
+        portName: v.portName,
+        configName: v.configName,
+        channelName: v.channelName,
+        signalName: sig,
+        line: mapping?.line,
+      });
+    }
+  }
+
+  // Check pairs of locked variables for conflicts
+  const reported = new Set<string>();
+  for (let i = 0; i < locked.length; i++) {
+    for (let j = i + 1; j < locked.length; j++) {
+      const a = locked[i], b = locked[j];
+      if (a.signalName !== b.signalName) continue;
+      // Same channel in same port+config is fine (same variable)
+      if (a.portName === b.portName && a.configName === b.configName && a.channelName === b.channelName) continue;
+
+      // Check if they can be active at the same time:
+      // - Same port, same config → always conflict
+      // - Different ports → conflict (any combo activates both)
+      // - Same port, different config → no conflict (only one config active)
+      if (a.portName === b.portName && a.configName !== b.configName) continue;
+
+      const key = [a.portName, a.channelName, b.portName, b.channelName, a.signalName].sort().join('\0');
+      if (reported.has(key)) continue;
+      reported.add(key);
+
+      const line = a.line ?? b.line;
+      const locA = a.portName === b.portName
+        ? `"${a.channelName}"`
+        : `${a.portName}.${a.channelName}`;
+      const locB = a.portName === b.portName
+        ? `"${b.channelName}"`
+        : `${b.portName}.${b.channelName}`;
+
+      errors.push({
+        type: 'error',
+        message: `${line ? `line ${line}: ` : ''}Channels ${locA} and ${locB} both map to ${a.signalName} — a peripheral signal can only be assigned once`,
+        source: `${a.portName}.${a.channelName}`,
+        line,
+      });
+    }
+  }
+}
+
+/**
  * Run all pre-solve validation checks once (before dispatching to solvers).
  * Returns errors found. If any have type 'error', the caller should abort.
  */
@@ -1124,9 +1352,16 @@ export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
+  validateDuplicates(expandedAst, errors);
   validateConstraints(ports, errors);
   validatePeripheralAvailability(ports, mcu, reservedPeripheralSet, errors);
   validateDmaAvailability(ports, mcu, errors);
+
+  const sharedPatterns = extractSharedPatterns(expandedAst);
+  const reservedPinSet = new Set(reserved.pins);
+  const variables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
+  validateInstanceExclusivity(variables, sharedPatterns, ports, errors);
+  validateSignalExclusivity(variables, ports, errors);
 
   return errors;
 }
@@ -1483,7 +1718,7 @@ export function solveBacktrack(
     if (vi === totalVars) {
       stats.evaluatedCombinations++;
       const dmaAssignmentsOut: Map<string, string>[] = [];
-      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut, mcuInfo)) {
+      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut, mcuInfo, tracker.sharedPatterns)) {
         const solution = buildSolution(
           current, configCombinations, ports, pinnedAssignments, solutions.length, dmaAssignmentsOut
         );
@@ -1661,7 +1896,8 @@ export function evaluateAllConstraints(
   ports: Map<string, PortSpec>,
   dmaData?: DmaData,
   dmaAssignmentsOut?: Map<string, string>[],
-  mcuInfo?: EvalMcuInfo
+  mcuInfo?: EvalMcuInfo,
+  sharedPatterns?: PatternPart[]
 ): boolean {
   // Build per-config assignment lookup:
   // port -> config -> channel -> VariableAssignment[]
@@ -1713,7 +1949,7 @@ export function evaluateAllConstraints(
   // After ALL combos pass require checks, compute a globally consistent DMA assignment
   if (dmaData) {
     const globalResult = computeGlobalDmaAssignment(
-      configCombinations, ports, byPortConfig, dmaData
+      configCombinations, ports, byPortConfig, dmaData, sharedPatterns
     );
     if (!globalResult) return false;
     if (dmaAssignmentsOut) {
@@ -1944,7 +2180,7 @@ function evaluateFunctionCall(
       // dma(channel) or dma(channel, "TYPE_TRIGGER") with optional filter.
       // The filter specifies the peripheral type for candidate filtering and
       // optionally the DMA trigger function (e.g. "SPI_TX" → look up SPI1_TX).
-      if (!dmaData) return true;
+      if (!dmaData) return false;
       // Extract channel arg and optional filter
       let dmaChannelArg: ConstraintExprNode | null = null;
       let dmaFilt: { peripheralType: string | null; triggerFunction: string | null } =
@@ -1961,13 +2197,10 @@ function evaluateFunctionCall(
       for (const va of vas) {
         if (dmaFilt.peripheralType && va.candidate.peripheralType !== dmaFilt.peripheralType) continue;
         hasMatchingVa = true;
-        const triggerName = getDmaTriggerName(
-          va.candidate.peripheralInstance, dmaFilt.triggerFunction, va.candidate.signalName
+        const resolved = resolveDmaTrigger(
+          va.candidate.peripheralInstance, dmaFilt, va.candidate.signalName, dmaData
         );
-        const streams = findDmaStreamsForSignal(
-          dmaData, triggerName, va.candidate.peripheralInstance
-        );
-        if (streams.length > 0) return true;
+        if (resolved) return true;
       }
       // If channel not yet assigned or no VAs match the filter, vacuously true
       return !hasMatchingVa;
@@ -2119,8 +2352,8 @@ function qfpY(pin: number, total: number): number {
 
 interface DmaReq {
   portName: string;
-  channelName: string;
-  signalName: string;
+  triggerName: string;
+  peripheralInstance: string;
   availableStreams: DmaStreamInfo[];
 }
 
@@ -2142,18 +2375,46 @@ function parseDmaFilter(raw: string): { peripheralType: string; triggerFunction:
 }
 
 /**
- * Construct the DMA trigger name to look up in the DMA data.
- * If the dma() filter specifies a trigger function (e.g. "SPI_TX"),
- * the trigger is instance + "_" + function (e.g. "SPI1_TX").
- * Otherwise, use the MCU signal name from the channel mapping (e.g. "TIM2_CH3").
+ * Resolve a DMA trigger name and find available streams.
+ *
+ * Strategy (tried in order, first match wins):
+ * 1. Filter has trigger function (e.g. "USART_TX") → instance + "_" + function (e.g. "USART1_TX")
+ * 2. Filter has type only (e.g. "ADC") → instance name (e.g. "ADC1")
+ * 3. Fallback: use the channel's signal name (e.g. "TIM1_CH3") — covers cases where
+ *    the DMA trigger matches the pin signal (e.g. dma(data, "TIM") with data = TIM*_CH3)
+ * 4. No filter at all → signal name directly
  */
-function getDmaTriggerName(
+function resolveDmaTrigger(
   instance: string,
-  triggerFunction: string | null,
-  signalName: string
-): string {
-  if (triggerFunction) return instance + '_' + triggerFunction;
-  return signalName;
+  filter: DmaFilter,
+  signalName: string,
+  dmaData: DmaData,
+): { triggerName: string; streams: DmaStreamInfo[] } | null {
+  // Strategy 1: explicit trigger function (e.g. "USART_TX" → "USART1_TX")
+  if (filter.triggerFunction) {
+    const trigger = instance + '_' + filter.triggerFunction;
+    const streams = findDmaStreamsForSignal(dmaData, trigger, instance);
+    if (streams.length > 0) return { triggerName: trigger, streams };
+    return null;
+  }
+
+  // Strategy 2: type-only filter → instance name (e.g. "ADC" → "ADC1")
+  if (filter.peripheralType) {
+    const streams = findDmaStreamsForSignal(dmaData, instance, instance);
+    if (streams.length > 0) return { triggerName: instance, streams };
+
+    // Strategy 3: type-only but instance-level trigger not found →
+    // fall back to signal name (e.g. dma(data, "TIM") with data=TIM1_CH3 → "TIM1_CH3")
+    const streams2 = findDmaStreamsForSignal(dmaData, signalName, instance);
+    if (streams2.length > 0) return { triggerName: signalName, streams: streams2 };
+
+    return null;
+  }
+
+  // No filter: use signal name directly
+  const streams = findDmaStreamsForSignal(dmaData, signalName, instance);
+  if (streams.length > 0) return { triggerName: signalName, streams };
+  return null;
 }
 
 interface DmaFilter {
@@ -2164,28 +2425,40 @@ interface DmaFilter {
 /**
  * Compute a globally consistent DMA stream assignment across ALL config combinations.
  *
- * Rules:
- * - A DMA stream is exclusive to one port (cross-port exclusivity)
- * - Within a config combination, each dma() channel needs its own stream
- * - Different configs of the same port may reuse the same stream
+ * DMA triggers are MCU-internal events tied to a peripheral instance, not to individual
+ * pin signals. E.g., `dma(tx, "USART_TX")` looks up the instance that `tx` maps to
+ * (say USART1) and allocates a stream for the "USART1_TX" trigger. Multiple channels
+ * mapping to the same instance+trigger share one stream.
  *
- * Returns an array of per-combo assignment maps, or null if infeasible.
+ * Rules:
+ * - One DMA stream per unique trigger per port (cross-port exclusivity unless shared)
+ * - Within a config combination, each distinct trigger needs its own stream
+ * - Different configs of the same port may reuse the same stream
+ * - Shared peripherals: same trigger across ports shares one stream
+ *
+ * Returns an array of per-combo assignment maps (triggerName → streamName), or null if infeasible.
  */
 function computeGlobalDmaAssignment(
   configCombinations: Map<string, string>[],
   ports: Map<string, PortSpec>,
   byPortConfig: Map<string, Map<string, Map<string, VariableAssignment[]>>>,
   dmaData: DmaData,
+  sharedPatterns?: PatternPart[],
 ): Map<string, string>[] | null {
-  // Collect requirements per combo, tagged with combo index
   interface TaggedReq extends DmaReq {
     comboIdx: number;
   }
+
+  // Collect one requirement per unique (port, trigger, combo) tuple.
+  // The channel is only used to find the peripheral instance; the DMA
+  // stream is allocated per trigger, not per pin signal.
   const allReqs: TaggedReq[] = [];
+  const seenKeys = new Set<string>(); // dedup key: "comboIdx\0portName\0triggerName"
+  // Track which signal names map to each (combo, trigger) for reverse lookup
+  const triggerSignals = new Map<string, Set<string>>(); // "comboIdx\0triggerName" → signalNames
 
   for (let ci = 0; ci < configCombinations.length; ci++) {
     const combo = configCombinations[ci];
-    // Build channelInfo for this combo
     const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
     for (const [portName, configName] of combo) {
       const configChannels = byPortConfig.get(portName)?.get(configName);
@@ -2208,20 +2481,28 @@ function computeGlobalDmaAssignment(
         const vas = portChannels.get(channelName) ?? [];
         for (const va of vas) {
           if (filter.peripheralType && va.candidate.peripheralType !== filter.peripheralType) continue;
-          const triggerName = getDmaTriggerName(
-            va.candidate.peripheralInstance, filter.triggerFunction, va.candidate.signalName
+          const resolved = resolveDmaTrigger(
+            va.candidate.peripheralInstance, filter, va.candidate.signalName, dmaData
           );
-          const streams = findDmaStreamsForSignal(
-            dmaData, triggerName, va.candidate.peripheralInstance
-          );
-          if (streams.length > 0) {
-            allReqs.push({
-              portName, channelName,
-              signalName: va.candidate.signalName,
-              availableStreams: streams,
-              comboIdx: ci,
-            });
-          }
+          if (!resolved) continue;
+
+          // Track signal→trigger mapping for reverse lookup
+          const triggerKey = `${ci}\0${resolved.triggerName}`;
+          if (!triggerSignals.has(triggerKey)) triggerSignals.set(triggerKey, new Set());
+          triggerSignals.get(triggerKey)!.add(va.candidate.signalName);
+
+          // Deduplicate: one req per (combo, port, trigger)
+          const dedupKey = `${ci}\0${portName}\0${resolved.triggerName}`;
+          if (seenKeys.has(dedupKey)) continue;
+          seenKeys.add(dedupKey);
+
+          allReqs.push({
+            portName,
+            triggerName: resolved.triggerName,
+            peripheralInstance: va.candidate.peripheralInstance ?? '',
+            availableStreams: resolved.streams,
+            comboIdx: ci,
+          });
         }
       }
     }
@@ -2231,51 +2512,90 @@ function computeGlobalDmaAssignment(
     return configCombinations.map(() => new Map());
   }
 
-  // Backtracking assignment with global stream exclusivity
+  // Identify shared triggers: triggers for shared peripherals used by multiple ports
+  const sharedTriggerGroup = new Map<string, string>();
+  if (sharedPatterns && sharedPatterns.length > 0) {
+    const triggerPorts = new Map<string, Set<string>>();
+    for (const req of allReqs) {
+      if (req.peripheralInstance && isSharedInstance(req.peripheralInstance, sharedPatterns)) {
+        if (!triggerPorts.has(req.triggerName)) triggerPorts.set(req.triggerName, new Set());
+        triggerPorts.get(req.triggerName)!.add(req.portName);
+      }
+    }
+    for (const [trigger, triggerPortSet] of triggerPorts) {
+      if (triggerPortSet.size > 1) {
+        sharedTriggerGroup.set(trigger, `shared:${trigger}`);
+      }
+    }
+  }
+
+  // Backtracking assignment
   const assigned = new Array<DmaStreamInfo | null>(allReqs.length).fill(null);
-  // stream name → port that owns it
-  const streamOwner = new Map<string, string>();
-  // Per-combo used streams: comboIdx → Set<stream name> (within-combo exclusivity)
-  const comboUsed = new Map<number, Set<string>>();
+  const streamOwner = new Map<string, string>();       // stream → owner (port or shared group)
+  const comboUsed = new Map<number, Set<string>>();    // combo → used streams
+  const sharedTriggerStream = new Map<string, string>(); // shared trigger → assigned stream
 
   function solve(idx: number): boolean {
     if (idx === allReqs.length) return true;
     const req = allReqs[idx];
+    const sharedGroup = sharedTriggerGroup.get(req.triggerName);
+
+    // Shared trigger already assigned → reuse same stream
+    if (sharedGroup) {
+      const existingStream = sharedTriggerStream.get(req.triggerName);
+      if (existingStream) {
+        const streamInfo = req.availableStreams.find(s => s.name === existingStream);
+        if (streamInfo) {
+          assigned[idx] = streamInfo;
+          if (solve(idx + 1)) return true;
+          assigned[idx] = null;
+        }
+        return false;
+      }
+    }
 
     if (!comboUsed.has(req.comboIdx)) comboUsed.set(req.comboIdx, new Set());
     const usedInCombo = comboUsed.get(req.comboIdx)!;
 
     for (const stream of req.availableStreams) {
-      // Check cross-port exclusivity
+      const ownerKey = sharedGroup ?? req.portName;
       const owner = streamOwner.get(stream.name);
-      if (owner !== undefined && owner !== req.portName) continue;
+      if (owner !== undefined && owner !== ownerKey) continue;
+      if (!sharedGroup && usedInCombo.has(stream.name)) continue;
 
-      // Check within-combo exclusivity (each channel needs its own stream)
-      if (usedInCombo.has(stream.name)) continue;
-
-      // Assign
       const wasOwner = streamOwner.has(stream.name);
-      if (!wasOwner) streamOwner.set(stream.name, req.portName);
-      usedInCombo.add(stream.name);
+      if (!wasOwner) streamOwner.set(stream.name, ownerKey);
+      if (!sharedGroup) usedInCombo.add(stream.name);
       assigned[idx] = stream;
+      if (sharedGroup) sharedTriggerStream.set(req.triggerName, stream.name);
 
       if (solve(idx + 1)) return true;
 
-      // Undo
       assigned[idx] = null;
-      usedInCombo.delete(stream.name);
+      if (!sharedGroup) usedInCombo.delete(stream.name);
       if (!wasOwner) streamOwner.delete(stream.name);
+      if (sharedGroup) sharedTriggerStream.delete(req.triggerName);
     }
     return false;
   }
 
   if (!solve(0)) return null;
 
-  // Build per-combo result maps
+  // Build per-combo result maps keyed by triggerName + signal names
   const results: Map<string, string>[] = configCombinations.map(() => new Map());
   for (let i = 0; i < allReqs.length; i++) {
     if (assigned[i]) {
-      results[allReqs[i].comboIdx].set(allReqs[i].signalName, assigned[i]!.name);
+      const streamName = assigned[i]!.name;
+      const comboIdx = allReqs[i].comboIdx;
+      const triggerName = allReqs[i].triggerName;
+      results[comboIdx].set(triggerName, streamName);
+      // Also add signal→stream entries so the UI can look up by signal name directly
+      const signals = triggerSignals.get(`${comboIdx}\0${triggerName}`);
+      if (signals) {
+        for (const sig of signals) {
+          if (sig !== triggerName) results[comboIdx].set(sig, streamName);
+        }
+      }
     }
   }
   return results;
@@ -2284,6 +2604,22 @@ function computeGlobalDmaAssignment(
 /**
  * Quick check: do any configs in any port have a dma() constraint?
  */
+/**
+ * Look up a DMA stream for a signal in a trigger-keyed DMA map.
+ * Tries the full signal name first (e.g. "USART1_TX"), then the instance name (e.g. "ADC1").
+ */
+export function lookupDmaStream(signalName: string, dmaMap: Map<string, string>): string | undefined {
+  // Direct match: signal name or trigger name (both are stored in the map)
+  const direct = dmaMap.get(signalName);
+  if (direct) return direct;
+  // Instance-only trigger fallback (e.g. ADC1_INP1 → try "ADC1")
+  const ui = signalName.indexOf('_');
+  if (ui !== -1) {
+    return dmaMap.get(signalName.substring(0, ui));
+  }
+  return undefined;
+}
+
 export function configsHaveDma(ports: Map<string, PortSpec>): boolean {
   for (const port of ports.values()) {
     for (const config of port.configs) {
@@ -2438,18 +2774,24 @@ export function buildSolution(
     configurationName: '<pinned>',
   }));
 
+  // Pre-build assignment objects once per variable, shared across config combinations
+  const assignmentCache = new Map<VariableAssignment, Assignment>();
+  for (const va of varAssignments) {
+    assignmentCache.set(va, {
+      pinName: va.candidate.pin.name,
+      signalName: va.candidate.signalName,
+      portName: va.variable.portName,
+      channelName: va.variable.channelName,
+      configurationName: va.variable.configName,
+    });
+  }
+
   // Build one ConfigCombinationAssignment per config combination
   const configAssignments = configCombinations.map((combo, comboIdx) => {
     const comboAssignments: Assignment[] = [];
     for (const va of varAssignments) {
       if (combo.get(va.variable.portName) === va.variable.configName) {
-        comboAssignments.push({
-          pinName: va.candidate.pin.name,
-          signalName: va.candidate.signalName,
-          portName: va.variable.portName,
-          channelName: va.variable.channelName,
-          configurationName: va.variable.configName,
-        });
+        comboAssignments.push(assignmentCache.get(va)!);
       }
     }
     comboAssignments.push(...pinnedEntries);

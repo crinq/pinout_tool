@@ -185,7 +185,7 @@ export interface Solution {
 export interface ConfigCombinationAssignment {
   activeConfigs: Map<string, string>;
   assignments: Assignment[];
-  /** DMA stream assignments: signalName → stream name (e.g. "DMA2_Stream7"). Only present for channels with dma() constraints. */
+  /** DMA stream assignments: triggerName → stream name (e.g. "USART1_TX" → "DMA2_Stream7"). Only present for channels with dma() constraints. */
   dmaStreamAssignment?: Map<string, string>;
 }
 
