@@ -453,10 +453,21 @@ export function solvePhase1(
 
 function syntheticVariableAssignment(ia: InstanceAssignment): VariableAssignment {
   const periType = ia.variable.candidateTypes.get(ia.instance) || '';
+  // Phase-1 evaluates instance-level constraints before pin assignment, so
+  // the pin/signal structures only need to type-check; nothing reads them.
+  const stubPhysical = { position: '', logicals: [] as never[] };
+  const stubLogical = {
+    name: '',
+    type: 'I/O' as const,
+    signals: [],
+    isAssignable: false,
+    isDefaultVariant: true,
+    physical: stubPhysical as never,
+  };
   return {
     variable: ia.variable.originalVariable,
     candidate: {
-      pin: { name: '', position: '', type: 'I/O', signals: [], isAssignable: false },
+      pin: stubLogical as never,
       signal: { name: ia.instance },
       signalName: ia.instance,
       peripheralInstance: ia.instance,

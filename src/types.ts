@@ -22,17 +22,33 @@ export interface Mcu {
   hasPowerPad: boolean;
 
   peripherals: Peripheral[];
-  pins: Pin[];
+  /**
+   * All logical pins (one per <Pin> XML row). A logical pin is a die-side
+   * GPIO net or fixed-function net (NRST, VDD, …). Multiple logical pins
+   * may share one PhysicalPin when the package bonds them together
+   * (PINREMAP variants, multi-bond pads on small packages, _C analog
+   * switch siblings on H7).
+   */
+  logicalPins: LogicalPin[];
+  /** All physical (package) pins, one per unique Position. */
+  physicalPins: PhysicalPin[];
 
   // Derived lookup tables
-  pinByName: Map<string, Pin>;
-  pinByPosition: Map<string, Pin>;
-  pinByGpioName: Map<string, Pin>; // base GPIO name (e.g., "PA0") -> Pin
+  /** GPIO name (e.g. "PA0") or fixed-function name → first matching LogicalPin. Power-net names like "VDD" repeat; use logicalPinsByName for those. */
+  logicalPinByName: Map<string, LogicalPin>;
+  /** All logical pins sharing a name (handles VDD/VSS multiplicity). */
+  logicalPinsByName: Map<string, LogicalPin[]>;
+  /** Base GPIO name (e.g. "PA0") → unique LogicalPin. */
+  logicalPinByGpioName: Map<string, LogicalPin>;
+  /** Package position (e.g. "22", "A1") → PhysicalPin. */
+  physicalPinByPosition: Map<string, PhysicalPin>;
   peripheralByInstance: Map<string, Peripheral>;
-  signalToPins: Map<string, Pin[]>;
+  /** Signal name → list of logical pins that expose it. */
+  signalToLogicalPins: Map<string, LogicalPin[]>;
   typeToInstances: Map<string, string[]>;
   peripheralSignals: Map<string, Set<string>>;
-  pinSignalSet: Map<string, Set<string>>;
+  /** Logical pin name → set of signal names it carries. */
+  logicalSignalSet: Map<string, Set<string>>;
 
   // Optional DMA data (attached when DMA XML is available)
   dma?: DmaData;
@@ -49,9 +65,13 @@ export interface Peripheral {
 
 export type PinType = 'I/O' | 'Power' | 'Reset' | 'Boot' | 'MonoIO';
 
-export interface Pin {
+/**
+ * One die-side electrical net (a GPIO like PA9, or a power/reset net like
+ * VDD/NRST). Carries the signals available on that net. Surfaces at exactly
+ * one PhysicalPin (the package pad it's bonded to).
+ */
+export interface LogicalPin {
   name: string;
-  position: string;
   type: PinType;
   signals: Signal[];
 
@@ -59,6 +79,25 @@ export interface Pin {
   gpioPort?: string;
   gpioNumber?: number;
   isAssignable: boolean;
+
+  /** True for the row without `Variant=`; false for PINREMAP alternates. */
+  isDefaultVariant: boolean;
+  /** Raw Variant attribute when present (e.g. "PINREMAP", "PINREMAP_10_12"). */
+  variantGroup?: string;
+
+  /** Back-reference to the package pad this logical pin is bonded to. */
+  physical: PhysicalPin;
+}
+
+/**
+ * One package pin (solderable point). Connects to one or more LogicalPins.
+ * When there are multiple, the chip can carry only one of those nets at a
+ * time — runtime mux for PINREMAP variants, permanent bonding for shared
+ * pads on small packages, analog/digital path selection for _C pins.
+ */
+export interface PhysicalPin {
+  position: string;
+  logicals: LogicalPin[];
 }
 
 export interface Signal {

@@ -47,7 +47,7 @@ export class PeripheralSummary implements Panel {
       this.render();
     } else if (change.type === 'mcu-loaded' && change.mcu) {
       this.mcu = change.mcu;
-      this.totalAssignablePins = change.mcu.pins.filter(p => p.isAssignable).length;
+      this.totalAssignablePins = change.mcu.logicalPins.filter(p => p.isAssignable).length;
       this.render();
     } else if (change.type === 'solver-complete') {
       // Only clear when there are no solutions; when solutions exist,

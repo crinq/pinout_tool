@@ -5,7 +5,39 @@
 // assignments, matching the canvas renderer's layout logic.
 // ============================================================
 
-import type { Mcu, Pin, Assignment } from '../types';
+import type { Mcu, LogicalPin, PhysicalPin, Assignment } from '../types';
+
+/**
+ * Pick the logical pin to use as the visual representative of a physical
+ * pad: if any sibling has an assignment, that one wins; otherwise prefer
+ * the default-variant pin if assignable; otherwise the first logical.
+ */
+function pickPrimaryLogical(
+  phys: PhysicalPin,
+  assignmentsByPin: Map<string, Assignment[]>,
+): LogicalPin {
+  for (const lp of phys.logicals) {
+    if (assignmentsByPin.has(lp.name) && assignmentsByPin.get(lp.name)!.length > 0) return lp;
+  }
+  for (const lp of phys.logicals) {
+    if (lp.isDefaultVariant && lp.isAssignable) return lp;
+  }
+  for (const lp of phys.logicals) if (lp.isAssignable) return lp;
+  return phys.logicals[0];
+}
+
+/** Aggregate assignments across every logical bonded to a physical pin. */
+function physicalAssignments(
+  phys: PhysicalPin,
+  assignmentsByPin: Map<string, Assignment[]>,
+): Assignment[] {
+  const out: Assignment[] = [];
+  for (const lp of phys.logicals) {
+    const arr = assignmentsByPin.get(lp.name);
+    if (arr) out.push(...arr);
+  }
+  return out;
+}
 
 interface SvgExportOptions {
   mcu: Mcu;
@@ -32,34 +64,39 @@ function getColors(dark: boolean) {
 }
 
 function pinColor(
-  pin: Pin,
+  phys: PhysicalPin,
   assignmentsByPin: Map<string, Assignment[]>,
   portColors: Map<string, string>,
   colors: ReturnType<typeof getColors>,
 ): string {
-  const pinAssignments = assignmentsByPin.get(pin.name);
-  if (pinAssignments && pinAssignments.length > 0) {
-    const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
+  const all = physicalAssignments(phys, assignmentsByPin);
+  if (all.length > 0) {
+    const portName = all.find(a => a.portName !== '<pinned>')?.portName;
     const portColor = portName ? portColors.get(portName) : undefined;
     return portColor || colors.assigned;
   }
-  if (!pin.isAssignable) return colors.reserved;
+  if (!phys.logicals.some(l => l.isAssignable)) return colors.reserved;
   return colors.unassigned;
 }
 
-function pinLabel(pin: Pin, assignmentsByPin: Map<string, Assignment[]>): string {
-  const gpio = pin.gpioPort && pin.gpioNumber !== undefined
-    ? `P${pin.gpioPort}${pin.gpioNumber}`
-    : pin.name.substring(0, 6);
-  const pinAssignments = assignmentsByPin.get(pin.name);
-  if (pinAssignments && pinAssignments.length > 0) {
-    const nonPinned = pinAssignments.filter(a => a.portName !== '<pinned>');
+function pinLabel(phys: PhysicalPin, assignmentsByPin: Map<string, Assignment[]>): string {
+  const primary = pickPrimaryLogical(phys, assignmentsByPin);
+  const baseGpio = primary.gpioPort && primary.gpioNumber !== undefined
+    ? `P${primary.gpioPort}${primary.gpioNumber}`
+    : primary.name.substring(0, 6);
+  // Indicate co-bonded siblings with a "+N" suffix so the diagram makes the
+  // shared bond pad obvious without overflowing the label slot.
+  const extras = phys.logicals.length - 1;
+  const gpio = extras > 0 ? `${baseGpio}+${extras}` : baseGpio;
+  const all = physicalAssignments(phys, assignmentsByPin);
+  if (all.length > 0) {
+    const nonPinned = all.filter(a => a.portName !== '<pinned>');
     if (nonPinned.length > 0) {
       const portChannel = `${nonPinned[0].portName}.${nonPinned[0].channelName}`;
       const signals = [...new Set(nonPinned.map(a => a.signalName))];
       return `${gpio} ${portChannel} ${signals.join(' ')}`;
     }
-    const signals = [...new Set(pinAssignments.map(a => a.signalName))];
+    const signals = [...new Set(all.map(a => a.signalName))];
     return `${gpio} ${signals.join(' ')}`;
   }
   return gpio;
@@ -83,7 +120,7 @@ function renderLQFPSvg(opts: SvgExportOptions): string {
   const colors = getColors(darkMode);
   const assignmentsByPin = buildAssignmentMap(assignments);
 
-  const totalPins = mcu.pins.length;
+  const totalPins = mcu.physicalPins.length;
   const packageMatch = mcu.package.match(/(\d+)/);
   const packagePinCount = packageMatch ? parseInt(packageMatch[1], 10) : totalPins;
   const pinsPerSide = Math.floor(packagePinCount / 4);
@@ -115,11 +152,11 @@ function renderLQFPSvg(opts: SvgExportOptions): string {
   parts.push(`<text x="${cx}" y="${cy + 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="10" fill="${colors.text}">${esc(mcu.package)}</text>`);
 
   // Pins
-  const sortedPins = [...mcu.pins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+  const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
   const fontSize = Math.min(9, pinSpacing * 0.65);
 
   for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
-    const pin = sortedPins[i];
+    const phys = sortedPins[i];
     const sideIndex = Math.floor(i / pinsPerSide);
     const indexOnSide = i % pinsPerSide;
     const offset = 5 + indexOnSide * pinSpacing + pinSpacing / 2;
@@ -155,11 +192,11 @@ function renderLQFPSvg(opts: SvgExportOptions): string {
         break;
     }
 
-    const fill = pinColor(pin, assignmentsByPin, portColors, colors);
+    const fill = pinColor(phys, assignmentsByPin, portColors, colors);
     parts.push(`<rect x="${x}" y="${y}" width="${pw}" height="${ph}" fill="${fill}" stroke="${colors.text}" stroke-width="0.5"/>`);
 
     // Label
-    const label = esc(pinLabel(pin, assignmentsByPin));
+    const label = esc(pinLabel(phys, assignmentsByPin));
     if (sideIndex === 1 || sideIndex === 3) {
       // Vertical labels for top/bottom
       parts.push(`<text x="${labelX}" y="${labelY}" text-anchor="${anchor}" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="${colors.text}" transform="rotate(-90,${labelX},${labelY})">${label}</text>`);
@@ -182,14 +219,14 @@ function renderBGASvg(opts: SvgExportOptions): string {
 
   const rows = new Set<string>();
   const cols = new Set<number>();
-  const pinByGrid = new Map<string, Pin>();
+  const pinByGrid = new Map<string, PhysicalPin>();
 
-  for (const pin of mcu.pins) {
-    const match = pin.position.match(/^([A-Z])(\d+)$/);
+  for (const phys of mcu.physicalPins) {
+    const match = phys.position.match(/^([A-Z])(\d+)$/);
     if (match) {
       rows.add(match[1]);
       cols.add(parseInt(match[2], 10));
-      pinByGrid.set(pin.position, pin);
+      pinByGrid.set(phys.position, phys);
     }
   }
 
@@ -250,8 +287,8 @@ function renderBGASvg(opts: SvgExportOptions): string {
 
   // Balls
   const fontSize = Math.min(7, cellSize * 0.28);
-  for (const pin of mcu.pins) {
-    const match = pin.position.match(/^([A-Z])(\d+)$/);
+  for (const phys of mcu.physicalPins) {
+    const match = phys.position.match(/^([A-Z])(\d+)$/);
     if (!match) continue;
     const ri = rowIndex.get(match[1]);
     const ci = colIndex.get(parseInt(match[2], 10));
@@ -259,16 +296,19 @@ function renderBGASvg(opts: SvgExportOptions): string {
 
     const bx = originX + ci * cellSize + cellSize / 2;
     const by = originY + ri * cellSize + cellSize / 2;
-    const fill = pinColor(pin, assignmentsByPin, portColors, colors);
-    const pinAssignments = assignmentsByPin.get(pin.name);
-    const hasAssignment = pinAssignments && pinAssignments.length > 0;
+    const fill = pinColor(phys, assignmentsByPin, portColors, colors);
+    const allAssigns = physicalAssignments(phys, assignmentsByPin);
+    const hasAssignment = allAssigns.length > 0;
 
     parts.push(`<circle cx="${bx}" cy="${by}" r="${ballRadius}" fill="${fill}" stroke="${colors.text}" stroke-width="0.5"/>`);
 
     if (cellSize >= 16) {
-      const gpio = pin.gpioPort && pin.gpioNumber !== undefined
-        ? `P${pin.gpioPort}${pin.gpioNumber}`
-        : pin.name.substring(0, 4);
+      const primary = pickPrimaryLogical(phys, assignmentsByPin);
+      const baseGpio = primary.gpioPort && primary.gpioNumber !== undefined
+        ? `P${primary.gpioPort}${primary.gpioNumber}`
+        : primary.name.substring(0, 4);
+      const extras = phys.logicals.length - 1;
+      const gpio = extras > 0 ? `${baseGpio}+${extras}` : baseGpio;
       const textFill = hasAssignment ? '#ffffff' : colors.text;
       parts.push(`<text x="${bx}" y="${by}" text-anchor="middle" dominant-baseline="central" font-family="monospace" font-size="${fontSize}" fill="${textFill}">${esc(gpio)}</text>`);
     }
@@ -290,12 +330,12 @@ export function exportSvg(
   const isBGA = /BGA|WLCSP/i.test(mcu.package);
 
   const assignmentsByPin = buildAssignmentMap(assignments);
-  const pinCount = mcu.pins.length;
+  const pinCount = mcu.physicalPins.length;
 
   // Estimate max label width (monospace char width ~= fontSize * 0.6)
   let maxLabelChars = 0;
-  for (const pin of mcu.pins) {
-    const label = pinLabel(pin, assignmentsByPin);
+  for (const phys of mcu.physicalPins) {
+    const label = pinLabel(phys, assignmentsByPin);
     if (label.length > maxLabelChars) maxLabelChars = label.length;
   }
 

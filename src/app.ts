@@ -996,13 +996,14 @@ export class App {
     }
 
     const dmaInfo = mcu.dma ? `, ${mcu.dma.streams.length} DMA streams` : '';
-    this.showStatus(`Loaded ${mcu.refName} (${mcu.pins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
+    this.showStatus(`Loaded ${mcu.refName} (${mcu.physicalPins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
 
     console.log('Loaded MCU:', mcu.refName);
-    console.log('  Pins:', mcu.pins.length);
-    console.log('  Assignable pins:', mcu.pins.filter(p => p.isAssignable).length);
+    console.log('  Physical pins:', mcu.physicalPins.length);
+    console.log('  Logical pins:', mcu.logicalPins.length);
+    console.log('  Assignable logical pins:', mcu.logicalPins.filter(p => p.isAssignable).length);
     console.log('  Peripherals:', mcu.peripherals.length);
-    console.log('  Signal mappings:', mcu.signalToPins.size);
+    console.log('  Signal mappings:', mcu.signalToLogicalPins.size);
     if (mcu.dma) {
       console.log('  DMA streams:', mcu.dma.streams.length);
       console.log('  DMA signal mappings:', mcu.dma.signalToDmaStreams.size);
@@ -2619,7 +2620,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     let validCount = 0;
 
     for (const a of assignments) {
-      const pin = mcu.pinByName.get(a.pinName);
+      const pin = mcu.logicalPinByName.get(a.pinName);
       if (!pin) {
         missingPins.add(a.pinName);
         continue;
@@ -2680,7 +2681,21 @@ function serializeMcu(mcu: Mcu): Record<string, unknown> {
     temperature: mcu.temperature,
     hasPowerPad: mcu.hasPowerPad,
     peripherals: mcu.peripherals,
-    pins: mcu.pins,
+    logicalPins: mcu.logicalPins.map(lp => ({
+      name: lp.name,
+      type: lp.type,
+      signals: lp.signals,
+      gpioPort: lp.gpioPort,
+      gpioNumber: lp.gpioNumber,
+      isAssignable: lp.isAssignable,
+      isDefaultVariant: lp.isDefaultVariant,
+      variantGroup: lp.variantGroup,
+      position: lp.physical.position,
+    })),
+    physicalPins: mcu.physicalPins.map(pp => ({
+      position: pp.position,
+      logicals: pp.logicals.map(l => l.name),
+    })),
     typeToInstances: mapToObj(mcu.typeToInstances),
     peripheralSignals: Object.fromEntries(
       [...mcu.peripheralSignals].map(([k, v]) => [k, [...v]])

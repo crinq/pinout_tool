@@ -168,10 +168,21 @@ Filters MCUs by CPU core type. The pattern is matched case-insensitively against
 ### Pin Reservations
 
 ```
-reserve: PH0, PH1, PA13, PA14
+reserve: PH0, PH1, PA13, PA14   # by GPIO name
+reserve: 11, 42                 # by package position (LQFP)
+reserve: A1, B12                # by package position (BGA / WLCSP)
+reserve: ADC*, SPI[1,3]         # patterns also match peripheral instances
 ```
 
-Excludes pins from the solver. Use for crystal oscillator pins, debug pins, etc.
+Excludes pins from the solver. Use for crystal oscillator pins, debug pins,
+non-routed package pads, etc.
+
+Reserving by **position** locks the package pad — every logical pin bonded
+to it (PINREMAP variants on small C0/G0 parts, multi-bond pads on
+UFQFPN20/WLCSP, `_C` analog-switch siblings on H7) becomes unavailable as
+well. Use this when you need to keep a physical pin clear of any
+peripheral signal regardless of which alternate the chip would otherwise
+expose.
 
 ### Fixed Pin Assignments
 
@@ -752,6 +763,26 @@ The package viewer renders the MCU package with interactive pin display.
 - **Click** a pin to select it (orange highlight) and open the assignment popup
 - **Click background** to deselect the current pin
 - **Assignment popup:** Click a signal to insert a `pin` declaration in the constraint editor
+
+#### Shared / variant package pins
+
+Some package pads bond more than one die-side GPIO net to the same solder
+point. The viewer renders these as a single cell with a `+N` suffix on the
+label (e.g. `PA9+1` means PA9 plus one bonded sibling) and the tooltip
+lists every logical pin and its signals separately. Three common cases:
+
+- **PINREMAP variants** on small C0/F0/G0/U0 parts (e.g. `PA9 [PA11]`):
+  the chip can present either GPIO at the pad, controlled by a register.
+- **Multi-bond pads** on UFQFPN20 / WLCSP packages: multiple GPIOs are
+  permanently tied together inside the package — only one can drive the pad
+  at runtime.
+- **`_C` analog-switch siblings** on H7 (`PC2` / `PC2_C`): one logical
+  carries the digital AF set, the other a low-impedance analog path.
+
+The solver enforces mutual exclusion: assigning a signal to one logical
+locks the physical and every co-bonded sibling for other ports. The
+assignment popup groups signals by logical pin so you can pick the variant
+explicitly.
 
 ### Pin Colors
 

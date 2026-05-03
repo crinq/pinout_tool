@@ -8,6 +8,8 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **Parallel multi-solver** -- run multiple solvers simultaneously and merge results
 - **Visual package viewer** -- interactive canvas with zoom, rotation, pin assignment popup, and signal search
 - **Multiple package types** -- LQFP, BGA, and WLCSP support with correct ball/pin rendering
+- **Logical / physical pin model** -- handles PINREMAP variants on C0/F0/G0/U0, multi-bond pads on UFQFPN20 / WLCSP, and `_C` analog-switch siblings on H7. The solver locks every co-bonded sibling when one is assigned, so cross-port pinouts never collide on a shared package pad.
+- **Reserve by GPIO name OR package position** -- `reserve: PA0`, `reserve: 11`, `reserve: A1` are all valid; position-based reservations lock every logical bonded to that pad.
 - **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, proximity, and more
 - **Multi-MCU search** -- solve across multiple MCU variants with `mcu:`, `package:`, `ram:`, `rom:` filters
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable

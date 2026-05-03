@@ -305,6 +305,42 @@
   animation: none;
 }
 
+.pv-assign-note {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.pv-assign-subheader {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-top: 1px solid var(--border);
+}
+
+.tooltip-shared {
+  display: inline-block;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.tooltip-logical-head {
+  margin-top: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  border-top: 1px dashed var(--border);
+  padding-top: 2px;
+}
+
 /* ============================================================
    Settings Modal
    ============================================================ */

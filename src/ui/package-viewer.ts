@@ -1,4 +1,4 @@
-import type { Mcu, Pin, Signal, Assignment, CompatibilityResult, CustomExportFunction } from '../types';
+import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction } from '../types';
 import { escapeHtml } from '../utils';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
@@ -12,11 +12,40 @@ interface PinRect {
   y: number;
   width: number;
   height: number;
-  pin: Pin;
+  /** The package pad. May host multiple logical pins (PINREMAP / shared pads). */
+  phys: PhysicalPin;
+  /** Logical pin chosen for the cell's label color (assigned wins, else first I/O). */
+  primary: LogicalPin;
   labelX: number;
   labelY: number;
   labelRotation: number;
   side: 'left' | 'top' | 'right' | 'bottom';
+}
+
+/** Pick the logical pin best representing a physical pad in the viewer. */
+function pickPrimaryLogical(
+  phys: PhysicalPin,
+  assignmentsByPin: Map<string, Assignment[]>,
+): LogicalPin {
+  for (const lp of phys.logicals) {
+    if (assignmentsByPin.has(lp.name) && assignmentsByPin.get(lp.name)!.length > 0) return lp;
+  }
+  for (const lp of phys.logicals) if (lp.isDefaultVariant && lp.isAssignable) return lp;
+  for (const lp of phys.logicals) if (lp.isAssignable) return lp;
+  return phys.logicals[0];
+}
+
+/** Aggregate assignments across every logical bonded to one physical pad. */
+function physicalAssignments(
+  phys: PhysicalPin,
+  assignmentsByPin: Map<string, Assignment[]>,
+): Assignment[] {
+  const out: Assignment[] = [];
+  for (const lp of phys.logicals) {
+    const arr = assignmentsByPin.get(lp.name);
+    if (arr) out.push(...arr);
+  }
+  return out;
 }
 
 export class PackageViewer implements Panel {
@@ -33,9 +62,10 @@ export class PackageViewer implements Panel {
   private dmaAssignment: Map<string, string> = new Map(); // signalName → stream name
   private compatibility: CompatibilityResult | null = null;
   private pinRects: PinRect[] = [];
-  private hoveredPin: Pin | null = null;
-  private selectedPin: Pin | null = null;
-  private pinClickCallbacks: Array<(pin: Pin) => void> = [];
+  private hoveredPhys: PhysicalPin | null = null;
+  private selectedPhys: PhysicalPin | null = null;
+  /** Click callback receives the logical pin the user clicked (for shared pads, the primary). */
+  private pinClickCallbacks: Array<(pin: LogicalPin) => void> = [];
   private popup: HTMLElement | null = null;
   private popupCloseHandler: ((ev: MouseEvent) => void) | null = null;
   private pinAssignCallbacks: Array<(pinName: string, signalName: string) => void> = [];
@@ -179,8 +209,8 @@ export class PackageViewer implements Panel {
     this.mcu = mcu;
     this.assignments = [];
     this.compatibility = null;
-    this.hoveredPin = null;
-    this.selectedPin = null;
+    this.hoveredPhys = null;
+    this.selectedPhys = null;
     this.hoverMatchPins.clear();
     if (this.searchInput) this.searchInput.value = '';
     this.searchMatchPins.clear();
@@ -195,7 +225,7 @@ export class PackageViewer implements Panel {
     this.render();
   }
 
-  onPinClick(callback: (pin: Pin) => void): void {
+  onPinClick(callback: (pin: LogicalPin) => void): void {
     this.pinClickCallbacks.push(callback);
   }
 
@@ -480,9 +510,9 @@ export class PackageViewer implements Panel {
       })),
       peripherals: mcu.peripherals,
       pinComments,
-      pins: mcu.pins.map(p => ({
+      pins: mcu.logicalPins.map(p => ({
         name: p.name,
-        position: p.position,
+        position: p.physical.position,
         type: p.type,
         gpioPort: p.gpioPort,
         gpioNumber: p.gpioNumber,
@@ -593,7 +623,7 @@ export class PackageViewer implements Panel {
 
   private renderLQFP(ctx: CanvasRenderingContext2D, width: number, height: number): void {
     const mcu = this.mcu!;
-    const totalPins = mcu.pins.length;
+    const totalPins = mcu.physicalPins.length;
 
     // Parse pin count from package name (e.g., "LQFP100" -> 100)
     const packageMatch = mcu.package.match(/(\d+)/);
@@ -647,11 +677,12 @@ export class PackageViewer implements Panel {
     // Left side: top→bottom, Bottom side: left→right, Right side: bottom→top, Top side: right→left
     this.pinRects = [];
 
-    // Sort pins by position
-    const sortedPins = [...mcu.pins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+    // Sort physicals by position
+    const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
 
     for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
-      const pin = sortedPins[i];
+      const phys = sortedPins[i];
+      const primary = pickPrimaryLogical(phys, assignmentsByPin);
       const sideIndex = Math.floor(i / pinsPerSide);
       const indexOnSide = i % pinsPerSide;
 
@@ -704,15 +735,17 @@ export class PackageViewer implements Panel {
           break;
       }
 
-      this.pinRects.push({ x, y, width: pw, height: ph, pin, labelX, labelY, labelRotation, side });
+      this.pinRects.push({ x, y, width: pw, height: ph, phys, primary, labelX, labelY, labelRotation, side });
 
-      // Determine pin color
-      const pinAssignments = assignmentsByPin.get(pin.name);
-      const isHovered = this.hoveredPin === pin;
-      const isSelected = this.selectedPin === pin;
-      const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
+      // Determine pin color from aggregated assignments across all logicals on this physical
+      const pinAssignments = physicalAssignments(phys, assignmentsByPin);
+      const isHovered = this.hoveredPhys === phys;
+      const isSelected = this.selectedPhys === phys;
+      const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
 
-      const hlColor = this.getPinHighlightColor(pin.name);
+      const hlColor = phys.logicals
+        .map(l => this.getPinHighlightColor(l.name))
+        .find(c => c) ?? null;
 
       let fillColor: string;
       if (isHovered) {
@@ -721,12 +754,11 @@ export class PackageViewer implements Panel {
         fillColor = '#f97316'; // orange
       } else if (isIncompat) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
-      } else if (pinAssignments && pinAssignments.length > 0) {
-        // Use port color if set, otherwise default assigned color
+      } else if (pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
         fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
-      } else if (!pin.isAssignable) {
+      } else if (!phys.logicals.some(l => l.isAssignable)) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
       } else {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
@@ -774,20 +806,20 @@ export class PackageViewer implements Panel {
       }
       ctx.textBaseline = 'middle';
 
-      // Label text
-      const gpio = pin.gpioPort && pin.gpioNumber !== undefined
-        ? `P${pin.gpioPort}${pin.gpioNumber}`
-        : pin.name.substring(0, 6);
+      // Label text. Shared physicals get a "+N" tail to flag co-bonded siblings.
+      const baseGpio = primary.gpioPort && primary.gpioNumber !== undefined
+        ? `P${primary.gpioPort}${primary.gpioNumber}`
+        : primary.name.substring(0, 6);
+      const extras = phys.logicals.length - 1;
+      const gpio = extras > 0 ? `${baseGpio}+${extras}` : baseGpio;
       let label: string;
-      if (pinAssignments && pinAssignments.length > 0) {
+      if (pinAssignments.length > 0) {
         const nonPinned = pinAssignments.filter(a => a.portName !== '<pinned>');
         if (nonPinned.length > 0) {
-          // Show port.channel then all unique signal names across configs
           const portChannel = `${nonPinned[0].portName}.${nonPinned[0].channelName}`;
           const signals = [...new Set(nonPinned.map(a => a.signalName))];
           label = `${gpio} ${portChannel} ${signals.join(' ')}`;
         } else {
-          // Pinned assignments - show all unique signal names
           const signals = [...new Set(pinAssignments.map(a => a.signalName))];
           label = `${gpio} ${signals.join(' ')}`;
         }
@@ -816,14 +848,14 @@ export class PackageViewer implements Panel {
     // Parse BGA grid from positions (e.g., "A1", "K11")
     const rows = new Set<string>();
     const cols = new Set<number>();
-    const pinByGrid = new Map<string, Pin>();
+    const pinByGrid = new Map<string, PhysicalPin>();
 
-    for (const pin of mcu.pins) {
-      const match = pin.position.match(/^([A-Z])(\d+)$/);
+    for (const phys of mcu.physicalPins) {
+      const match = phys.position.match(/^([A-Z])(\d+)$/);
       if (match) {
         rows.add(match[1]);
         cols.add(parseInt(match[2], 10));
-        pinByGrid.set(pin.position, pin);
+        pinByGrid.set(phys.position, phys);
       }
     }
 
@@ -937,10 +969,10 @@ export class PackageViewer implements Panel {
       assignmentsByPin.get(a.pinName)!.push(a);
     }
 
-    // Draw balls
+    // Draw balls (one per physical pad)
     this.pinRects = [];
-    for (const pin of mcu.pins) {
-      const match = pin.position.match(/^([A-Z])(\d+)$/);
+    for (const phys of mcu.physicalPins) {
+      const match = phys.position.match(/^([A-Z])(\d+)$/);
       if (!match) continue;
       const ri = rowIndex.get(match[1]);
       const ci = colIndex.get(parseInt(match[2], 10));
@@ -948,26 +980,26 @@ export class PackageViewer implements Panel {
 
       const cx = originX + ci * cellSize + cellSize / 2;
       const cy = originY + ri * cellSize + cellSize / 2;
+      const primary = pickPrimaryLogical(phys, assignmentsByPin);
 
-      // Store rect for hit testing
       this.pinRects.push({
         x: cx - ballRadius,
         y: cy - ballRadius,
         width: ballRadius * 2,
         height: ballRadius * 2,
-        pin,
+        phys,
+        primary,
         labelX: cx,
         labelY: cy,
         labelRotation: 0,
         side: 'left', // not used for BGA
       });
 
-      // Color
-      const pinAssignments = assignmentsByPin.get(pin.name);
-      const isHovered = this.hoveredPin === pin;
-      const isSelected = this.selectedPin === pin;
-      const isIncompat = pinAssignments && pinAssignments.length > 0 && this.isIncompatiblePin(pin.name);
-      const hlColor = this.getPinHighlightColor(pin.name);
+      const pinAssignments = physicalAssignments(phys, assignmentsByPin);
+      const isHovered = this.hoveredPhys === phys;
+      const isSelected = this.selectedPhys === phys;
+      const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
+      const hlColor = phys.logicals.map(l => this.getPinHighlightColor(l.name)).find(c => c) ?? null;
 
       let fillColor: string;
       if (isHovered) {
@@ -976,11 +1008,11 @@ export class PackageViewer implements Panel {
         fillColor = '#f97316';
       } else if (isIncompat) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
-      } else if (pinAssignments && pinAssignments.length > 0) {
+      } else if (pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
         fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
-      } else if (!pin.isAssignable) {
+      } else if (!phys.logicals.some(l => l.isAssignable)) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
       } else {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
@@ -1011,14 +1043,16 @@ export class PackageViewer implements Panel {
 
       // Draw pin name inside ball if large enough
       if (cellSize >= 16) {
-        const gpio = pin.gpioPort && pin.gpioNumber !== undefined
-          ? `P${pin.gpioPort}${pin.gpioNumber}`
-          : pin.name.substring(0, 4);
+        const baseGpio = primary.gpioPort && primary.gpioNumber !== undefined
+          ? `P${primary.gpioPort}${primary.gpioNumber}`
+          : primary.name.substring(0, 4);
+        const extras = phys.logicals.length - 1;
+        const gpio = extras > 0 ? `${baseGpio}+${extras}` : baseGpio;
         const fontSize = Math.min(7, cellSize * 0.28);
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(counterAngle);
-        ctx.fillStyle = isHovered || isSelected || (pinAssignments && pinAssignments.length > 0) ? '#fff' : textColor;
+        ctx.fillStyle = isHovered || isSelected || pinAssignments.length > 0 ? '#fff' : textColor;
         ctx.font = `${fontSize}px monospace`;
         if (hlColor) {
           ctx.globalAlpha = this.getPulseIntensity();
@@ -1055,38 +1089,37 @@ export class PackageViewer implements Panel {
     return [rx / this.zoom + cx, ry / this.zoom + cy];
   }
 
-  private hitTest(clientX: number, clientY: number): Pin | null {
+  private hitTest(clientX: number, clientY: number): PhysicalPin | null {
     const [x, y] = this.screenToCanvas(clientX, clientY);
 
-    // Use a slightly larger hit area for easier clicking
     const pad = 3;
     for (const pr of this.pinRects) {
       if (x >= pr.x - pad && x <= pr.x + pr.width + pad &&
           y >= pr.y - pad && y <= pr.y + pr.height + pad) {
-        return pr.pin;
+        return pr.phys;
       }
     }
     return null;
   }
 
   private onMouseMove(e: MouseEvent): void {
-    const pin = this.hitTest(e.clientX, e.clientY);
+    const phys = this.hitTest(e.clientX, e.clientY);
 
-    if (pin !== this.hoveredPin) {
-      this.hoveredPin = pin;
+    if (phys !== this.hoveredPhys) {
+      this.hoveredPhys = phys;
       this.updateHoverMatches();
       this.render();
     }
 
-    if (pin) {
-      this.showTooltip(e, pin);
+    if (phys) {
+      this.showTooltip(e, phys);
     } else {
       this.hideTooltip();
     }
   }
 
   private onMouseLeave(): void {
-    this.hoveredPin = null;
+    this.hoveredPhys = null;
     this.updateHoverMatches();
     this.hideTooltip();
     this.render();
@@ -1095,27 +1128,35 @@ export class PackageViewer implements Panel {
   private onClick(e: MouseEvent): void {
     this.closePopup();
 
-    const pin = this.hitTest(e.clientX, e.clientY);
-    if (pin) {
-      this.selectedPin = pin;
+    const phys = this.hitTest(e.clientX, e.clientY);
+    if (phys) {
+      this.selectedPhys = phys;
       this.render();
+      const primary = pickPrimaryLogical(phys, this.buildAssignmentMap());
       for (const cb of this.pinClickCallbacks) {
-        cb(pin);
+        cb(primary);
       }
 
-      if (pin.isAssignable) {
-        const signals = pin.signals.filter(s => s.name !== 'GPIO');
-        if (signals.length > 0) {
-          this.showAssignmentPopup(e, pin, signals);
-        }
+      const assignableLogicals = phys.logicals.filter(l => l.isAssignable);
+      if (assignableLogicals.length > 0) {
+        this.showAssignmentPopup(e, phys);
       }
     } else {
-      this.selectedPin = null;
+      this.selectedPhys = null;
       this.render();
     }
   }
 
-  private showAssignmentPopup(e: MouseEvent, pin: Pin, signals: Signal[]): void {
+  private buildAssignmentMap(): Map<string, Assignment[]> {
+    const map = new Map<string, Assignment[]>();
+    for (const a of this.assignments) {
+      if (!map.has(a.pinName)) map.set(a.pinName, []);
+      map.get(a.pinName)!.push(a);
+    }
+    return map;
+  }
+
+  private showAssignmentPopup(e: MouseEvent, phys: PhysicalPin): void {
     this.closePopup();
 
     const popup = document.createElement('div');
@@ -1123,46 +1164,67 @@ export class PackageViewer implements Panel {
 
     const header = document.createElement('div');
     header.className = 'pv-assign-header';
-    header.textContent = pin.name;
+    const headerLabel = phys.logicals.length > 1
+      ? `pin ${phys.position} (${phys.logicals.map(l => l.name).join(' / ')})`
+      : `${phys.logicals[0]?.name ?? phys.position} (pos ${phys.position})`;
+    header.textContent = headerLabel;
     popup.appendChild(header);
 
-    const currentSignal = this.pinDeclLookup?.(pin.name) ?? null;
-
-    if (currentSignal) {
-      const removeItem = document.createElement('div');
-      removeItem.className = 'pv-assign-item pv-assign-remove';
-      removeItem.textContent = `Remove (${currentSignal})`;
-      removeItem.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        for (const cb of this.pinUnassignCallbacks) {
-          cb(pin.name);
-        }
-        this.closePopup();
-      });
-      popup.appendChild(removeItem);
+    if (phys.logicals.length > 1) {
+      const note = document.createElement('div');
+      note.className = 'pv-assign-note';
+      note.textContent = phys.logicals.some(l => l.variantGroup)
+        ? 'PINREMAP variant — only one of these can be active at a time.'
+        : 'Shared bond pad — only one of these can be active at a time.';
+      popup.appendChild(note);
     }
 
     const list = document.createElement('div');
     list.className = 'pv-assign-list';
 
-    for (const signal of signals) {
-      const item = document.createElement('div');
-      item.className = 'pv-assign-item';
-      if (signal.name === currentSignal) {
-        item.classList.add('pv-assign-current');
+    for (const logical of phys.logicals) {
+      if (!logical.isAssignable) continue;
+      const signals = logical.signals.filter(s => s.name !== 'GPIO');
+      if (signals.length === 0) continue;
+
+      const currentSignal = this.pinDeclLookup?.(logical.name) ?? null;
+
+      if (phys.logicals.length > 1) {
+        const subhead = document.createElement('div');
+        subhead.className = 'pv-assign-subheader';
+        subhead.textContent = logical.isDefaultVariant ? logical.name : `${logical.name} (variant)`;
+        list.appendChild(subhead);
       }
-      if (this.searchMatchSignals.has(signal.name)) {
-        item.classList.add('pv-assign-match');
+
+      if (currentSignal) {
+        const removeItem = document.createElement('div');
+        removeItem.className = 'pv-assign-item pv-assign-remove';
+        removeItem.textContent = `Remove ${logical.name} = ${currentSignal}`;
+        removeItem.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          for (const cb of this.pinUnassignCallbacks) {
+            cb(logical.name);
+          }
+          this.closePopup();
+        });
+        list.appendChild(removeItem);
       }
-      item.textContent = signal.name;
-      item.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        for (const cb of this.pinAssignCallbacks) {
-          cb(pin.name, signal.name);
-        }
-        this.closePopup();
-      });
-      list.appendChild(item);
+
+      for (const signal of signals) {
+        const item = document.createElement('div');
+        item.className = 'pv-assign-item';
+        if (signal.name === currentSignal) item.classList.add('pv-assign-current');
+        if (this.searchMatchSignals.has(signal.name)) item.classList.add('pv-assign-match');
+        item.textContent = signal.name;
+        item.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          for (const cb of this.pinAssignCallbacks) {
+            cb(logical.name, signal.name);
+          }
+          this.closePopup();
+        });
+        list.appendChild(item);
+      }
     }
 
     popup.appendChild(list);
@@ -1212,44 +1274,57 @@ export class PackageViewer implements Panel {
     }
   }
 
-  private showTooltip(e: MouseEvent, pin: Pin): void {
-    const signals = pin.signals
-      .filter(s => s.name !== 'GPIO')
-      .map(s => s.name);
+  private showTooltip(e: MouseEvent, phys: PhysicalPin): void {
+    const sharedNote = phys.logicals.length > 1
+      ? phys.logicals.some(l => l.variantGroup)
+        ? '<span class="tooltip-shared">PINREMAP variants — only one active at a time</span><br>'
+        : '<span class="tooltip-shared">Shared bond pad — only one active at a time</span><br>'
+      : '';
 
-    // Collect all assignments for this pin across configs
-    const pinAssignments = this.assignments.filter(a => a.pinName === pin.name);
+    const heading = phys.logicals.length === 1
+      ? `<strong>${phys.logicals[0].name}</strong> (pos ${phys.position}, ${phys.logicals[0].type})`
+      : `<strong>pin ${phys.position}</strong> · ${phys.logicals.map(l => l.name).join(' / ')}`;
 
-    let html = `<strong>${pin.name}</strong> (pos ${pin.position}, ${pin.type})<br>`;
-    if (this.compatibility && !this.compatibility.isCompatible) {
-      if (this.compatibility.missingPins.has(pin.name)) {
-        html += `<span class="tooltip-error">Pin not available on ${this.mcu?.refName ?? 'target MCU'}</span><br>`;
-      } else if (this.compatibility.missingSignals.has(pin.name)) {
-        const sig = this.compatibility.missingSignals.get(pin.name)!;
-        html += `<span class="tooltip-error">Signal ${sig} not available on this pin</span><br>`;
+    let html = `${heading}<br>${sharedNote}`;
+
+    for (const lp of phys.logicals) {
+      const lpAssignments = this.assignments.filter(a => a.pinName === lp.name);
+      const lpSignals = lp.signals.filter(s => s.name !== 'GPIO').map(s => s.name);
+
+      if (phys.logicals.length > 1) {
+        const variantLabel = lp.isDefaultVariant ? lp.name : `${lp.name} (variant)`;
+        html += `<div class="tooltip-logical-head">${variantLabel} · ${lp.type}</div>`;
       }
-    }
-    if (pinAssignments.length > 0) {
-      for (const a of pinAssignments) {
+
+      if (this.compatibility && !this.compatibility.isCompatible) {
+        if (this.compatibility.missingPins.has(lp.name)) {
+          html += `<span class="tooltip-error">Pin not available on ${this.mcu?.refName ?? 'target MCU'}</span><br>`;
+        } else if (this.compatibility.missingSignals.has(lp.name)) {
+          const sig = this.compatibility.missingSignals.get(lp.name)!;
+          html += `<span class="tooltip-error">Signal ${sig} not available on this pin</span><br>`;
+        }
+      }
+
+      for (const a of lpAssignments) {
         const label = a.portName !== '<pinned>'
           ? `${a.portName}.${a.channelName} [${a.configurationName}]`
           : 'pinned';
         const stream = lookupDmaStream(a.signalName, this.dmaAssignment);
-        const dmaInfo = stream
-          ? ` <span class="tooltip-dma">(${stream})</span>`
-          : '';
+        const dmaInfo = stream ? ` <span class="tooltip-dma">(${stream})</span>` : '';
         html += `<span class="tooltip-assigned">${label}: ${a.signalName}${dmaInfo}</span><br>`;
       }
-    }
-    if (signals.length > 0) {
-      const formatted = signals.map(s =>
-        this.searchMatchSignals.has(s)
-          ? `<span class="tooltip-match">${s}</span>`
-          : s
-      );
-      html += `<span class="tooltip-signals">${formatted.join(', ')}</span>`;
-    } else {
-      html += '<span class="tooltip-none">No peripheral signals</span>';
+
+      if (lpSignals.length > 0) {
+        const formatted = lpSignals.map(s =>
+          this.searchMatchSignals.has(s)
+            ? `<span class="tooltip-match">${s}</span>`
+            : s
+        );
+        html += `<span class="tooltip-signals">${formatted.join(', ')}</span>`;
+      } else {
+        html += '<span class="tooltip-none">No peripheral signals</span>';
+      }
+      html += '<br>';
     }
 
     this.tooltip.innerHTML = html;
@@ -1281,7 +1356,7 @@ export class PackageViewer implements Panel {
 
   private buildSignalToPins(mcu: Mcu): void {
     this.signalToPins.clear();
-    for (const pin of mcu.pins) {
+    for (const pin of mcu.logicalPins) {
       for (const sig of pin.signals) {
         if (sig.name === 'GPIO') continue;
         let list = this.signalToPins.get(sig.name);
@@ -1293,14 +1368,14 @@ export class PackageViewer implements Panel {
 
   private updateHoverMatches(): void {
     this.hoverMatchPins.clear();
-    if (!this.hoveredPin || this.assignments.length === 0) {
+    if (!this.hoveredPhys || this.assignments.length === 0) {
       this.updateAnimation();
       return;
     }
-    // Only use signals that are actually assigned to this pin in the current solution
+    const hoveredNames = new Set(this.hoveredPhys.logicals.map(l => l.name));
     const assignedSignals = new Set<string>();
     for (const a of this.assignments) {
-      if (a.pinName === this.hoveredPin.name) {
+      if (hoveredNames.has(a.pinName)) {
         assignedSignals.add(a.signalName);
       }
     }
@@ -1308,12 +1383,11 @@ export class PackageViewer implements Panel {
       this.updateAnimation();
       return;
     }
-    // Find other pins that can map to at least one of the assigned signals
     for (const sigName of assignedSignals) {
       const pins = this.signalToPins.get(sigName);
       if (pins) {
         for (const p of pins) {
-          if (p !== this.hoveredPin!.name) {
+          if (!hoveredNames.has(p)) {
             this.hoverMatchPins.add(p);
           }
         }
@@ -1363,7 +1437,7 @@ export class PackageViewer implements Panel {
     }
 
     // Tier 1: Exact pin name match (PA0, PB12, etc.)
-    for (const pin of this.mcu.pins) {
+    for (const pin of this.mcu.logicalPins) {
       const gpioName = (pin.gpioPort && pin.gpioNumber !== undefined)
         ? `P${pin.gpioPort}${pin.gpioNumber}`
         : pin.name;
@@ -1387,7 +1461,7 @@ export class PackageViewer implements Panel {
     // Tier 3: Substring fallback on signal names (with type alias expansion)
     if (this.searchMatchPins.size === 0) {
       const searchTerms = getEquivalentSearchTerms(trimmed);
-      for (const pin of this.mcu.pins) {
+      for (const pin of this.mcu.logicalPins) {
         for (const sig of pin.signals) {
           const upper = sig.name.toUpperCase();
           if (searchTerms.some(t => upper.includes(t.toUpperCase()))) {

@@ -1,5 +1,5 @@
 import {
-  type Mcu, type Peripheral, type Pin, type PinType, type Signal,
+  type Mcu, type Peripheral, type LogicalPin, type PhysicalPin, type PinType, type Signal,
 } from '../types';
 
 // ============================================================
@@ -235,16 +235,20 @@ export function parseMcuXml(xmlString: string): Mcu {
   const ANALOG_PERIPHERAL_TYPES = new Set(['ADC', 'DAC', 'OPAMP', 'COMP']);
 
   // Parse pins
-  const pins: Pin[] = [];
+  // First pass: build PhysicalPin per unique Position. Each <Pin> XML row
+  // becomes a LogicalPin attached to its position's PhysicalPin.
+  const physicalPinByPosition = new Map<string, PhysicalPin>();
+  const logicalPins: LogicalPin[] = [];
   const pinEls = mcuEl.querySelectorAll('Pin');
   for (const pinEl of pinEls) {
     const rawName = pinEl.getAttribute('Name') ?? '';
     const position = pinEl.getAttribute('Position') ?? '0';
     const type = parsePinType(pinEl.getAttribute('Type') ?? '');
+    const variant = pinEl.getAttribute('Variant') ?? undefined;
 
     // Detect _C pins (low-impedance analog switch variants, e.g. PC2_C, PA0_C).
     // These share the same digital AF signals as the base pin but have different
-    // analog (ADC) channels. Keep them as separate pins with only analog signals.
+    // analog (ADC) channels. Keep them as separate logical pins with only analog signals.
     const isCPin = /^P[A-Z]\d+_C$/.test(rawName);
     const gpioMatch = rawName.match(/^(P[A-Z]\d+)/);
     const name = isCPin ? rawName : (gpioMatch ? gpioMatch[1] : rawName.split('-')[0]);
@@ -255,15 +259,11 @@ export function parseMcuXml(xmlString: string): Mcu {
       const sigName = sigEl.getAttribute('Name') ?? '';
       const ioModes = sigEl.getAttribute('IOModes') || undefined;
 
-      // Split hyphenated signal names (e.g., SYS_JTCK-SWCLK → SYS_JTCK + SYS_SWCLK)
-      // Then collapse extra underscores in function part (RCC_OSC_IN → RCC_OSCIN)
       const expandedNames = splitHyphenatedSignal(sigName);
-      for (const rawName of expandedNames) {
-        const collapsed = collapseSignalName(rawName);
+      for (const rawSigName of expandedNames) {
+        const collapsed = collapseSignalName(rawSigName);
         const parsed = parseSignalName(collapsed);
 
-        // For _C pins, only keep analog signals (ADC, DAC, OPAMP, COMP).
-        // Digital AF signals are duplicates of the base pin.
         if (isCPin) {
           if (!parsed.peripheralType || !ANALOG_PERIPHERAL_TYPES.has(parsed.peripheralType)) {
             continue;
@@ -281,10 +281,7 @@ export function parseMcuXml(xmlString: string): Mcu {
       }
     }
 
-    // _C pins don't get GPIO association - they share the pad with the base pin
     const gpio = isCPin ? null : parseGpioName(name);
-
-    // Add synthetic GPIO signal (e.g., PA3 → GPIO1_3)
     if (gpio) {
       const portNum = gpioPortNumber(gpio.port);
       const gpioSignalName = `GPIO${portNum}_${gpio.number}`;
@@ -297,26 +294,38 @@ export function parseMcuXml(xmlString: string): Mcu {
       });
     }
 
-    pins.push({
+    let physical = physicalPinByPosition.get(position);
+    if (!physical) {
+      physical = { position, logicals: [] };
+      physicalPinByPosition.set(position, physical);
+    }
+
+    const logical: LogicalPin = {
       name,
-      position,
       type,
       signals,
       gpioPort: gpio?.port,
       gpioNumber: gpio?.number,
       isAssignable: type === 'I/O' || type === 'MonoIO',
-    });
+      isDefaultVariant: variant === undefined,
+      variantGroup: variant,
+      physical,
+    };
+    physical.logicals.push(logical);
+    logicalPins.push(logical);
   }
 
+  const physicalPins = Array.from(physicalPinByPosition.values());
+
   // Build derived lookup tables
-  const pinByName = new Map<string, Pin>();
-  const pinByPosition = new Map<string, Pin>();
-  const pinByGpioName = new Map<string, Pin>();
-  const signalToPins = new Map<string, Pin[]>();
+  const logicalPinByName = new Map<string, LogicalPin>();
+  const logicalPinsByName = new Map<string, LogicalPin[]>();
+  const logicalPinByGpioName = new Map<string, LogicalPin>();
+  const signalToLogicalPins = new Map<string, LogicalPin[]>();
   const peripheralByInstance = new Map<string, Peripheral>();
   const typeToInstances = new Map<string, string[]>();
   const peripheralSignals = new Map<string, Set<string>>();
-  const pinSignalSet = new Map<string, Set<string>>();
+  const logicalSignalSet = new Map<string, Set<string>>();
 
   for (const p of peripherals) {
     peripheralByInstance.set(p.instanceName, p);
@@ -326,31 +335,29 @@ export function parseMcuXml(xmlString: string): Mcu {
     typeToInstances.set(p.type, instances);
   }
 
-  // Track GPIO port instances discovered from pins
   const gpioInstances = new Set<string>();
 
-  for (const pin of pins) {
-    pinByName.set(pin.name, pin);
-
-    // Only store first occurrence for duplicate names (power pins like VDD)
-    if (!pinByPosition.has(pin.position)) {
-      pinByPosition.set(pin.position, pin);
+  for (const lp of logicalPins) {
+    if (!logicalPinByName.has(lp.name)) {
+      logicalPinByName.set(lp.name, lp);
     }
+    const sameName = logicalPinsByName.get(lp.name) ?? [];
+    sameName.push(lp);
+    logicalPinsByName.set(lp.name, sameName);
 
-    // Map base GPIO name to pin
-    const gpio = parseGpioName(pin.name);
+    const gpio = parseGpioName(lp.name);
     if (gpio) {
-      pinByGpioName.set(gpio.baseName, pin);
+      logicalPinByGpioName.set(gpio.baseName, lp);
     }
 
     const sigSet = new Set<string>();
-    for (const sig of pin.signals) {
+    for (const sig of lp.signals) {
       sigSet.add(sig.name);
 
       if (sig.name !== 'GPIO') {
-        const arr = signalToPins.get(sig.name) ?? [];
-        arr.push(pin);
-        signalToPins.set(sig.name, arr);
+        const arr = signalToLogicalPins.get(sig.name) ?? [];
+        arr.push(lp);
+        signalToLogicalPins.set(sig.name, arr);
       }
 
       if (sig.peripheralInstance) {
@@ -358,16 +365,14 @@ export function parseMcuXml(xmlString: string): Mcu {
         sigs.add(sig.name);
         peripheralSignals.set(sig.peripheralInstance, sigs);
 
-        // Track GPIO instances for peripheral registration
         if (sig.peripheralType === 'GPIO') {
           gpioInstances.add(sig.peripheralInstance);
         }
       }
     }
-    pinSignalSet.set(pin.name, sigSet);
+    logicalSignalSet.set(lp.name, sigSet);
   }
 
-  // Register synthetic GPIO peripherals
   for (const gpioInst of gpioInstances) {
     if (!peripheralByInstance.has(gpioInst)) {
       const gpioPeripheral: Peripheral = {
@@ -399,15 +404,17 @@ export function parseMcuXml(xmlString: string): Mcu {
     temperature,
     hasPowerPad,
     peripherals,
-    pins,
-    pinByName,
-    pinByPosition,
-    pinByGpioName,
+    logicalPins,
+    physicalPins,
+    logicalPinByName,
+    logicalPinsByName,
+    logicalPinByGpioName,
+    physicalPinByPosition,
     peripheralByInstance,
-    signalToPins,
+    signalToLogicalPins,
     typeToInstances,
     peripheralSignals,
-    pinSignalSet,
+    logicalSignalSet,
   };
 }
 
@@ -428,27 +435,34 @@ export function validateMcu(mcu: Mcu): ValidationResult {
 
   if (!mcu.refName) errors.push('Missing MCU RefName');
   if (!mcu.package) errors.push('Missing package type');
-  if (mcu.pins.length === 0) errors.push('No pins found');
+  if (mcu.logicalPins.length === 0) errors.push('No pins found');
 
-  // Check for duplicate positions among assignable pins
-  const positionCounts = new Map<string, number>();
-  for (const pin of mcu.pins) {
-    if (pin.isAssignable) {
-      positionCounts.set(pin.position, (positionCounts.get(pin.position) ?? 0) + 1);
+  // Structural checks: every logical pin's physical back-ref must round-trip.
+  for (const lp of mcu.logicalPins) {
+    const phys = mcu.physicalPinByPosition.get(lp.physical.position);
+    if (phys !== lp.physical) {
+      errors.push(`LogicalPin ${lp.name} has stale physical back-ref at position ${lp.physical.position}`);
+    } else if (!phys.logicals.includes(lp)) {
+      errors.push(`PhysicalPin ${phys.position} is missing logical ${lp.name}`);
     }
   }
-  for (const [pos, count] of positionCounts) {
-    if (count > 1) {
-      errors.push(`Duplicate position ${pos} among assignable pins`);
+  for (const phys of mcu.physicalPins) {
+    if (phys.logicals.length === 0) {
+      errors.push(`PhysicalPin ${phys.position} has no logical pins`);
     }
   }
 
-  // Warn about signals referencing unknown peripheral instances
-  for (const pin of mcu.pins) {
-    for (const sig of pin.signals) {
+  // Warn (deduped by instance) about signals referencing unknown peripheral instances.
+  // Multi-token instance names (USB_OTG_HS, USB_DEVICE) and CubeMX placeholder
+  // signals (TIMX, IR, CRS, CEC, AUDIOCLK) trigger this in volume — surface
+  // each unknown once instead of per-pin.
+  const seenUnknown = new Set<string>();
+  for (const lp of mcu.logicalPins) {
+    for (const sig of lp.signals) {
       if (sig.peripheralInstance && !mcu.peripheralByInstance.has(sig.peripheralInstance)) {
-        // This is common for some signals; just warn
-        warnings.push(`Signal ${sig.name} on pin ${pin.name} references unknown peripheral ${sig.peripheralInstance}`);
+        if (seenUnknown.has(sig.peripheralInstance)) continue;
+        seenUnknown.add(sig.peripheralInstance);
+        warnings.push(`Signal references unknown peripheral instance: ${sig.peripheralInstance}`);
       }
     }
   }

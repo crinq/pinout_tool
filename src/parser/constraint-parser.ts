@@ -1023,12 +1023,20 @@ class Parser {
     return { type: 'signal_pattern', instancePart, functionPart, raw, loc };
   }
 
-  // pattern_part: IDENT | IDENT* | * | IDENT[range] | IDENT NUMBER | IDENT NUMBER * | etc.
+  // pattern_part: IDENT | IDENT* | * | IDENT[range] | IDENT NUMBER | IDENT NUMBER * | NUMBER (position) | etc.
   private parsePatternPart(): PatternPart {
     // Just *
     if (this.check('STAR')) {
       this.advance();
       return { type: 'any' };
+    }
+
+    // Bare NUMBER → numeric position literal (e.g. `reserve: 11`).
+    // Used by reserve declarations to lock a package pin by position.
+    if (this.check('NUMBER')) {
+      const value = this.peek().value;
+      this.advance();
+      return { type: 'literal', value };
     }
 
     // Must start with IDENT (or KEYWORD in edge cases)
@@ -1037,7 +1045,7 @@ class Parser {
       prefix = this.peek().value;
       this.advance();
     } else {
-      this.error('Expected identifier or \'*\' in signal pattern', this.peek());
+      this.error('Expected identifier, number, or \'*\' in signal pattern', this.peek());
       return { type: 'literal', value: '' };
     }
 

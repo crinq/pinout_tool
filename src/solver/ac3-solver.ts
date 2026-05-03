@@ -117,9 +117,9 @@ function solveBacktrackAC3(
 
     const candidate = v.candidates[candidateIdx];
 
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
+    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position)) continue;
 
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
+    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
     current.push({ variable: v, candidate });
 
     // Eager constraint check
@@ -179,6 +179,6 @@ function solveBacktrackAC3(
     }
 
     current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
+    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
   }
 }

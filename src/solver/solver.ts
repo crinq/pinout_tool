@@ -343,15 +343,24 @@ export function undoPropagateShared(
 // ============================================================
 
 export interface PinTracker {
-  // pin -> port that owns it (pins can't be shared across ports)
+  // logical pin -> port that owns it (logicals can't be shared across ports)
   pinOwner: Map<string, string>;
-  // "port\0pin" -> number of configs in that port using this pin
+  // "port\0pin" -> number of configs in that port using this logical pin
   portPinRefCount: Map<string, number>;
-  // "port\0config" -> set of pins used by that specific config
+  // "port\0config" -> set of logical pins used by that specific config
   configPins: Map<string, Set<string>>;
   // "port\0pin" -> channel that owns this pin within the port
-  // (a pin is exclusive to one channel across all configs)
   portPinChannel: Map<string, string>;
+  // physical position -> port that owns it. Locking a logical also locks its
+  // physical and every other logical bonded to that physical (so PINREMAP
+  // alternates and shared-pad siblings can't be assigned across ports).
+  physicalOwner: Map<string, string>;
+  // "port\0position" -> ref count
+  portPhysicalRefCount: Map<string, number>;
+  // "port\0config" -> set of physical positions used in that config
+  configPhysicals: Map<string, Set<string>>;
+  // "port\0position" -> channel that owns this physical within the port
+  portPhysicalChannel: Map<string, string>;
   // Peripheral instance -> port that owns it (exclusive by default)
   instanceOwner: Map<string, string>;
   // "port\0instance" -> ref count for backtracking
@@ -362,17 +371,28 @@ export interface PinTracker {
   configSignals: Map<string, Set<string>>;
 }
 
-export function createPinTracker(reservedPins: string[], sharedPatterns: PatternPart[]): PinTracker {
+export function createPinTracker(
+  reservedPins: string[],
+  sharedPatterns: PatternPart[],
+  reservedPositions: string[] = []
+): PinTracker {
   const pinOwner = new Map<string, string>();
-  // Mark reserved pins as owned by a sentinel port
   for (const pin of reservedPins) {
     pinOwner.set(pin, '\0reserved');
+  }
+  const physicalOwner = new Map<string, string>();
+  for (const pos of reservedPositions) {
+    physicalOwner.set(pos, '\0reserved');
   }
   return {
     pinOwner,
     portPinRefCount: new Map(),
     configPins: new Map(),
     portPinChannel: new Map(),
+    physicalOwner,
+    portPhysicalRefCount: new Map(),
+    configPhysicals: new Map(),
+    portPhysicalChannel: new Map(),
     instanceOwner: new Map(),
     instanceRefCount: new Map(),
     sharedPatterns,
@@ -382,24 +402,35 @@ export function createPinTracker(reservedPins: string[], sharedPatterns: Pattern
 
 export function canAssignPin(
   tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string,
-  peripheralInstance?: string, signalName?: string
+  peripheralInstance?: string, signalName?: string, physicalPosition?: string
 ): boolean {
-  // Cross-port exclusivity
+  // Cross-port logical exclusivity
   const owner = tracker.pinOwner.get(pin);
   if (owner !== undefined && owner !== portName) return false;
-  // Within-config exclusivity (no duplicate pins in one config)
+  // Cross-port physical exclusivity (locks PINREMAP/shared-pad siblings)
+  if (physicalPosition !== undefined) {
+    const physOwner = tracker.physicalOwner.get(physicalPosition);
+    if (physOwner !== undefined && physOwner !== portName) return false;
+  }
   const configKey = `${portName}\0${configName}`;
   if (tracker.configPins.get(configKey)?.has(pin)) return false;
-  // Within-port channel exclusivity (pin belongs to one channel across all configs)
+  // Within-config: at most one logical per physical (the package pin can
+  // only present one net at runtime, so two logicals on it conflict).
+  if (physicalPosition !== undefined && tracker.configPhysicals.get(configKey)?.has(physicalPosition)) {
+    return false;
+  }
   const ppKey = `${portName}\0${pin}`;
   const existingChannel = tracker.portPinChannel.get(ppKey);
   if (existingChannel !== undefined && existingChannel !== channelName) return false;
-  // Peripheral instance exclusivity (unless shared)
+  if (physicalPosition !== undefined) {
+    const ppPhysKey = `${portName}\0${physicalPosition}`;
+    const existingPhysChannel = tracker.portPhysicalChannel.get(ppPhysKey);
+    if (existingPhysChannel !== undefined && existingPhysChannel !== channelName) return false;
+  }
   if (peripheralInstance && !isSharedInstance(peripheralInstance, tracker.sharedPatterns)) {
     const instOwner = tracker.instanceOwner.get(peripheralInstance);
     if (instOwner !== undefined && instOwner !== portName) return false;
   }
-  // Within-config signal exclusivity (a peripheral signal can only be assigned once per config)
   if (signalName && signalName.includes('_')) {
     if (tracker.configSignals.get(configKey)?.has(signalName)) return false;
   }
@@ -408,7 +439,7 @@ export function canAssignPin(
 
 export function assignPin(
   tracker: PinTracker, pin: string, portName: string, configName: string, channelName: string,
-  peripheralInstance?: string, signalName?: string
+  peripheralInstance?: string, signalName?: string, physicalPosition?: string
 ): void {
   tracker.pinOwner.set(pin, portName);
   const ppKey = `${portName}\0${pin}`;
@@ -417,13 +448,19 @@ export function assignPin(
   const configKey = `${portName}\0${configName}`;
   if (!tracker.configPins.has(configKey)) tracker.configPins.set(configKey, new Set());
   tracker.configPins.get(configKey)!.add(pin);
-  // Track peripheral instance ownership
+  if (physicalPosition !== undefined) {
+    tracker.physicalOwner.set(physicalPosition, portName);
+    const ppPhysKey = `${portName}\0${physicalPosition}`;
+    tracker.portPhysicalRefCount.set(ppPhysKey, (tracker.portPhysicalRefCount.get(ppPhysKey) || 0) + 1);
+    tracker.portPhysicalChannel.set(ppPhysKey, channelName);
+    if (!tracker.configPhysicals.has(configKey)) tracker.configPhysicals.set(configKey, new Set());
+    tracker.configPhysicals.get(configKey)!.add(physicalPosition);
+  }
   if (peripheralInstance) {
     tracker.instanceOwner.set(peripheralInstance, portName);
     const ipKey = `${portName}\0${peripheralInstance}`;
     tracker.instanceRefCount.set(ipKey, (tracker.instanceRefCount.get(ipKey) || 0) + 1);
   }
-  // Track peripheral signal usage within config
   if (signalName && signalName.includes('_')) {
     if (!tracker.configSignals.has(configKey)) tracker.configSignals.set(configKey, new Set());
     tracker.configSignals.get(configKey)!.add(signalName);
@@ -432,7 +469,7 @@ export function assignPin(
 
 export function unassignPin(
   tracker: PinTracker, pin: string, portName: string, configName: string,
-  peripheralInstance?: string, signalName?: string
+  peripheralInstance?: string, signalName?: string, physicalPosition?: string
 ): void {
   const configKey = `${portName}\0${configName}`;
   tracker.configPins.get(configKey)!.delete(pin);
@@ -445,7 +482,18 @@ export function unassignPin(
   } else {
     tracker.portPinRefCount.set(ppKey, count);
   }
-  // Untrack peripheral instance
+  if (physicalPosition !== undefined) {
+    tracker.configPhysicals.get(configKey)?.delete(physicalPosition);
+    const ppPhysKey = `${portName}\0${physicalPosition}`;
+    const physCount = tracker.portPhysicalRefCount.get(ppPhysKey)! - 1;
+    if (physCount === 0) {
+      tracker.portPhysicalRefCount.delete(ppPhysKey);
+      tracker.physicalOwner.delete(physicalPosition);
+      tracker.portPhysicalChannel.delete(ppPhysKey);
+    } else {
+      tracker.portPhysicalRefCount.set(ppPhysKey, physCount);
+    }
+  }
   if (peripheralInstance) {
     const ipKey = `${portName}\0${peripheralInstance}`;
     const iCount = tracker.instanceRefCount.get(ipKey)! - 1;
@@ -456,7 +504,6 @@ export function unassignPin(
       tracker.instanceRefCount.set(ipKey, iCount);
     }
   }
-  // Untrack peripheral signal
   if (signalName && signalName.includes('_')) {
     tracker.configSignals.get(configKey)?.delete(signalName);
   }
@@ -513,42 +560,62 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
 export interface ReserveResult {
   pins: string[];
   peripherals: string[];
+  positions: string[];
 }
 
-/** Resolve reserve patterns against MCU pin names and peripheral instances */
+/**
+ * Resolve reserve patterns against MCU logical pin names, peripheral
+ * instances, and physical pin positions.
+ *
+ * A position match (numeric like "11" or BGA-style like "A1") locks the
+ * physical pin: every logical pin bonded to it (for shared pads / PINREMAP
+ * variants) becomes unavailable too.
+ */
 export function resolveReservePatterns(ast: ProgramNode, mcu: Mcu): ReserveResult {
   const pins: string[] = [];
   const peripherals: string[] = [];
+  const positions: string[] = [];
 
   for (const stmt of ast.statements) {
     if (stmt.type !== 'reserve_decl') continue;
 
     for (const pattern of stmt.patterns) {
-      // Try matching against pin names
       let matchedPin = false;
-      for (const pin of mcu.pins) {
-        if (matchPatternToInstance(pattern, pin.name)) {
-          pins.push(pin.name);
+      for (const lp of mcu.logicalPins) {
+        if (matchPatternToInstance(pattern, lp.name)) {
+          pins.push(lp.name);
           matchedPin = true;
         }
       }
 
-      // Try matching against peripheral instances
+      let matchedPeripheral = false;
       for (const periph of mcu.peripherals) {
         if (matchPatternToInstance(pattern, periph.instanceName)) {
           peripherals.push(periph.instanceName);
+          matchedPeripheral = true;
         }
       }
 
-      // If pattern is a literal that didn't match any MCU pin or peripheral,
-      // still add it as a pin name (backwards compat for unknown pins)
-      if (!matchedPin && pattern.type === 'literal' && peripherals.length === 0) {
+      // Position match: literal patterns whose value names a known package
+      // pin. Locks the physical and pulls in every co-located logical so
+      // PINREMAP / shared-pad siblings get reserved too.
+      if (!matchedPin && !matchedPeripheral && pattern.type === 'literal') {
+        const phys = mcu.physicalPinByPosition.get(pattern.value);
+        if (phys) {
+          positions.push(phys.position);
+          for (const lp of phys.logicals) pins.push(lp.name);
+          continue;
+        }
+      }
+
+      // Backwards compat: an unmatched literal still gets added as a pin name.
+      if (!matchedPin && pattern.type === 'literal' && !matchedPeripheral) {
         pins.push(pattern.value);
       }
     }
   }
 
-  return { pins, peripherals };
+  return { pins, peripherals, positions };
 }
 
 export interface PinnedAssignment {
@@ -781,7 +848,7 @@ export function validateGpioAvailability(
     return solutions;
   }
 
-  const totalAssignable = mcu.pins.filter(p => p.isAssignable).length;
+  const totalAssignable = mcu.logicalPins.filter(p => p.isAssignable).length;
   const alwaysUnavailable = new Set<string>(reservedPins);
   for (const pa of pinnedAssignments) {
     alwaysUnavailable.add(pa.pinName);
@@ -1462,7 +1529,7 @@ export function prepareSolverContext(
     }
   }
 
-  const tracker = createPinTracker(reserved.pins, sharedPatterns);
+  const tracker = createPinTracker(reserved.pins, sharedPatterns, reserved.positions);
 
   const stats: SolverStats = {
     totalCombinations: configCombinations.length,
@@ -1479,8 +1546,8 @@ export function prepareSolverContext(
 
   // Build MCU info for pin position functions
   const pinByName = new Map<string, { position: string }>();
-  for (const pin of mcu.pins) {
-    pinByName.set(pin.name, { position: pin.position });
+  for (const pin of mcu.logicalPins) {
+    pinByName.set(pin.name, { position: pin.physical.position });
   }
   const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
 
@@ -1603,7 +1670,7 @@ export function solveConstraints(
     }
   }
 
-  const tracker = createPinTracker(reserved.pins, sharedPatterns);
+  const tracker = createPinTracker(reserved.pins, sharedPatterns, reserved.positions);
 
   const stats: SolverStats = {
     totalCombinations: configCombinations.length,
@@ -1621,8 +1688,8 @@ export function solveConstraints(
 
   // Build MCU info for pin position functions
   const pinByName = new Map<string, { position: string }>();
-  for (const pin of mcu.pins) {
-    pinByName.set(pin.name, { position: pin.position });
+  for (const pin of mcu.logicalPins) {
+    pinByName.set(pin.name, { position: pin.physical.position });
   }
   const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
 
@@ -1752,7 +1819,7 @@ export function solveBacktrack(
             propagationCtx.removedStack.length--;
             propagationCtx.assigned[parentVi] = false;
           }
-          unassignPin(tracker, pc.pin.name, pv.portName, pv.configName, pc.peripheralInstance, pc.signalName);
+          unassignPin(tracker, pc.pin.name, pv.portName, pv.configName, pc.peripheralInstance, pc.signalName, pc.pin.physical.position);
           stackAssigned[parentSp] = -1;
         }
       }
@@ -1773,7 +1840,7 @@ export function solveBacktrack(
         propagationCtx.removedStack.length--;
         propagationCtx.assigned[vi] = false;
       }
-      unassignPin(tracker, prevCand.pin.name, v.portName, v.configName, prevCand.peripheralInstance, prevCand.signalName);
+      unassignPin(tracker, prevCand.pin.name, v.portName, v.configName, prevCand.peripheralInstance, prevCand.signalName, prevCand.pin.physical.position);
       stackAssigned[sp] = -1;
     }
 
@@ -1787,9 +1854,9 @@ export function solveBacktrack(
       const candidateIdx = domain[dpos];
       const candidate = v.candidates[candidateIdx];
 
-      if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName)) continue;
+      if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position)) continue;
 
-      assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName);
+      assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
       current.push({ variable: v, candidate });
 
       // C2: Incremental cost tracking and pruning
@@ -1865,7 +1932,7 @@ export function solveBacktrack(
       // Pruned - undo and try next candidate
       current.pop();
       if (costTracker) decrementCost(costTracker, candidate);
-      unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName);
+      unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
     }
 
     if (!found) {
@@ -2211,7 +2278,7 @@ function evaluateFunctionCall(
       if (args.length === 1) {
         const vas = resolveChannel(args[0]);
         for (const va of vas) {
-          const pos = va.candidate.pin.position;
+          const pos = va.candidate.pin.physical.position;
           if (pos !== undefined) return pos;
         }
       }
@@ -2258,7 +2325,7 @@ function evaluateFunctionCall(
       if (args.length === 1) {
         const vas = resolveChannel(args[0]);
         for (const va of vas) {
-          const pos = va.candidate.pin.position;
+          const pos = va.candidate.pin.physical.position;
           const bga = parseBgaPosition(pos);
           if (bga) return bga.row + 1; // A=1, B=2, ...
           // LQFP: compute side-based row (y-component)
@@ -2278,7 +2345,7 @@ function evaluateFunctionCall(
       if (args.length === 1) {
         const vas = resolveChannel(args[0]);
         for (const va of vas) {
-          const pos = va.candidate.pin.position;
+          const pos = va.candidate.pin.physical.position;
           const bga = parseBgaPosition(pos);
           if (bga) return bga.col;
           // LQFP: compute side-based col (x-component)
@@ -2299,8 +2366,8 @@ function evaluateFunctionCall(
         const vasA = resolveChannel(args[0]);
         const vasB = resolveChannel(args[1]);
         if (vasA.length > 0 && vasB.length > 0) {
-          const posA = vasA[0].candidate.pin.position;
-          const posB = vasB[0].candidate.pin.position;
+          const posA = vasA[0].candidate.pin.physical.position;
+          const posB = vasB[0].candidate.pin.physical.position;
           const bgaA = parseBgaPosition(posA);
           const bgaB = parseBgaPosition(posB);
           if (bgaA && bgaB) {

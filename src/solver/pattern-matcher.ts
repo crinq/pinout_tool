@@ -3,11 +3,11 @@
 // ============================================================
 
 import type { SignalPatternNode, PatternPart } from '../parser/constraint-ast';
-import type { Mcu, Pin, Signal } from '../types';
+import type { Mcu, LogicalPin, Signal } from '../types';
 import { TYPE_ALIASES } from '../parser/mcu-xml-parser';
 
 export interface SignalCandidate {
-  pin: Pin;
+  pin: LogicalPin;
   signal: Signal;
   signalName: string;
   peripheralInstance: string;
@@ -137,7 +137,7 @@ export function expandPatternToCandidates(
 ): SignalCandidate[] {
   const candidates: SignalCandidate[] = [];
 
-  for (const pin of mcu.pins) {
+  for (const pin of mcu.logicalPins) {
     if (!pin.isAssignable) continue;
     if (allowedPins && !allowedPins.has(pin.name) && !allowedPins.has(gpioName(pin))) continue;
 
@@ -157,7 +157,7 @@ export function expandPatternToCandidates(
   return candidates;
 }
 
-function gpioName(pin: Pin): string {
+function gpioName(pin: LogicalPin): string {
   if (pin.gpioPort && pin.gpioNumber !== undefined) {
     return `P${pin.gpioPort}${pin.gpioNumber}`;
   }

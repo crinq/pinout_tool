@@ -2,7 +2,7 @@
 // Cost Functions for Solution Ranking
 // ============================================================
 
-import type { CostFunction, Solution, Mcu, Pin } from '../types';
+import type { CostFunction, Solution, Mcu, LogicalPin } from '../types';
 import type { SignalCandidate } from './pattern-matcher';
 
 const registry = new Map<string, CostFunction>();
@@ -105,7 +105,7 @@ registerCostFunction({
 
 const DEBUG_SIGNAL_PATTERN = /^SYS_(?:JTCK|JTDI|JTDO|JTMS|JTRST|SWCLK|SWDIO|SWO)\b/i;
 
-export function isDebugPin(pin: Pin): boolean {
+export function isDebugPin(pin: LogicalPin): boolean {
   return pin.signals.some(s => DEBUG_SIGNAL_PATTERN.test(s.name));
 }
 
@@ -117,7 +117,7 @@ registerCostFunction({
     let penalty = 0;
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
-        const pin = mcu.pinByName.get(a.pinName) ?? mcu.pinByGpioName.get(a.pinName);
+        const pin = mcu.logicalPinByName.get(a.pinName) ?? mcu.logicalPinByGpioName.get(a.pinName);
         if (pin && isDebugPin(pin)) {
           penalty += 10;
         }
@@ -296,11 +296,11 @@ registerCostFunction({
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
         if (a.portName === '<pinned>') continue;
-        const pin = mcu.pinByName.get(a.pinName);
+        const pin = mcu.logicalPinByName.get(a.pinName);
         if (!pin) continue;
         if (!portPositions.has(a.portName)) portPositions.set(a.portName, []);
         const pos = portPositions.get(a.portName)!;
-        if (!pos.includes(pin.position)) pos.push(pin.position);
+        if (!pos.includes(pin.physical.position)) pos.push(pin.physical.position);
       }
     }
 
@@ -344,15 +344,15 @@ registerCostFunction({
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
         if (a.portName === '<pinned>') continue;
-        const pin = mcu.pinByName.get(a.pinName);
+        const pin = mcu.logicalPinByName.get(a.pinName);
         if (!pin) continue;
         let positions = portPins.get(a.portName);
         if (!positions) {
           positions = [];
           portPins.set(a.portName, positions);
         }
-        if (!positions.includes(pin.position)) {
-          positions.push(pin.position);
+        if (!positions.includes(pin.physical.position)) {
+          positions.push(pin.physical.position);
         }
       }
     }
