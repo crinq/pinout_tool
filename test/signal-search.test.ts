@@ -4,7 +4,7 @@ import { join } from 'path';
 import { parseMcuXml } from '../src/parser/mcu-xml-parser';
 import { parseSearchPattern } from '../src/parser/constraint-parser';
 import { expandPatternToCandidates } from '../src/solver/pattern-matcher';
-import type { Mcu, Pin, Signal } from '../src/types';
+import type { Mcu } from '../src/types';
 
 const mcuXml = readFileSync(join(__dirname, 'g474/STM32G474R(B-C-E)Tx.xml'), 'utf-8');
 const mcu = parseMcuXml(mcuXml);
@@ -22,7 +22,7 @@ function executeSearch(query: string, mcuData: Mcu): { pins: Set<string>; signal
   const trimmed = query.trim().toUpperCase();
 
   // Tier 1: Exact pin name match
-  for (const pin of mcuData.pins) {
+  for (const pin of mcuData.logicalPins) {
     const gpioName = (pin.gpioPort && pin.gpioNumber !== undefined)
       ? `P${pin.gpioPort}${pin.gpioNumber}`
       : pin.name;
@@ -46,7 +46,7 @@ function executeSearch(query: string, mcuData: Mcu): { pins: Set<string>; signal
   if (pins.size > 0) return { pins, signals, tier: 2 };
 
   // Tier 3: Substring fallback
-  for (const pin of mcuData.pins) {
+  for (const pin of mcuData.logicalPins) {
     for (const sig of pin.signals) {
       if (sig.name.toUpperCase().includes(trimmed)) {
         pins.add(pin.name);

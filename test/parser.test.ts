@@ -243,6 +243,35 @@ describe('Constraint parser', () => {
         { type: 'literal', value: 'PB2' },
       ]);
     });
+
+    it('should parse numeric pin positions (LQFP)', () => {
+      const ast = parseOk('reserve: 11, 42');
+      const res = ast.statements[0] as ReserveDeclNode;
+      expect(res.patterns).toEqual([
+        { type: 'literal', value: '11' },
+        { type: 'literal', value: '42' },
+      ]);
+    });
+
+    it('should parse BGA-style pin positions', () => {
+      const ast = parseOk('reserve: A1, B12');
+      const res = ast.statements[0] as ReserveDeclNode;
+      expect(res.patterns).toEqual([
+        { type: 'literal', value: 'A1' },
+        { type: 'literal', value: 'B12' },
+      ]);
+    });
+
+    it('should parse mixed pin / position / pattern reserves', () => {
+      const ast = parseOk('reserve: PA0, 11, A1, ADC*');
+      const res = ast.statements[0] as ReserveDeclNode;
+      expect(res.patterns).toEqual([
+        { type: 'literal', value: 'PA0' },
+        { type: 'literal', value: '11' },
+        { type: 'literal', value: 'A1' },
+        { type: 'wildcard', prefix: 'ADC' },
+      ]);
+    });
   });
 
   // ========== shared declaration ==========

@@ -40,6 +40,36 @@ The tool works entirely in the browser. MCU data is loaded from STM32CubeMX XML 
 
 ## Getting Started
 
+### Loading MCU Data: remote catalogue (optional)
+
+If you have a hosted vendor JSON catalogue (the layout produced by the
+companion `mcu_data` project — `index.json` plus per-die files under
+`mcu/<die>.json`), open the **Data Manager**, paste the URL into the
+**Remote Data Source** field, and click **Save**. Local `file://` paths
+work for testing, GitHub raw / Pages URLs work for production.
+
+- **Browse…** opens a search overlay listing every die in the index.
+  Type to filter by name. Click a die to fetch + parse it. Multi-package
+  dies present a variant picker before loading.
+- The fetched MCU becomes the **current MCU** and is held in an
+  in-memory cache (10 dies / 500 KB, whichever fills first). Cache is
+  cleared on page reload — long-term storage is not enabled yet.
+
+### Multi-MCU Solving with `mcu:` filters
+
+When a constraint contains an `mcu:` filter (or `package:` / `ram:` /
+`rom:` / `freq:` filter), the solver iterates every MCU that matches.
+Sources are unioned:
+
+1. MCUs already imported via XML drag-drop (live in `localStorage`).
+2. MCUs fetched from the remote data source. The index is filtered by
+   die name and package, then matching dies are fetched in parallel,
+   parsed, and re-filtered at the variant level. Progress shows in the
+   status bar; the **Abort** button cancels in-flight fetches.
+
+If neither source produces any matches, the solver reports an error so
+you can adjust the filter or import data.
+
 ### Loading MCU Data
 
 The tool needs MCU pin/peripheral data from STM32CubeMX XML files:

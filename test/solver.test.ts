@@ -211,7 +211,7 @@ function checkPinsExistInMcu(solution: Solution, mcu: Mcu): string[] {
   for (const ca of solution.configAssignments) {
     for (const a of ca.assignments) {
       if (a.portName === '<pinned>') continue;
-      if (!mcu.pinByName.has(a.pinName) && !mcu.pinByGpioName.has(a.pinName)) {
+      if (!mcu.logicalPinByName.has(a.pinName) && !mcu.logicalPinByGpioName.has(a.pinName)) {
         errors.push(`[sol ${solution.id}] Pin "${a.pinName}" not found in MCU ${mcu.refName}`);
       }
     }
@@ -227,7 +227,7 @@ function checkSignalsExistOnPins(solution: Solution, mcu: Mcu): string[] {
   for (const ca of solution.configAssignments) {
     for (const a of ca.assignments) {
       if (a.portName === '<pinned>') continue;
-      const pin = mcu.pinByName.get(a.pinName) ?? mcu.pinByGpioName.get(a.pinName);
+      const pin = mcu.logicalPinByName.get(a.pinName) ?? mcu.logicalPinByGpioName.get(a.pinName);
       if (!pin) continue; // already caught by checkPinsExistInMcu
       const hasSignal = pin.signals.some(s => s.name === a.signalName);
       if (!hasSignal) {

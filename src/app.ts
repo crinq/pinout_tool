@@ -6,6 +6,7 @@ import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
+import { getDataSource, type IndexDeviceEntry } from './datasource';
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
@@ -21,7 +22,7 @@ import { fromWire, type WireSolverResult } from './solver/solution-transfer';
 import { runPreSolveChecks } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
-import { filterStoredMcus, extractMcuFilters } from './mcu-matcher';
+import { filterStoredMcus, extractMcuFilters, matchesPatterns } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
 import type { TutorialStep } from '../ts_lib/src/tutorial';
@@ -180,6 +181,8 @@ export class App {
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
+  /** Abort controller for the pre-solve fetch phase (remote MCU loads). */
+  private fetchAbort: AbortController | null = null;
   private isDynamicTimeoutRetry = false;
   private debugOverlay = new SolverDebugOverlay();
   private currentSolution: Solution | null = null;
@@ -378,9 +381,9 @@ export class App {
 
   }
 
-  private runSolver(): void {
-    // If already solving, abort
-    if (this.solverWorkers.length > 0) {
+  private async runSolver(): Promise<void> {
+    // If already solving (or fetching), abort instead of restarting.
+    if (this.solverWorkers.length > 0 || this.fetchAbort) {
       this.abortSolver();
       return;
     }
@@ -398,16 +401,13 @@ export class App {
     let mcuList: Mcu[];
 
     if (filters) {
-      // Multi-MCU mode: load matching MCUs from storage
-      const matchingRefs = filterStoredMcus(parseResult.ast);
-      if (matchingRefs.length === 0) {
-        this.showStatus('No stored MCUs match the mcu/package/ram/rom/freq filters. Import MCU XML files first.', 'error');
-        return;
-      }
-
+      // Multi-MCU mode: union (a) MCUs already in storage and (b) MCUs
+      // pulled from the remote data source. Either path can be empty.
       mcuList = [];
+      const seen = new Set<string>();
+
+      const matchingRefs = filterStoredMcus(parseResult.ast);
       for (const ref of matchingRefs) {
-        // Use cache or parse from storage
         let mcu = this.mcuCache.get(ref);
         if (!mcu) {
           const xml = localStorage.getItem(`mcu-xml:${ref}`);
@@ -420,11 +420,36 @@ export class App {
             continue;
           }
         }
-        mcuList.push(mcu);
+        if (!seen.has(mcu.refName)) {
+          seen.add(mcu.refName);
+          mcuList.push(mcu);
+        }
+      }
+
+      // Optionally augment with remote dies. The data source URL is
+      // user-configured (Data Manager); when missing we silently skip
+      // this path.
+      if (getDataSource().baseUrl()) {
+        const remote = await this.fetchRemoteMatches(filters);
+        if (remote === null) {
+          // Aborted by user — abortSolver already showed status.
+          this.setSolveButtonState(false);
+          return;
+        }
+        for (const mcu of remote) {
+          if (!seen.has(mcu.refName)) {
+            seen.add(mcu.refName);
+            mcuList.push(mcu);
+            this.mcuCache.set(mcu.refName, mcu);
+          }
+        }
       }
 
       if (mcuList.length === 0) {
-        this.showStatus('Failed to load any matching MCU data', 'error');
+        this.showStatus(
+          'No MCUs match the filters. Import XML files or configure a remote data source.',
+          'error'
+        );
         return;
       }
 
@@ -763,7 +788,98 @@ export class App {
     }
   }
 
+  /**
+   * Fetch MCUs that match `extractMcuFilters` output from the remote
+   * data source. Two-stage filter: dies whose name matches the mcu
+   * patterns are fetched, then each variant is re-checked against the
+   * full filter set (mcu/package/ram/rom/freq/cores). Returns null if
+   * the user aborted, otherwise the list of accepted Mcu instances.
+   */
+  private async fetchRemoteMatches(
+    filters: NonNullable<ReturnType<typeof extractMcuFilters>>,
+  ): Promise<Mcu[] | null> {
+    this.fetchAbort = new AbortController();
+    this.setSolveButtonState(true);
+
+    try {
+      const ds = getDataSource();
+      // Pattern matches against die names (case-insensitive). With no mcu
+      // pattern at all, we still allow `package:` / memory filters to
+      // prune across the whole catalogue — that's an opt-in cost.
+      const matchedDies = await ds.listDies((die, entry) => {
+        if (filters.mcuPatterns.length > 0
+            && !matchesPatterns(die, filters.mcuPatterns)
+            && !matchesPatterns(entry.family, filters.mcuPatterns)) {
+          return false;
+        }
+        // Cheap pre-filter on indexed metadata to avoid pointless fetches.
+        if (filters.minRamBytes > 0 && entry.ram_bytes !== undefined && entry.ram_bytes < filters.minRamBytes) return false;
+        if (filters.maxRamBytes > 0 && entry.ram_bytes !== undefined && entry.ram_bytes > filters.maxRamBytes) return false;
+        if (filters.minRomBytes > 0 && entry.flash_bytes !== undefined && entry.flash_bytes < filters.minRomBytes) return false;
+        if (filters.maxRomBytes > 0 && entry.flash_bytes !== undefined && entry.flash_bytes > filters.maxRomBytes) return false;
+        if (filters.packagePatterns.length > 0 && entry.packages
+            && !entry.packages.some(p => matchesPatterns(p, filters.packagePatterns))) {
+          return false;
+        }
+        return true;
+      }, this.fetchAbort.signal);
+
+      if (matchedDies.length === 0) {
+        this.fetchAbort = null;
+        return [];
+      }
+
+      this.showStatus(`Fetching ${matchedDies.length} MCUs from data source…`, 'info');
+      const result = await ds.loadManyDies(matchedDies.map(d => d.die), {
+        signal: this.fetchAbort.signal,
+        onProgress: (p) => {
+          this.showStatus(`Fetching MCUs: ${p.completed}/${p.total}${p.failed ? ` (${p.failed} failed)` : ''}`, 'info');
+        },
+      });
+
+      if (result.cancelled) {
+        this.fetchAbort = null;
+        return null;
+      }
+
+      // Variant-level re-filter so `mcu: STM32G474RBTx` (variant-specific)
+      // works even though the index keyed by die.
+      const accepted: Mcu[] = [];
+      for (const mcu of result.mcus) {
+        if (filters.mcuPatterns.length > 0 && !matchesPatterns(mcu.refName, filters.mcuPatterns)) continue;
+        if (filters.packagePatterns.length > 0 && !matchesPatterns(mcu.package, filters.packagePatterns)) continue;
+        if (filters.minRamBytes > 0 && mcu.ram * 1024 < filters.minRamBytes) continue;
+        if (filters.maxRamBytes > 0 && mcu.ram * 1024 > filters.maxRamBytes) continue;
+        if (filters.minRomBytes > 0 && mcu.flash * 1024 < filters.minRomBytes) continue;
+        if (filters.maxRomBytes > 0 && mcu.flash * 1024 > filters.maxRomBytes) continue;
+        if (filters.minFreqMHz > 0 && mcu.frequency < filters.minFreqMHz) continue;
+        if (filters.maxFreqMHz > 0 && mcu.frequency > filters.maxFreqMHz) continue;
+        accepted.push(mcu);
+      }
+
+      if (result.errors.length > 0) {
+        console.warn('Some remote MCUs failed to load:', result.errors);
+      }
+
+      this.fetchAbort = null;
+      return accepted;
+    } catch (err) {
+      this.fetchAbort = null;
+      if ((err as Error).name === 'AbortError') return null;
+      this.showStatus(`Remote MCU fetch failed: ${(err as Error).message}`, 'error');
+      return [];
+    }
+  }
+
   private abortSolver(): void {
+    // Two cancel paths: pre-solve remote fetch, then worker phase.
+    if (this.fetchAbort) {
+      this.fetchAbort.abort();
+      this.fetchAbort = null;
+      this.setSolveButtonState(false);
+      this.showStatus('Aborted MCU fetch', 'info');
+      return;
+    }
     if (this.solverWorkers.length > 0) {
       this.terminateWorkers();
       this.setSolveButtonState(false);
@@ -963,15 +1079,11 @@ export class App {
     // Try to attach DMA data from stored DMA XMLs
     this.attachDmaData(mcu);
 
-    this.currentMcu = mcu;
-
-    // Build tag list based on available data
-    const tags = ['PIN'];
-    if (mcu.dma) tags.push('DMA');
-
-    // Store raw XML and metadata for later re-loading
+    // Persist raw XML so reloads don't need a re-import.
     try {
       localStorage.setItem(`mcu-xml:${mcu.refName}`, xmlString);
+      const tags = ['PIN'];
+      if (mcu.dma) tags.push('DMA');
       localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({
         tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
       }));
@@ -979,16 +1091,24 @@ export class App {
       console.warn('Failed to store MCU XML (storage full?)');
     }
 
-    // Update header
+    this.activateLoadedMcu(mcu);
+  }
+
+  /**
+   * Common post-parse hook: store in cache, update header, broadcast,
+   * enable solve. Both XML drag-drop and remote JSON fetch route here.
+   */
+  private activateLoadedMcu(mcu: Mcu): void {
+    this.currentMcu = mcu;
+    this.mcuCache.set(mcu.refName, mcu);
+
     const mcuInfo = document.getElementById('mcu-info');
     if (mcuInfo) {
       mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
     }
 
-    // Broadcast to all panels
     this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
 
-    // Enable solve button if constraints are valid
     const solveBtn = this.constraintEditor.getSolveButton();
     if (solveBtn) {
       const parseResult = this.constraintEditor.getParseResult();
@@ -997,17 +1117,6 @@ export class App {
 
     const dmaInfo = mcu.dma ? `, ${mcu.dma.streams.length} DMA streams` : '';
     this.showStatus(`Loaded ${mcu.refName} (${mcu.physicalPins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
-
-    console.log('Loaded MCU:', mcu.refName);
-    console.log('  Physical pins:', mcu.physicalPins.length);
-    console.log('  Logical pins:', mcu.logicalPins.length);
-    console.log('  Assignable logical pins:', mcu.logicalPins.filter(p => p.isAssignable).length);
-    console.log('  Peripherals:', mcu.peripherals.length);
-    console.log('  Signal mappings:', mcu.signalToLogicalPins.size);
-    if (mcu.dma) {
-      console.log('  DMA streams:', mcu.dma.streams.length);
-      console.log('  DMA signal mappings:', mcu.dma.signalToDmaStreams.size);
-    }
   }
 
   private reimportAllMcus(): void {
@@ -2011,6 +2120,59 @@ export class App {
           </section>
 
           <section class="settings-section">
+            <h3>Remote Data Source</h3>
+            <p class="settings-hint">Optional. JSON catalogue served over HTTP (e.g. a GitHub Pages / raw URL pointing at the <code>data/</code> directory of an mcu_data export). Local <code>file://</code> paths work for development.</p>
+            <div class="dm-row" style="gap:6px">
+              <input id="dm-data-url" type="text" placeholder="https://example.com/path/to/data" value="${(getDataSource().baseUrl() ?? '').replace(/"/g, '&quot;')}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
+              <button class="btn btn-small" data-action="save-data-url">Save</button>
+              <button class="btn btn-small" data-action="clear-data-url">Clear</button>
+              <button class="btn btn-small" data-action="browse-mcu" ${getDataSource().baseUrl() ? '' : 'disabled'}>Browse&hellip;</button>
+            </div>
+            <p class="settings-hint" style="margin-top:6px">${(() => {
+              const s = getDataSource().stats();
+              const url = getDataSource().baseUrl();
+              if (!url) return 'No URL configured.';
+              return `Index ${s.hasIndex ? 'loaded' : 'not loaded yet'} &middot; cache ${s.entries} dies / ${(s.bytes / 1024).toFixed(1)} KB`;
+            })()}</p>
+          </section>
+
+          <section class="settings-section">
+            <h3>Cached MCUs <span class="settings-hint" style="font-weight:normal;font-size:11px;">(in-memory · cleared on reload)</span></h3>
+            ${(() => {
+              const cached = getDataSource().listCached();
+              if (cached.length === 0) return '<p class="settings-hint">No remote MCUs fetched yet. Use Browse… or run a solve with an <code>mcu:</code> filter.</p>';
+              const totalKB = cached.reduce((s, c) => s + c.bytes, 0) / 1024;
+              const variantCount = cached.reduce((s, c) => s + c.mcus.length, 0);
+              const rows: string[] = [];
+              for (const { die, mcus, bytes } of cached) {
+                // Each die may expand to multiple package variants; render
+                // one row per variant so the layout matches Stored MCUs.
+                // Distribute the die's byte cost evenly across variants for
+                // a rough per-row size hint.
+                const perVariantBytes = Math.round(bytes / Math.max(1, mcus.length));
+                for (const mcu of mcus) {
+                  const tags: string[] = ['REMOTE', 'PIN'];
+                  if (mcu.dma) tags.push('DMA');
+                  if (mcu.package) tags.push(mcu.package);
+                  rows.push(`
+                    <div class="dm-row" data-cached="${escHtml(mcu.refName)}">
+                      <span class="dm-name">${escHtml(mcu.refName)}</span>
+                      <span class="dm-tags">${tags.map(t => `<span class="dm-tag">${escHtml(t)}</span>`).join('')}</span>
+                      <span class="dm-size">${(perVariantBytes / 1024).toFixed(1)}KB</span>
+                      <button class="btn btn-small dm-load" data-action="load-cached" data-name="${escHtml(mcu.refName)}">Load</button>
+                      <button class="btn btn-small dm-delete" data-action="evict-cached" data-die="${escHtml(die)}">Discard</button>
+                    </div>
+                  `);
+                }
+              }
+              return `
+                <p class="settings-hint">${variantCount} variant${variantCount === 1 ? '' : 's'} from ${cached.length} die${cached.length === 1 ? '' : 's'} · ${totalKB.toFixed(1)}KB total</p>
+                <div class="dm-list">${rows.join('')}</div>
+              `;
+            })()}
+          </section>
+
+          <section class="settings-section">
             <h3>Stored MCUs</h3>
             ${storedMcus.length === 0 ? '<p class="settings-hint">No MCUs stored. Import XML files to store them.</p>' : `<div style="margin-bottom:6px"><button class="btn btn-small" data-action="reimport-all">Re-import All</button></div>`}
             <div class="dm-list">
@@ -2163,12 +2325,221 @@ export class App {
               saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
               invalidateStdlibCache();
               break;
+            case 'save-data-url': {
+              const input = modal.querySelector('#dm-data-url') as HTMLInputElement | null;
+              if (input) {
+                getDataSource().setUrl(input.value);
+                this.showStatus(input.value ? `Data URL saved: ${input.value}` : 'Data URL cleared', 'success');
+                renderContent();
+              }
+              break;
+            }
+            case 'clear-data-url':
+              getDataSource().setUrl('');
+              renderContent();
+              break;
+            case 'browse-mcu':
+              this.showMcuBrowser(result.overlay, () => renderContent());
+              break;
+            case 'load-cached': {
+              // Walk the cache to find the variant. Cheaper than tracking
+              // a separate refName→Mcu map since the cache is bounded (~10).
+              for (const { mcus } of getDataSource().listCached()) {
+                const hit = mcus.find(m => m.refName === name);
+                if (hit) {
+                  this.activateLoadedMcu(hit);
+                  close();
+                  return;
+                }
+              }
+              this.showStatus(`Cached MCU "${name}" not found (cache may have evicted)`, 'error');
+              break;
+            }
+            case 'evict-cached': {
+              const die = (btn as HTMLElement).dataset.die!;
+              if (getDataSource().evict(die)) renderContent();
+              break;
+            }
           }
         });
       });
     };
 
     renderContent();
+  }
+
+  /**
+   * Modal that lists every die in the remote index with a live filter.
+   * Click a die to fetch + parse it, then pick a package variant if the
+   * die has more than one. Loaded MCU becomes the current MCU.
+   */
+  private showMcuBrowser(_parentOverlay: HTMLElement, onClose: () => void): void {
+    const browser = createModal({
+      zIndex: '1100',
+      modalClass: 'settings-modal dm-modal',
+      modalStyle: { width: '720px', maxHeight: '80vh' },
+    });
+    if (!browser) return;
+    const { modal, close } = browser;
+
+    // Cancellation: closing the modal aborts any in-flight fetch.
+    const ac = new AbortController();
+    const closeAll = () => {
+      ac.abort();
+      close();
+      onClose();
+    };
+
+    let dies: { die: string; entry: IndexDeviceEntry }[] = [];
+    let filter = '';
+    let status = 'Loading index…';
+
+    const renderRows = (): string => {
+      const q = filter.trim().toLowerCase();
+      const matches = q ? dies.filter(d => d.die.includes(q)) : dies;
+      const visible = matches.slice(0, 200);
+      const overflow = matches.length - visible.length;
+      if (visible.length === 0) {
+        return '<p class="settings-hint">No matching MCUs.</p>';
+      }
+      const rowsHtml = visible.map(({ die, entry }) => {
+        const cores = (entry.cores ?? []).map(c => c.name).join(' + ');
+        const flashKB = entry.flash_bytes ? `${(entry.flash_bytes / 1024).toFixed(0)}KB` : '';
+        const ramKB = entry.ram_bytes ? `${(entry.ram_bytes / 1024).toFixed(0)}KB` : '';
+        const pkgs = (entry.packages ?? []).slice(0, 3).join(', ');
+        return `
+          <div class="dm-row" data-die="${escHtml(die)}">
+            <span class="dm-name" style="font-family:monospace">${escHtml(die)}</span>
+            <span class="dm-tags"><span class="dm-tag">${escHtml(entry.family ?? '')}</span>${cores ? `<span class="dm-tag">${escHtml(cores)}</span>` : ''}${flashKB ? `<span class="dm-tag">${flashKB} flash</span>` : ''}${ramKB ? `<span class="dm-tag">${ramKB} ram</span>` : ''}</span>
+            <span class="dm-size" style="min-width:auto">${escHtml(pkgs)}</span>
+            <button class="btn btn-small dm-load" data-action="pick-die" data-die="${escHtml(die)}">Load</button>
+          </div>
+        `;
+      }).join('');
+      return rowsHtml + (overflow > 0
+        ? `<p class="settings-hint">…and ${overflow} more (refine search to see them).</p>`
+        : '');
+    };
+
+    const render = (): void => {
+      modal.innerHTML = `
+        <div class="settings-header">
+          <strong>Browse MCU Catalogue</strong>
+          <button class="btn btn-small settings-close">Close</button>
+        </div>
+        <div class="settings-body">
+          <div class="dm-row" style="margin-bottom:8px">
+            <input id="dm-mcu-filter" type="text" placeholder="Filter (e.g. stm32g4, stm32c011)" value="${escHtml(filter)}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
+            <span class="dm-size" style="min-width:auto;color:var(--text-secondary)">${dies.length} dies</span>
+          </div>
+          <p class="settings-hint" id="dm-mcu-status">${escHtml(status)}</p>
+          <div class="dm-list" id="dm-mcu-rows">${dies.length ? renderRows() : ''}</div>
+        </div>
+      `;
+
+      modal.querySelector('.settings-close')!.addEventListener('click', closeAll);
+
+      const filterInput = modal.querySelector('#dm-mcu-filter') as HTMLInputElement | null;
+      if (filterInput) {
+        filterInput.addEventListener('input', () => {
+          filter = filterInput.value;
+          const rows = modal.querySelector('#dm-mcu-rows');
+          if (rows) rows.innerHTML = renderRows();
+          attachRowHandlers();
+        });
+        filterInput.focus();
+      }
+
+      attachRowHandlers();
+    };
+
+    const attachRowHandlers = (): void => {
+      modal.querySelectorAll('[data-action="pick-die"]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const die = (btn as HTMLElement).dataset.die!;
+          await this.handlePickDie(die, ac.signal, closeAll);
+        });
+      });
+    };
+
+    render();
+
+    // Kick off index load asynchronously.
+    getDataSource().loadIndex(ac.signal)
+      .then(idx => {
+        dies = Object.entries(idx.devices ?? {})
+          .map(([die, entry]) => ({ die, entry }))
+          .sort((a, b) => a.die.localeCompare(b.die));
+        status = `Loaded ${dies.length} dies. Type to filter.`;
+        render();
+      })
+      .catch((err: Error) => {
+        if (err.name === 'AbortError') return;
+        status = `Failed to load index: ${err.message}`;
+        render();
+      });
+  }
+
+  /**
+   * After the user picks a die in the browser modal: fetch + parse, then
+   * either load directly (single variant) or open a small variant picker.
+   */
+  private async handlePickDie(die: string, signal: AbortSignal, closeBrowser: () => void): Promise<void> {
+    try {
+      this.showStatus(`Loading ${die}…`, 'info');
+      const mcus = await getDataSource().loadDie(die, signal);
+      if (mcus.length === 0) {
+        this.showStatus(`No package variants in ${die}`, 'error');
+        return;
+      }
+      if (mcus.length === 1) {
+        this.activateLoadedMcu(mcus[0]);
+        closeBrowser();
+        return;
+      }
+      this.showVariantPicker(die, mcus, closeBrowser);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if ((err as Error).name === 'AbortError') return;
+      this.showStatus(`Failed to load ${die}: ${msg}`, 'error');
+    }
+  }
+
+  /** Tiny modal listing every variant of a die so the user can pick one. */
+  private showVariantPicker(die: string, mcus: Mcu[], closeBrowser: () => void): void {
+    const picker = createModal({
+      zIndex: '1200',
+      modalClass: 'settings-modal',
+      modalStyle: { width: '500px' },
+    });
+    if (!picker) return;
+    const { modal, close } = picker;
+    modal.innerHTML = `
+      <div class="settings-header">
+        <strong>Pick a package variant for ${escHtml(die)}</strong>
+        <button class="btn btn-small settings-close">Close</button>
+      </div>
+      <div class="settings-body">
+        <div class="dm-list">
+          ${mcus.map((m, idx) => `
+            <div class="dm-row">
+              <span class="dm-name" style="font-family:monospace">${escHtml(m.refName)}</span>
+              <span class="dm-tags"><span class="dm-tag">${escHtml(m.package)}</span></span>
+              <button class="btn btn-small dm-load" data-pick="${idx}">Load</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    modal.querySelector('.settings-close')!.addEventListener('click', close);
+    modal.querySelectorAll('[data-pick]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt((btn as HTMLElement).dataset.pick || '0', 10);
+        this.activateLoadedMcu(mcus[idx]);
+        close();
+        closeBrowser();
+      });
+    });
   }
 
   private showExportEditor(fn: CustomExportFunction | null, _parentOverlay: HTMLElement, onSave: () => void): void {

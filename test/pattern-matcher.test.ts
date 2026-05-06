@@ -271,13 +271,31 @@ describe('Pattern matcher', () => {
   // ========== expandPatternToCandidates ==========
 
   describe('expandPatternToCandidates', () => {
-    // Build a minimal MCU with a few pins
+    // Build a minimal MCU with a few logical pins
+    const mkLogical = (name: string, position: string, isAssignable: boolean, signals: any[], gpioPort?: string, gpioNumber?: number) => {
+      const physical = { position, logicals: [] as any[] };
+      const lp: any = {
+        name, type: isAssignable ? 'I/O' : 'Power', signals,
+        gpioPort, gpioNumber, isAssignable,
+        isDefaultVariant: true, variantGroup: undefined, physical,
+      };
+      physical.logicals.push(lp);
+      return lp;
+    };
+    const lpPA0 = mkLogical('PA0', '1', true, [
+      sig('USART1_TX', { peripheralInstance: 'USART1', peripheralType: 'USART', instanceNumber: 1, signalFunction: 'TX' }),
+      sig('TIM2_CH1', { peripheralInstance: 'TIM2', peripheralType: 'TIM', instanceNumber: 2, signalFunction: 'CH1' }),
+    ], 'A', 0);
+    const lpPA1 = mkLogical('PA1', '2', true, [
+      sig('USART1_RX', { peripheralInstance: 'USART1', peripheralType: 'USART', instanceNumber: 1, signalFunction: 'RX' }),
+    ], 'A', 1);
+    const lpVDD = mkLogical('VDD', '3', false, []);
     const mockMcu: Mcu = {
       refName: 'TEST_MCU',
       family: 'TEST',
       line: 'TEST',
       package: 'LQFP64',
-      core: 'ARM Cortex-M4',
+      cores: ['ARM Cortex-M4'],
       frequency: 170,
       flash: 512,
       ram: 128,
@@ -286,45 +304,18 @@ describe('Pattern matcher', () => {
       temperature: { min: -40, max: 85 },
       hasPowerPad: false,
       peripherals: [],
-      pins: [
-        {
-          name: 'PA0', position: '1', type: 'I/O', isAssignable: true,
-          gpioPort: 'A', gpioNumber: 0,
-          signals: [
-            sig('USART1_TX', {
-              peripheralInstance: 'USART1', peripheralType: 'USART',
-              instanceNumber: 1, signalFunction: 'TX',
-            }),
-            sig('TIM2_CH1', {
-              peripheralInstance: 'TIM2', peripheralType: 'TIM',
-              instanceNumber: 2, signalFunction: 'CH1',
-            }),
-          ],
-        },
-        {
-          name: 'PA1', position: '2', type: 'I/O', isAssignable: true,
-          gpioPort: 'A', gpioNumber: 1,
-          signals: [
-            sig('USART1_RX', {
-              peripheralInstance: 'USART1', peripheralType: 'USART',
-              instanceNumber: 1, signalFunction: 'RX',
-            }),
-          ],
-        },
-        {
-          name: 'VDD', position: '3', type: 'Power', isAssignable: false,
-          signals: [],
-        },
-      ] as any,
-      pinByName: new Map(),
-      pinByPosition: new Map(),
-      pinByGpioName: new Map(),
+      logicalPins: [lpPA0, lpPA1, lpVDD],
+      physicalPins: [lpPA0.physical, lpPA1.physical, lpVDD.physical],
+      logicalPinByName: new Map(),
+      logicalPinsByName: new Map(),
+      logicalPinByGpioName: new Map(),
+      physicalPinByPosition: new Map(),
       peripheralByInstance: new Map(),
-      signalToPins: new Map(),
+      signalToLogicalPins: new Map(),
       typeToInstances: new Map(),
       peripheralSignals: new Map(),
-      pinSignalSet: new Map(),
-    };
+      logicalSignalSet: new Map(),
+    } as any;
 
     it('should find candidates matching a pattern', () => {
       const pattern = pat(
