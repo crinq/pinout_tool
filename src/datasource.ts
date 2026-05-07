@@ -59,20 +59,41 @@ export interface IndexDocument {
 
 const URL_STORAGE_KEY = 'mcu-data-url';
 
-/** Read the configured data source URL from localStorage. */
+/**
+ * Default catalogue URL. Used when the user hasn't picked one yet — saves
+ * a setup step for first-run users. The user can still Clear (which
+ * persists an empty string and disables the default) or Save a custom
+ * URL.
+ */
+export const DEFAULT_DATA_URL =
+  'https://raw.githubusercontent.com/crinq/mcu_data_generated/refs/heads/master/data/';
+
+/**
+ * Read the configured data source URL from localStorage.
+ *
+ * Three states:
+ *   - storage has a non-empty string → that string (user-configured).
+ *   - storage has an empty string    → null (user explicitly cleared).
+ *   - storage has no key             → DEFAULT_DATA_URL (fresh install).
+ */
 export function getDataSourceUrl(): string | null {
   try {
-    return localStorage.getItem(URL_STORAGE_KEY);
+    const stored = localStorage.getItem(URL_STORAGE_KEY);
+    if (stored === null) return DEFAULT_DATA_URL;
+    if (stored.trim() === '') return null;
+    return stored;
   } catch {
-    return null;
+    return DEFAULT_DATA_URL;
   }
 }
 
-/** Persist the data source URL. Empty string clears it. */
+/**
+ * Persist the data source URL. An empty string is stored verbatim and
+ * means "explicitly disabled" (so the default doesn't bounce back in).
+ */
 export function setDataSourceUrl(url: string): void {
   try {
-    if (url.trim() === '') localStorage.removeItem(URL_STORAGE_KEY);
-    else localStorage.setItem(URL_STORAGE_KEY, url.trim());
+    localStorage.setItem(URL_STORAGE_KEY, url.trim());
   } catch {
     // Non-fatal — running without storage just means user re-enters URL.
   }
