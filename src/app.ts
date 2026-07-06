@@ -22,6 +22,7 @@ import { fromWire, type WireSolverResult } from './solver/solution-transfer';
 import { runPreSolveChecks } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
+import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport } from './solver/diagnostics';
 import { filterStoredMcus, extractMcuFilters, matchesPatterns } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
@@ -183,6 +184,8 @@ export class App {
   private solverWorkers: Worker[] = [];
   /** Abort controller for the pre-solve fetch phase (remote MCU loads). */
   private fetchAbort: AbortController | null = null;
+  /** Diagnostics report per MCU for the in-flight solve (cleared at end). */
+  private diagnosticsByMcu = new Map<string, SolverDiagnosticsReport>();
   private isDynamicTimeoutRetry = false;
   private debugOverlay = new SolverDebugOverlay();
   private currentSolution: Solution | null = null;
@@ -504,7 +507,27 @@ export class App {
     this.showStatus(label, 'info');
     this.setSolveButtonState(true);
 
+    // Compute static diagnostics once per solve. Solvers all share the
+    // same input (constraint AST × MCU), so the bottleneck breakdown is
+    // identical across them — the per-solver Details modal still has its
+    // own runtime stats (time, evaluated, errors).
+    this.diagnosticsByMcu.clear();
+    for (const m of mcuList) {
+      try {
+        this.diagnosticsByMcu.set(m.refName, analyzeSolverInputs(parseResult.ast, m));
+      } catch (err) {
+        console.warn(`[diagnostics] failed for ${m.refName}:`, err);
+      }
+    }
+    // Always log a top-level summary so users hitting "Solve" without the
+    // overlay still get bottleneck hints in the console.
+    const headDiag = this.diagnosticsByMcu.get(mcuList[0].refName);
+    if (headDiag && headDiag.summary.length > 0) {
+      console.log('[solver]', headDiag.summary.join(' '));
+    }
+
     if (this.settings.solverDebugOverlay) {
+      this.debugOverlay.setDiagnostics(headDiag ?? null);
       this.debugOverlay.startRun(solverTypes);
     }
 
@@ -599,8 +622,16 @@ export class App {
         const transferMs = totalMs - solveMs;
         if (transferMs > 50) console.log(`[perf] ${jobLabel}: solve=${solveMs.toFixed(0)}ms, overhead≈${transferMs.toFixed(0)}ms, ${solverResult.solutions.length} solutions`);
         results.push({ solverId: jobLabel, result: solverResult });
+        const diag = this.diagnosticsByMcu.get(mcu.refName);
         for (const st of job.types) {
           this.debugOverlay.solverComplete(st, solverResult);
+          if (diag) {
+            console.log(formatSolverSummary(
+              st, solverResult.solutions.length,
+              solverResult.statistics.evaluatedCombinations,
+              solverResult.statistics.solveTimeMs, diag,
+            ));
+          }
         }
         completedCount++;
         if (totalCount > 1) {

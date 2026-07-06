@@ -19,6 +19,11 @@ const SOLVER_TIERS: Record<string, 'simple' | 'two-phase' | 'group'> = {
   'mrv-group': 'group',
   'ratio-mrv-group': 'group',
   'hybrid': 'group',
+  // Complex-problem solvers scale WITH hardness (group-tier multipliers)
+  'conflict-directed': 'group',
+  'cegar': 'group',
+  'lns-repair': 'group',
+  'adaptive': 'group',
 };
 
 export function getSolverResourceMultiplier(
@@ -146,4 +151,28 @@ registerSolver({
   id: 'hybrid',
   name: 'Hybrid (Single-Phase + Two-Phase)',
   description: 'Runs priority-backtracking, extracts instance groups from solutions, permutes symmetric ports, then runs Phase 2',
+});
+
+registerSolver({
+  id: 'conflict-directed',
+  name: 'Conflict-Directed (CBJ + dom/wdeg)',
+  description: 'Backjumps straight to conflict causes, learns hard variables via weighted-degree ordering, Luby restarts with phase saving',
+});
+
+registerSolver({
+  id: 'cegar',
+  name: 'CEGAR Instance-Refinement',
+  description: 'Closed-loop two-phase: matching oracle kills unroutable groups instantly, pin-level failures become instance nogoods steering discovery',
+});
+
+registerSolver({
+  id: 'lns-repair',
+  name: 'LNS Repair (Min-Conflicts)',
+  description: 'Repairs complete assignments instead of backtracking; destroy/repair moves double as a structural diversity engine',
+});
+
+registerSolver({
+  id: 'adaptive',
+  name: 'Adaptive Portfolio',
+  description: 'Races LNS and conflict-directed for a fast first solution, then feeds their instance groups into CEGAR for diversity',
 });

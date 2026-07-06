@@ -43,7 +43,7 @@ import { mulberry32 } from './solver-utils';
  * Extract instance groups from single-phase solutions by reverse-mapping
  * pin assignments back to peripheral instance assignments.
  */
-function extractInstanceGroupsFromSolutions(
+export function extractInstanceGroupsFromSolutions(
   solutions: Solution[],
   allInstanceVars: InstanceVariable[],
 ): InstanceGroup[] {

@@ -371,7 +371,8 @@ export function solvePhase1(
   timeoutMs: number,
   lastVarOfConfig: Map<string, number>,
   configRequiresMap: Map<string, RequireNode[]>,
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  isBlocked?: (current: InstanceAssignment[]) => boolean
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (groups.length >= maxGroups) return;
@@ -401,6 +402,8 @@ export function solvePhase1(
 
     // Eager constraint check at (port, config) boundary
     let pruned = false;
+    // CEGAR: learned instance nogoods / blocking clauses
+    if (isBlocked && isBlocked(current)) pruned = true;
     const configKey = `${v.portName}\0${v.configName}`;
     if (lastVarOfConfig.get(configKey) === varIndex) {
       const requires = configRequiresMap.get(configKey);
@@ -438,7 +441,7 @@ export function solvePhase1(
         variables, varIndex + 1, tracker, current,
         ports, groups, maxGroups,
         startTime, timeoutMs, lastVarOfConfig, configRequiresMap,
-        dmaData
+        dmaData, isBlocked
       );
     }
 
@@ -708,7 +711,8 @@ export function solvePhase2ForGroup(
   mcu?: Mcu,
   costWeights?: Map<string, number>,
   shuffleSeed?: number,
-  pinUsageCount?: Map<string, number>
+  pinUsageCount?: Map<string, number>,
+  budget?: { steps: number }
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
   // S5: Use domain cache when available to avoid redundant filtering
@@ -786,8 +790,8 @@ export function solvePhase2ForGroup(
   const solutions: Solution[] = [];
   const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
 
-  // Build forward checking propagation context
-  const propagationCtx = buildPropagationContext(filteredVars, sharedPatterns);
+  // Build forward checking propagation context (F2: with same_instance propagation)
+  const propagationCtx = buildPropagationContext(filteredVars, sharedPatterns, configRequiresMap);
 
   // C2: Create incremental cost tracker for pruning
   const costTracker = mcu && costWeights
@@ -799,7 +803,7 @@ export function solvePhase2ForGroup(
     configCombinations, ports, pinnedAssignments,
     solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
     lastVarOfConfig, configRequiresMap,
-    dmaData, propagationCtx, costTracker
+    dmaData, propagationCtx, costTracker, undefined, budget
   );
 
   return solutions;

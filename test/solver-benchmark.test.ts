@@ -42,6 +42,10 @@ const SOLVER_IDS = [
   'mrv-group',
   'ratio-mrv-group',
   'hybrid',
+  'conflict-directed',
+  'cegar',
+  'lns-repair',
+  'adaptive',
 ];
 
 // ============================================================

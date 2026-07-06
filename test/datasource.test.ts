@@ -4,7 +4,7 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { DataSource } from '../src/datasource';
+import { DataSource, DEFAULT_DATA_URL } from '../src/datasource';
 
 // jsdom in this vitest setup doesn't ship a working localStorage, so we
 // install a tiny in-memory polyfill before the DataSource sees it.
@@ -93,6 +93,25 @@ describe('DataSource', () => {
     expect(ds1.baseUrl()).toBe('https://example.com/data');
     const ds2 = new DataSource();
     expect(ds2.baseUrl()).toBe('https://example.com/data');
+  });
+
+  it('returns the default URL when storage has no entry yet', () => {
+    expect(new DataSource().baseUrl()).toBe(DEFAULT_DATA_URL);
+  });
+
+  it('treats an explicit Clear (empty string) as "disabled" — the default does NOT bounce back', () => {
+    const ds = new DataSource();
+    ds.setUrl('https://example.com/data');
+    ds.setUrl('');                          // user clicked Clear
+    expect(ds.baseUrl()).toBeNull();        // disabled, not default
+    expect(new DataSource().baseUrl()).toBeNull();   // sticks across instances
+  });
+
+  it('removing the storage key restores the default (fresh-install state)', () => {
+    const ds = new DataSource();
+    ds.setUrl('https://example.com/data');
+    localStorage.removeItem('mcu-data-url');
+    expect(new DataSource().baseUrl()).toBe(DEFAULT_DATA_URL);
   });
 
   // --------------------------------------------------------------

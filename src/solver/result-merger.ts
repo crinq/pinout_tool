@@ -60,6 +60,8 @@ export function mergeResults(
   let evaluatedCombinations = 0;
   let maxSolveTime = 0;
   let maxConfigCombinations = 0;
+  let firstSolutionMs: number | undefined;
+  let lastSolutionMs: number | undefined;
 
   for (const { solverId, result } of labeled) {
     perSolver[solverId] = { ...result.statistics };
@@ -67,6 +69,10 @@ export function mergeResults(
     evaluatedCombinations += result.statistics.evaluatedCombinations;
     maxSolveTime = Math.max(maxSolveTime, result.statistics.solveTimeMs);
     maxConfigCombinations = Math.max(maxConfigCombinations, result.statistics.configCombinations);
+    const f = result.statistics.firstSolutionMs;
+    if (f !== undefined && (firstSolutionMs === undefined || f < firstSolutionMs)) firstSolutionMs = f;
+    const l = result.statistics.lastSolutionMs;
+    if (l !== undefined && (lastSolutionMs === undefined || l > lastSolutionMs)) lastSolutionMs = l;
   }
 
   return {
@@ -79,6 +85,8 @@ export function mergeResults(
       validSolutions: trimmed.length,
       solveTimeMs: maxSolveTime,
       configCombinations: maxConfigCombinations,
+      firstSolutionMs,
+      lastSolutionMs,
       perSolver,
     },
   };

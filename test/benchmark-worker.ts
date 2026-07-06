@@ -23,6 +23,10 @@ import { solvePriorityGroup } from '../src/solver/priority-group-solver';
 import { solveMrvGroup } from '../src/solver/mrv-group-solver';
 import { solveRatioMrvGroup } from '../src/solver/ratio-mrv-group-solver';
 import { solveHybrid } from '../src/solver/hybrid-solver';
+import { solveConflictDirected } from '../src/solver/conflict-directed-solver';
+import { solveCegar } from '../src/solver/cegar-solver';
+import { solveLnsRepair } from '../src/solver/lns-solver';
+import { solveAdaptive } from '../src/solver/adaptive-solver';
 import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import type { SolverResult } from '../src/types';
@@ -136,6 +140,18 @@ process.on('message', (input: WorkerInput) => {
         break;
       case 'hybrid':
         result = solveHybrid(ast, mcu, twoPhaseConfig);
+        break;
+      case 'conflict-directed':
+        result = solveConflictDirected(ast, mcu, basicConfig);
+        break;
+      case 'cegar':
+        result = solveCegar(ast, mcu, twoPhaseConfig);
+        break;
+      case 'lns-repair':
+        result = solveLnsRepair(ast, mcu, basicConfig);
+        break;
+      case 'adaptive':
+        result = solveAdaptive(ast, mcu, twoPhaseConfig);
         break;
       default:
         result = solveConstraints(ast, mcu, basicConfig);

@@ -591,6 +591,8 @@ export class PackageViewer implements Panel {
 
     if (this.isBGA()) {
       this.renderBGA(ctx, width, height);
+    } else if (this.isDualRow()) {
+      this.renderDualRow(ctx, width, height);
     } else {
       this.renderLQFP(ctx, width, height);
     }
@@ -599,7 +601,17 @@ export class PackageViewer implements Panel {
 
   private isBGA(): boolean {
     const pkg = this.mcu?.package ?? '';
-    return /BGA|WLCSP/i.test(pkg);
+    return /BGA|WLCSP|LGA/i.test(pkg);
+  }
+
+  /**
+   * Two-sided through-hole / SMD bodies (TSSOP, SOP/SOIC, SO8, DIP, MSOP).
+   * Pin 1 sits at the top-left and numbering walks counter-clockwise:
+   * 1..N/2 down the left edge, then N/2+1..N up the right edge.
+   */
+  private isDualRow(): boolean {
+    const pkg = this.mcu?.package ?? '';
+    return /^(TSSOP|SOP|SOIC|SO\d|DIP|MSOP)/i.test(pkg);
   }
 
   private renderEmpty(): void {
@@ -837,6 +849,186 @@ export class PackageViewer implements Panel {
         ctx.textAlign = 'right';
       }
 
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Two-sided package renderer (TSSOP / SOP / SO / DIP / MSOP). Pins
+   * sit only on the left and right edges; the chip body is taller than
+   * wide to match the physical part. Layout mirrors `renderLQFP` so the
+   * hover / hit-test path doesn't need to discriminate.
+   */
+  private renderDualRow(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+    const mcu = this.mcu!;
+    const totalPins = mcu.physicalPins.length;
+
+    const packageMatch = mcu.package.match(/(\d+)/);
+    const packagePinCount = packageMatch ? parseInt(packageMatch[1], 10) : totalPins;
+    const pinsPerSide = Math.ceil(packagePinCount / 2);
+
+    // Body proportions: ~2:1 tall (typical TSSOP/SOIC outline).
+    const margin = 80;
+    const availH = Math.min(height, width * 2) - 2 * margin;
+    const pinLength = 14;
+    const pinSpacing = Math.min(14, availH / (pinsPerSide + 1));
+    const pinWidth = Math.min(8, pinSpacing * 0.7);
+
+    const chipHeight = pinsPerSide * pinSpacing + 10;
+    const chipWidth = Math.max(60, chipHeight * 0.45);
+    const chipX = (width - chipWidth) / 2;
+    const chipY = (height - chipHeight) / 2;
+
+    const textPri = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-secondary').trim() || '#f5f5f5';
+    ctx.strokeStyle = textPri;
+    ctx.lineWidth = 2;
+    ctx.fillRect(chipX, chipY, chipWidth, chipHeight);
+    ctx.strokeRect(chipX, chipY, chipWidth, chipHeight);
+
+    // Pin-1 indicator: small filled circle (industry standard for TSSOP / SOIC).
+    ctx.beginPath();
+    const indicatorR = Math.min(5, chipWidth * 0.08);
+    ctx.arc(chipX + chipWidth * 0.18, chipY + chipWidth * 0.18, indicatorR, 0, Math.PI * 2);
+    ctx.fillStyle = textPri;
+    ctx.fill();
+
+    // MCU name centered (vertical text reads naturally when the body is tall).
+    ctx.fillStyle = textPri;
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(mcu.refName, chipX + chipWidth / 2, chipY + chipHeight / 2 - 8);
+    ctx.font = '10px monospace';
+    ctx.fillText(mcu.package, chipX + chipWidth / 2, chipY + chipHeight / 2 + 8);
+
+    const assignmentsByPin = new Map<string, Assignment[]>();
+    for (const a of this.assignments) {
+      if (!assignmentsByPin.has(a.pinName)) assignmentsByPin.set(a.pinName, []);
+      assignmentsByPin.get(a.pinName)!.push(a);
+    }
+
+    this.pinRects = [];
+    const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+
+    for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
+      const phys = sortedPins[i];
+      const primary = pickPrimaryLogical(phys, assignmentsByPin);
+
+      // Side 0 = left (top→bottom, pins 1..N/2), side 1 = right (bottom→top,
+      // pins N/2+1..N). Matches DIP/TSSOP numbering convention.
+      const sideIndex = Math.floor(i / pinsPerSide);
+      const indexOnSide = i % pinsPerSide;
+      const offset = 5 + indexOnSide * pinSpacing + pinSpacing / 2;
+
+      let x = 0, y = 0, pw = 0, ph = 0;
+      let labelX = 0, labelY = 0;
+      let side: PinRect['side'];
+      if (sideIndex === 0) {
+        // Left edge — descend top to bottom.
+        x = chipX - pinLength;
+        y = chipY + offset - pinWidth / 2;
+        pw = pinLength;
+        ph = pinWidth;
+        labelX = x - 3;
+        labelY = y + pinWidth / 2;
+        side = 'left';
+      } else {
+        // Right edge — ascend bottom to top (so highest pin number sits opposite pin 1).
+        x = chipX + chipWidth;
+        y = chipY + chipHeight - offset - pinWidth / 2;
+        pw = pinLength;
+        ph = pinWidth;
+        labelX = x + pinLength + 3;
+        labelY = y + pinWidth / 2;
+        side = 'right';
+      }
+
+      this.pinRects.push({ x, y, width: pw, height: ph, phys, primary, labelX, labelY, labelRotation: 0, side });
+
+      const pinAssignments = physicalAssignments(phys, assignmentsByPin);
+      const isHovered = this.hoveredPhys === phys;
+      const isSelected = this.selectedPhys === phys;
+      const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
+      const hlColor = phys.logicals.map(l => this.getPinHighlightColor(l.name)).find(c => c) ?? null;
+
+      let fillColor: string;
+      if (isHovered) {
+        fillColor = '#fbbf24';
+      } else if (isSelected) {
+        fillColor = '#f97316';
+      } else if (isIncompat) {
+        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
+      } else if (pinAssignments.length > 0) {
+        const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
+        const portColor = portName ? this.portColors.get(portName) : undefined;
+        fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
+      } else if (!phys.logicals.some(l => l.isAssignable)) {
+        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
+      } else {
+        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
+      }
+
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(x, y, pw, ph);
+
+      if (hlColor) {
+        const intensity = this.getPulseIntensity();
+        ctx.save();
+        ctx.globalAlpha = intensity;
+        ctx.shadowColor = hlColor;
+        ctx.shadowBlur = 6 + 6 * intensity;
+        ctx.strokeStyle = hlColor;
+        ctx.lineWidth = 2.5;
+        ctx.strokeRect(x, y, pw, ph);
+        ctx.restore();
+      } else {
+        ctx.strokeStyle = textPri;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(x, y, pw, ph);
+      }
+
+      // Label (horizontal — TSSOP has plenty of room either side).
+      ctx.save();
+      ctx.translate(labelX, labelY);
+      ctx.rotate(-this.rotation * Math.PI / 2);
+
+      const sideNames: PinRect['side'][] = ['left', 'top', 'right', 'bottom'];
+      const screenSideIdx = (sideNames.indexOf(side) + this.rotation) % 4;
+      const screenSide = sideNames[screenSideIdx];
+      const screenLabelRotation = (screenSide === 'top' || screenSide === 'bottom') ? -Math.PI / 2 : 0;
+      ctx.rotate(screenLabelRotation);
+
+      const fontSize = Math.min(9, pinSpacing * 0.65);
+      ctx.fillStyle = textPri;
+      ctx.font = `${fontSize}px monospace`;
+      if (hlColor) ctx.globalAlpha = this.getPulseIntensity();
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = screenSide === 'left' ? 'right'
+        : screenSide === 'right' ? 'left'
+        : screenSide === 'top' ? 'left'
+        : 'right';
+
+      const baseGpio = primary.gpioPort && primary.gpioNumber !== undefined
+        ? `P${primary.gpioPort}${primary.gpioNumber}`
+        : primary.name.substring(0, 6);
+      const extras = phys.logicals.length - 1;
+      const gpio = extras > 0 ? `${baseGpio}+${extras}` : baseGpio;
+      let label: string;
+      if (pinAssignments.length > 0) {
+        const nonPinned = pinAssignments.filter(a => a.portName !== '<pinned>');
+        if (nonPinned.length > 0) {
+          const portChannel = `${nonPinned[0].portName}.${nonPinned[0].channelName}`;
+          const signals = [...new Set(nonPinned.map(a => a.signalName))];
+          label = `${gpio} ${portChannel} ${signals.join(' ')}`;
+        } else {
+          const signals = [...new Set(pinAssignments.map(a => a.signalName))];
+          label = `${gpio} ${signals.join(' ')}`;
+        }
+      } else {
+        label = gpio;
+      }
       ctx.fillText(label, 0, 0);
       ctx.restore();
     }

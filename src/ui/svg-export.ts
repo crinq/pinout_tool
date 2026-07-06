@@ -112,6 +112,75 @@ function buildAssignmentMap(assignments: Assignment[]): Map<string, Assignment[]
 }
 
 // ============================================================
+// TSSOP / SOP / SO / DIP SVG (two-sided body)
+// ============================================================
+
+function renderDualRowSvg(opts: SvgExportOptions): string {
+  const { mcu, assignments, portColors, width, height, darkMode } = opts;
+  const colors = getColors(darkMode);
+  const assignmentsByPin = buildAssignmentMap(assignments);
+
+  const totalPins = mcu.physicalPins.length;
+  const packageMatch = mcu.package.match(/(\d+)/);
+  const packagePinCount = packageMatch ? parseInt(packageMatch[1], 10) : totalPins;
+  const pinsPerSide = Math.ceil(packagePinCount / 2);
+
+  const pinSpacing = 14;
+  const pinLength = 14;
+  const pinWidth = Math.min(8, pinSpacing * 0.7);
+  const chipHeight = pinsPerSide * pinSpacing + 10;
+  const chipWidth = Math.max(60, chipHeight * 0.45);
+  const chipX = (width - chipWidth) / 2;
+  const chipY = (height - chipHeight) / 2;
+
+  const parts: string[] = [];
+  parts.push(`<rect width="${width}" height="${height}" fill="${colors.bg}"/>`);
+  parts.push(`<rect x="${chipX}" y="${chipY}" width="${chipWidth}" height="${chipHeight}" fill="${colors.chipBg}" stroke="${colors.text}" stroke-width="2"/>`);
+
+  // Pin 1 indicator: dot near top-left corner.
+  const indicatorR = Math.min(5, chipWidth * 0.08);
+  parts.push(`<circle cx="${chipX + chipWidth * 0.18}" cy="${chipY + chipWidth * 0.18}" r="${indicatorR}" fill="${colors.text}"/>`);
+
+  const cx = chipX + chipWidth / 2;
+  const cy = chipY + chipHeight / 2;
+  parts.push(`<text x="${cx}" y="${cy - 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-weight="bold" font-size="11" fill="${colors.text}">${esc(mcu.refName)}</text>`);
+  parts.push(`<text x="${cx}" y="${cy + 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="10" fill="${colors.text}">${esc(mcu.package)}</text>`);
+
+  const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+  const fontSize = Math.min(9, pinSpacing * 0.65);
+
+  for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
+    const phys = sortedPins[i];
+    const sideIndex = Math.floor(i / pinsPerSide);
+    const indexOnSide = i % pinsPerSide;
+    const offset = 5 + indexOnSide * pinSpacing + pinSpacing / 2;
+
+    let x = 0, y = 0, labelX = 0, labelY = 0;
+    let anchor: string;
+    if (sideIndex === 0) {
+      x = chipX - pinLength;
+      y = chipY + offset - pinWidth / 2;
+      labelX = x - 3;
+      labelY = y + pinWidth / 2;
+      anchor = 'end';
+    } else {
+      x = chipX + chipWidth;
+      y = chipY + chipHeight - offset - pinWidth / 2;
+      labelX = x + pinLength + 3;
+      labelY = y + pinWidth / 2;
+      anchor = 'start';
+    }
+
+    const fill = pinColor(phys, assignmentsByPin, portColors, colors);
+    parts.push(`<rect x="${x}" y="${y}" width="${pinLength}" height="${pinWidth}" fill="${fill}" stroke="${colors.text}" stroke-width="0.5"/>`);
+    const label = esc(pinLabel(phys, assignmentsByPin));
+    parts.push(`<text x="${labelX}" y="${labelY}" text-anchor="${anchor}" dominant-baseline="middle" font-family="monospace" font-size="${fontSize}" fill="${colors.text}">${label}</text>`);
+  }
+
+  return parts.join('\n  ');
+}
+
+// ============================================================
 // LQFP SVG
 // ============================================================
 
@@ -327,7 +396,8 @@ export function exportSvg(
   portColors: Map<string, string>,
 ): string {
   const darkMode = document.documentElement.getAttribute('data-theme') === 'dark';
-  const isBGA = /BGA|WLCSP/i.test(mcu.package);
+  const isBGA = /BGA|WLCSP|LGA/i.test(mcu.package);
+  const isDualRow = /^(TSSOP|SOP|SOIC|SO\d|DIP|MSOP)/i.test(mcu.package);
 
   const assignmentsByPin = buildAssignmentMap(assignments);
   const pinCount = mcu.physicalPins.length;
@@ -344,6 +414,17 @@ export function exportSvg(
     const side = Math.ceil(Math.sqrt(pinCount));
     width = Math.max(400, side * 28 + 140);
     height = width;
+  } else if (isDualRow) {
+    const pinsPerSide = Math.ceil(pinCount / 2);
+    const pinSpacing = 14;
+    const pinLength = 14;
+    const fontSize = Math.min(9, pinSpacing * 0.65);
+    const labelPx = maxLabelChars * fontSize * 0.62 + 10;
+    const chipHeight = pinsPerSide * pinSpacing + 10;
+    const chipWidth = Math.max(60, chipHeight * 0.45);
+    // Body + pins both sides + labels both sides + padding.
+    width = Math.max(360, chipWidth + 2 * pinLength + 2 * labelPx + 20);
+    height = Math.max(280, chipHeight + 40);
   } else {
     const pinsPerSide = Math.floor(pinCount / 4);
     const pinSpacing = 14;
@@ -359,7 +440,10 @@ export function exportSvg(
   }
 
   const opts: SvgExportOptions = { mcu, assignments, portColors, width, height, darkMode };
-  const content = isBGA ? renderBGASvg(opts) : renderLQFPSvg(opts);
+  const content = isBGA
+    ? renderBGASvg(opts)
+    : isDualRow ? renderDualRowSvg(opts)
+    : renderLQFPSvg(opts);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">

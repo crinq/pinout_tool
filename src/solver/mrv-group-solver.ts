@@ -21,7 +21,7 @@ import {
   emptyResult, pushSolverWarnings, finalizeSolutions,
   createPinTracker,
   partitionGpioVariables, isGpioVariable,
-  configsHaveDma, buildPinLookups,
+  configsHaveDma, buildPinLookups, buildSameInstancePropagator,
   type SolverVariable, type PinnedAssignment, type PortSpec,
 } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
@@ -169,6 +169,7 @@ function solvePhase2MRV(
   }
 
   const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(filteredVars);
+  const sameInstance = buildSameInstancePropagator(filteredVars, configRequiresMap);
 
   const tracker = createPinTracker(reservedPins, sharedPatterns);
   const solutions: Solution[] = [];
@@ -179,7 +180,7 @@ function solvePhase2MRV(
     solutions, maxSolutions, startTime, timeoutMs, stats,
     configRequiresMap, configVarIndices, 0, n,
     pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-    dmaData
+    dmaData, sameInstance
   );
 
   return solutions;

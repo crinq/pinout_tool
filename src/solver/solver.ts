@@ -196,6 +196,8 @@ export interface PropagationContext {
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>;
   sharedPatterns: PatternPart[];
   removedStack: Array<Array<{ varIdx: number; candIdx: number }>>;
+  /** F2: same_instance propagation structure (optional) */
+  sameInstance?: SameInstancePropagator;
 }
 
 export type PinLookups = {
@@ -227,13 +229,17 @@ export function buildPinLookups(variables: SolverVariable[]): PinLookups {
 
 export function buildPropagationContext(
   variables: SolverVariable[],
-  sharedPatterns: PatternPart[]
+  sharedPatterns: PatternPart[],
+  configRequiresMap?: Map<string, RequireNode[]>
 ): PropagationContext {
   const domains = variables.map(v => [...v.domain]);
   const assigned = new Array(variables.length).fill(false);
   const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(variables);
+  const sameInstance = configRequiresMap
+    ? buildSameInstancePropagator(variables, configRequiresMap)
+    : undefined;
 
-  return { domains, assigned, pinToVarCandidates, instanceToVarCandidates, sharedPatterns, removedStack: [] };
+  return { domains, assigned, pinToVarCandidates, instanceToVarCandidates, sharedPatterns, removedStack: [], sameInstance };
 }
 
 /** Check if any port has ALL its configs blocked (every config has at least one unassigned variable with empty domain) */
@@ -336,6 +342,144 @@ export function undoPropagateShared(
   for (const entry of removed) {
     domains[entry.varIdx].push(entry.candIdx);
   }
+}
+
+// ============================================================
+// F2: Early same_instance Propagation
+//
+// same_instance(a, b, c, "SPI") is only *checked* when the last
+// variable of its (port, config) is assigned. Propagating it when
+// the FIRST member is assigned collapses the sibling domains from
+// ~all instances to one, pruning exponential subtrees.
+// ============================================================
+
+export interface SameInstanceGroup {
+  members: number[];         // indices into the variables array
+  typeFilter: string | null; // normalized peripheral type, null = all candidates constrained
+}
+
+export interface SameInstancePropagator {
+  groups: SameInstanceGroup[];
+  byVar: Map<number, number[]>; // varIdx -> indices into groups
+}
+
+/** Collect same_instance calls from positive conjunctive positions (top-level or AND chains). */
+function collectSameInstanceCalls(expr: ConstraintExprNode, out: ConstraintExprNode[]): void {
+  if (expr.type === 'function_call' && expr.name === 'same_instance') {
+    out.push(expr);
+    return;
+  }
+  if (expr.type === 'binary_expr' && expr.operator === '&') {
+    collectSameInstanceCalls(expr.left, out);
+    collectSameInstanceCalls(expr.right, out);
+  }
+  // Under |, ^, !, comparisons: propagation would be unsound - skip.
+}
+
+/**
+ * Build the same_instance propagation structure for a variable set.
+ * Only same-port channel references (idents) are propagated; cross-port
+ * (dot_access) constraints stay check-only. Optional requires (require?)
+ * are soft and never propagated.
+ */
+export function buildSameInstancePropagator(
+  variables: SolverVariable[],
+  configRequiresMap: Map<string, RequireNode[]>
+): SameInstancePropagator | undefined {
+  const groups: SameInstanceGroup[] = [];
+
+  // (port, config, channel) -> variable indices
+  const varsByChannel = new Map<string, number[]>();
+  for (let i = 0; i < variables.length; i++) {
+    const v = variables[i];
+    const key = `${v.portName}\0${v.configName}\0${v.channelName}`;
+    if (!varsByChannel.has(key)) varsByChannel.set(key, []);
+    varsByChannel.get(key)!.push(i);
+  }
+
+  for (const [configKey, requires] of configRequiresMap) {
+    const [portName, configName] = configKey.split('\0');
+    for (const req of requires) {
+      if (req.optional) continue;
+      const calls: ConstraintExprNode[] = [];
+      collectSameInstanceCalls(req.expression, calls);
+      for (const call of calls) {
+        if (call.type !== 'function_call') continue;
+        const args = call.args;
+        let typeFilter: string | null = null;
+        let channelArgs = args;
+        if (args.length > 0 && args[args.length - 1].type === 'string_literal') {
+          typeFilter = normalizePeripheralType((args[args.length - 1] as { value: string }).value);
+          channelArgs = args.slice(0, -1);
+        }
+        // Only pure same-port ident references are propagatable
+        if (!channelArgs.every(a => a.type === 'ident')) continue;
+
+        const members: number[] = [];
+        for (const arg of channelArgs) {
+          const chName = (arg as { name: string }).name;
+          const idxs = varsByChannel.get(`${portName}\0${configName}\0${chName}`);
+          if (idxs) members.push(...idxs);
+        }
+        if (members.length >= 2) {
+          groups.push({ members, typeFilter });
+        }
+      }
+    }
+  }
+
+  if (groups.length === 0) return undefined;
+
+  const byVar = new Map<number, number[]>();
+  for (let gi = 0; gi < groups.length; gi++) {
+    for (const mi of groups[gi].members) {
+      if (!byVar.has(mi)) byVar.set(mi, []);
+      byVar.get(mi)!.push(gi);
+    }
+  }
+  return { groups, byVar };
+}
+
+/**
+ * Propagate a same_instance binding from a just-assigned variable to its
+ * unassigned group siblings. Returns removed (varIdx, candIdx) entries;
+ * undo with undoPropagateShared. Mirrors evaluateFunctionCall semantics:
+ * with a type filter only candidates of that type are constrained, without
+ * one every candidate must carry the same instance.
+ */
+export function propagateSameInstance(
+  varIdx: number,
+  candidate: SignalCandidate,
+  prop: SameInstancePropagator,
+  variables: SolverVariable[],
+  domains: number[][],
+  isAssigned: (idx: number) => boolean
+): Array<{ varIdx: number; candIdx: number }> {
+  const groupIdxs = prop.byVar.get(varIdx);
+  const removed: Array<{ varIdx: number; candIdx: number }> = [];
+  if (!groupIdxs) return removed;
+
+  for (const gi of groupIdxs) {
+    const g = prop.groups[gi];
+    // With a filter, only assignments of that type bind the group
+    if (g.typeFilter && candidate.peripheralType !== g.typeFilter) continue;
+    const inst = candidate.peripheralInstance;
+
+    for (const mi of g.members) {
+      if (mi === varIdx || isAssigned(mi)) continue;
+      const mv = variables[mi];
+      const dom = domains[mi];
+      for (let di = dom.length - 1; di >= 0; di--) {
+        const c = mv.candidates[dom[di]];
+        if (g.typeFilter && c.peripheralType !== g.typeFilter) continue;
+        if (c.peripheralInstance !== inst) {
+          removed.push({ varIdx: mi, candIdx: dom[di] });
+          dom.splice(di, 1);
+        }
+      }
+    }
+  }
+  return removed;
 }
 
 // ============================================================
@@ -1752,7 +1896,8 @@ export function solveBacktrack(
   dmaData?: DmaData,
   propagationCtx?: PropagationContext,
   costTracker?: IncrementalCostTracker,
-  mcuInfo?: EvalMcuInfo
+  mcuInfo?: EvalMcuInfo,
+  budget?: { steps: number }
 ): void {
   // Iterative backtracking with explicit stack (avoids stack overflow on large problems)
   const totalVars = variables.length;
@@ -1771,6 +1916,7 @@ export function solveBacktrack(
   while (stackVarIdx.length > 0) {
     if (performance.now() - startTime > timeoutMs) return;
     if (solutions.length >= maxSolutions) return;
+    if (budget && --budget.steps < 0) return;
 
     const sp = stackVarIdx.length - 1;
     const vi = stackVarIdx[sp];
@@ -1903,6 +2049,13 @@ export function solveBacktrack(
       // Forward checking propagation (if enabled)
       if (!pruned && propagationCtx) {
         propagationCtx.assigned[vi] = true;
+        // F2: propagate same_instance bindings before pin/instance exclusivity;
+        // the wipeout check in propagateShared then covers both removals.
+        const siRemoved = propagationCtx.sameInstance
+          ? propagateSameInstance(
+              vi, candidate, propagationCtx.sameInstance,
+              variables, propagationCtx.domains, i => propagationCtx.assigned[i])
+          : null;
         const removed = propagateShared(
           candidate, v.portName,
           variables, propagationCtx.domains, i => propagationCtx.assigned[i],
@@ -1910,8 +2063,12 @@ export function solveBacktrack(
           propagationCtx.sharedPatterns
         );
         if (removed === null) {
+          if (siRemoved) undoPropagateShared(siRemoved, propagationCtx.domains);
           pruned = true;
           propagationCtx.assigned[vi] = false;
+        } else if (siRemoved && siRemoved.length > 0) {
+          for (const e of removed) siRemoved.push(e);
+          propagationCtx.removedStack.push(siRemoved);
         } else {
           propagationCtx.removedStack.push(removed);
         }
@@ -2579,6 +2736,26 @@ function computeGlobalDmaAssignment(
     return configCombinations.map(() => new Map());
   }
 
+  // F3: cache the stream-assignment outcome per requirement set. It depends
+  // only on (combo, port, trigger, instance, shared-flag) — not on which pins
+  // carry the signals — so leaves differing only in pin choice reuse one
+  // backtracking run. Result maps are rebuilt per call (signal names differ).
+  const cacheKey = allReqs.map(r =>
+    `${r.comboIdx}|${r.portName}|${r.triggerName}|${
+      r.peripheralInstance && sharedPatterns && sharedPatterns.length > 0 &&
+      isSharedInstance(r.peripheralInstance, sharedPatterns) ? 1 : 0}`
+  ).join(';');
+  let dmaCache = DMA_RESULT_CACHE.get(dmaData);
+  if (!dmaCache) {
+    dmaCache = new Map();
+    DMA_RESULT_CACHE.set(dmaData, dmaCache);
+  }
+  const cachedStreams = dmaCache.get(cacheKey);
+  if (cachedStreams === null) return null; // known infeasible
+  if (cachedStreams !== undefined) {
+    return buildDmaResultMaps(configCombinations, allReqs, cachedStreams, triggerSignals);
+  }
+
   // Identify shared triggers: triggers for shared peripherals used by multiple ports
   const sharedTriggerGroup = new Map<string, string>();
   if (sharedPatterns && sharedPatterns.length > 0) {
@@ -2646,13 +2823,31 @@ function computeGlobalDmaAssignment(
     return false;
   }
 
-  if (!solve(0)) return null;
+  if (!solve(0)) {
+    dmaCache.set(cacheKey, null); // F3: remember infeasible requirement sets
+    return null;
+  }
 
-  // Build per-combo result maps keyed by triggerName + signal names
+  const assignedNames = assigned.map(s => s ? s.name : '');
+  dmaCache.set(cacheKey, assignedNames); // F3
+  return buildDmaResultMaps(configCombinations, allReqs, assignedNames, triggerSignals);
+}
+
+// F3: per-DmaData cache of stream-assignment outcomes keyed by requirement set.
+// null = infeasible; string[] = assigned stream name per requirement index.
+const DMA_RESULT_CACHE = new WeakMap<DmaData, Map<string, string[] | null>>();
+
+/** Build per-combo result maps (trigger → stream, plus signal → stream aliases). */
+function buildDmaResultMaps(
+  configCombinations: Map<string, string>[],
+  allReqs: Array<DmaReq & { comboIdx: number }>,
+  assignedNames: string[],
+  triggerSignals: Map<string, Set<string>>
+): Map<string, string>[] {
   const results: Map<string, string>[] = configCombinations.map(() => new Map());
   for (let i = 0; i < allReqs.length; i++) {
-    if (assigned[i]) {
-      const streamName = assigned[i]!.name;
+    if (assignedNames[i]) {
+      const streamName = assignedNames[i];
       const comboIdx = allReqs[i].comboIdx;
       const triggerName = allReqs[i].triggerName;
       results[comboIdx].set(triggerName, streamName);

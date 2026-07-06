@@ -14,6 +14,10 @@ import { solvePriorityGroup } from './priority-group-solver';
 import { solveMrvGroup } from './mrv-group-solver';
 import { solveRatioMrvGroup } from './ratio-mrv-group-solver';
 import { solveHybrid } from './hybrid-solver';
+import { solveConflictDirected } from './conflict-directed-solver';
+import { solveCegar } from './cegar-solver';
+import { solveLnsRepair } from './lns-solver';
+import { solveAdaptive } from './adaptive-solver';
 import { getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { computePortPriority } from './port-priority';
@@ -39,6 +43,10 @@ const SOLVER_LABELS: Record<string, string> = {
   'mrv-group': 'MRV-Group',
   'ratio-mrv-group': 'Ratio-MRV',
   'hybrid': 'Hybrid',
+  'conflict-directed': 'Conflict-Directed',
+  'cegar': 'CEGAR',
+  'lns-repair': 'LNS',
+  'adaptive': 'Adaptive',
 };
 
 function tagErrors(result: SolverResult, solverId: string): SolverResult {
@@ -157,6 +165,10 @@ function runSingleSolver(
     case 'mrv-group': result = solveMrvGroup(ast, mcu, buildTP()); break;
     case 'ratio-mrv-group': result = solveRatioMrvGroup(ast, mcu, buildTP()); break;
     case 'hybrid': result = solveHybrid(ast, mcu, buildTP()); break;
+    case 'conflict-directed': result = solveConflictDirected(ast, mcu, adjustedConfig); break;
+    case 'cegar': result = solveCegar(ast, mcu, buildTP()); break;
+    case 'lns-repair': result = solveLnsRepair(ast, mcu, adjustedConfig); break;
+    case 'adaptive': result = solveAdaptive(ast, mcu, buildTP()); break;
     default: result = solveConstraints(ast, mcu, adjustedConfig); break;
   }
   return tagErrors(result, st);

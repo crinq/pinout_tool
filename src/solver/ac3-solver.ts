@@ -17,10 +17,12 @@ import {
   evaluateAllConstraints, buildSolution,
   canAssignPin, assignPin, unassignPin, evaluateExpr,
   propagateShared, undoPropagateShared, buildPinLookups,
+  buildSameInstancePropagator, propagateSameInstance,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
+  type SameInstancePropagator,
 } from './solver';
 import type { PatternPart } from '../parser/constraint-ast';
 
@@ -45,6 +47,7 @@ export function solveAC3(
   const domains: number[][] = ctx.variables.map(v => [...v.domain]);
 
   const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(ctx.variables);
+  const sameInstance = buildSameInstancePropagator(ctx.variables, ctx.configRequiresMap);
 
   solveBacktrackAC3(
     ctx.variables, 0, ctx.tracker, [],
@@ -52,7 +55,7 @@ export function solveAC3(
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
     domains, pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
-    ctx.dmaData
+    ctx.dmaData, sameInstance
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -79,7 +82,8 @@ function solveBacktrackAC3(
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   sharedPatterns: PatternPart[],
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  sameInstance?: SameInstancePropagator
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -154,8 +158,11 @@ function solveBacktrackAC3(
     }
 
     if (!pruned) {
-      // Forward-check propagation
+      // Forward-check propagation (F2: same_instance first, shared wipeout check covers both)
       assigned.add(varIndex);
+      const siRemoved = sameInstance
+        ? propagateSameInstance(varIndex, candidate, sameInstance, variables, domains, i => assigned.has(i))
+        : null;
       const removed = propagateShared(
         candidate, v.portName,
         variables, domains, i => assigned.has(i),
@@ -171,10 +178,11 @@ function solveBacktrackAC3(
           solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
           lastVarOfConfig, configRequiresMap,
           domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData
+          dmaData, sameInstance
         );
         undoPropagateShared(removed, domains);
       }
+      if (siRemoved) undoPropagateShared(siRemoved, domains);
       assigned.delete(varIndex);
     }
 

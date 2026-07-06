@@ -13,10 +13,12 @@ import {
   evaluateAllConstraints, buildSolution,
   canAssignPin, assignPin, unassignPin, evaluateExpr,
   propagateShared, undoPropagateShared, buildPinLookups,
+  buildSameInstancePropagator, propagateSameInstance,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker,
+  type SameInstancePropagator,
 } from './solver';
 
 export function solveDynamicMRV(
@@ -50,6 +52,7 @@ export function solveDynamicMRV(
   }
 
   const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(ctx.variables);
+  const sameInstance = buildSameInstancePropagator(ctx.variables, ctx.configRequiresMap);
 
   solveBacktrackDynamic(
     ctx.variables, assigned, domains, ctx.tracker, [],
@@ -57,7 +60,7 @@ export function solveDynamicMRV(
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats,
     ctx.configRequiresMap, configVarIndices, 0, n,
     pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
-    ctx.dmaData
+    ctx.dmaData, sameInstance
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -89,7 +92,8 @@ export function solveBacktrackDynamic(
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   sharedPatterns: PatternPart[],
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  sameInstance?: SameInstancePropagator
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -203,7 +207,10 @@ export function solveBacktrackDynamic(
     }
 
     if (!pruned) {
-      // Forward checking propagation
+      // Forward checking propagation (F2: same_instance first, shared wipeout check covers both)
+      const siRemoved = sameInstance
+        ? propagateSameInstance(vi, candidate, sameInstance, variables, domains, i => assigned[i])
+        : null;
       const removed = propagateShared(
         candidate, v.portName,
         variables, domains, i => assigned[i],
@@ -217,10 +224,11 @@ export function solveBacktrackDynamic(
           solutions, maxSolutions, startTime, timeoutMs, stats,
           configRequiresMap, configVarIndices, depth + 1, totalVars,
           pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData
+          dmaData, sameInstance
         );
         undoPropagateShared(removed, domains);
       }
+      if (siRemoved) undoPropagateShared(siRemoved, domains);
     }
 
     current.pop();
