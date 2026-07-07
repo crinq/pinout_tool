@@ -139,11 +139,11 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 5000,
+  maxSolutions: 1000,
   solverTimeoutMs: 2500,
-  dynamicTimeoutMultiplier: 5,
-  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid'],
-  maxGroups: 500,
+  dynamicTimeoutMultiplier: 2,
+  solverTypes: ['two-phase', 'randomized-restarts', 'cost-guided', 'diverse-instances', 'dynamic-mrv', 'priority-diverse', 'mrv-group', 'ratio-mrv-group', 'hybrid', 'conflict-directed', 'cegar', 'lns-repair', 'adaptive'],
+  maxGroups: 250,
   maxSolutionsPerGroup: 100,
   numRestarts: 150,
   costWeights: {
