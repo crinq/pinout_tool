@@ -15,6 +15,7 @@ import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityRes
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
 import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary } from './storage';
+import { getKv, migrateLocalStorageToIdb } from './kv';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
@@ -27,7 +28,7 @@ import { filterStoredMcus, extractMcuFilters, matchesPatterns } from './mcu-matc
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
 import type { TutorialStep } from '../ts_lib/src/tutorial';
-import { seedMacroLibrary, getStdlibSource, invalidateStdlibCache, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
+import { seedMacroLibrary, getStdlibSource, primeStdlibSource, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
 
 // ============================================================
 // Simple JS syntax highlighter for the export function editor
@@ -251,12 +252,17 @@ export class App {
     // Global keyboard shortcuts
     this.setupKeyboardShortcuts();
 
-    // Restore constraint text from URL hash or localStorage
-    this.restoreState();
-
-    // Seed defaults
-    seedDefaultExports();
-    seedMacroLibrary();
+    // Move heavy localStorage entries (mcu-xml, project, …) into IDB on
+    // first boot. Idempotent: a one-shot flag in localStorage gates this.
+    // Restore state runs after so it sees the migrated keys.
+    void (async () => {
+      try { await migrateLocalStorageToIdb(); } catch (err) {
+        console.warn('[migration] failed:', err);
+      }
+      void this.restoreState();
+      void seedDefaultExports();
+      void seedMacroLibrary();
+    })();
 
     // Show tutorial for first-time users
     if (shouldShowTutorial('tutorial-seen')) {
@@ -350,7 +356,11 @@ export class App {
       if (solveBtn) {
         const hasErrors = result.errors.length > 0;
         const hasMcu = this.currentMcu !== null;
-        (solveBtn as HTMLButtonElement).disabled = hasErrors || !hasMcu;
+        // `mcu:` filter drives multi-MCU mode — remote fetch or stored
+        // scan populates the mcu list at solve time, so no loaded MCU
+        // is required.
+        const hasMcuFilter = result.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
+        (solveBtn as HTMLButtonElement).disabled = hasErrors || (!hasMcu && !hasMcuFilter);
       }
 
       // Show pin declarations on viewer immediately (before solving)
@@ -409,11 +419,11 @@ export class App {
       mcuList = [];
       const seen = new Set<string>();
 
-      const matchingRefs = filterStoredMcus(parseResult.ast);
+      const matchingRefs = await filterStoredMcus(parseResult.ast);
       for (const ref of matchingRefs) {
         let mcu = this.mcuCache.get(ref);
         if (!mcu) {
-          const xml = localStorage.getItem(`mcu-xml:${ref}`);
+          const xml = await getKv().get(`mcu-xml:${ref}`);
           if (!xml) continue;
           try {
             mcu = parseMcuXml(xml);
@@ -1093,7 +1103,7 @@ export class App {
     }
   }
 
-  private loadMcuXml(xmlString: string, fileName: string): void {
+  private async loadMcuXml(xmlString: string, fileName: string): Promise<void> {
     const mcu = parseMcuXml(xmlString);
     const validation = validateMcu(mcu);
 
@@ -1112,14 +1122,14 @@ export class App {
 
     // Persist raw XML so reloads don't need a re-import.
     try {
-      localStorage.setItem(`mcu-xml:${mcu.refName}`, xmlString);
+      await getKv().set(`mcu-xml:${mcu.refName}`, xmlString);
       const tags = ['PIN'];
       if (mcu.dma) tags.push('DMA');
-      localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify({
+      await getKv().set(`mcu-meta:${mcu.refName}`, JSON.stringify({
         tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
       }));
-    } catch {
-      console.warn('Failed to store MCU XML (storage full?)');
+    } catch (err) {
+      console.warn('Failed to store MCU XML:', err);
     }
 
     this.activateLoadedMcu(mcu);
@@ -1132,6 +1142,11 @@ export class App {
   private activateLoadedMcu(mcu: Mcu): void {
     this.currentMcu = mcu;
     this.mcuCache.set(mcu.refName, mcu);
+    // ponytail: temporary diagnostic — remove once JSON solver path proven.
+    console.log(
+      `[mcu-loaded] ${mcu.refName}: ${mcu.logicalPins.length} logicals, ${mcu.peripherals.length} peripherals, `
+      + `types=${[...mcu.typeToInstances.keys()].sort().join(',')}`
+    );
 
     const mcuInfo = document.getElementById('mcu-info');
     if (mcuInfo) {
@@ -1150,7 +1165,7 @@ export class App {
     this.showStatus(`Loaded ${mcu.refName} (${mcu.physicalPins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
   }
 
-  private reimportAllMcus(): void {
+  private async reimportAllMcus(): Promise<void> {
     let updated = 0;
     let failed = 0;
     for (let i = 0; i < localStorage.length; i++) {
@@ -1164,11 +1179,11 @@ export class App {
         // Preserve existing tags, update everything else
         let tags = ['PIN'];
         try {
-          const oldMeta = localStorage.getItem(`mcu-meta:${refName}`);
+          const oldMeta = await getKv().get(`mcu-meta:${refName}`);
           if (oldMeta) tags = JSON.parse(oldMeta).tags ?? ['PIN'];
         } catch { /* use default */ }
         if (mcu.dma) tags = [...new Set([...tags, 'DMA'])];
-        localStorage.setItem(`mcu-meta:${refName}`, JSON.stringify({
+        await getKv().set(`mcu-meta:${refName}`, JSON.stringify({
           tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
         }));
         updated++;
@@ -1182,13 +1197,13 @@ export class App {
     this.showStatus(msg, failed ? 'error' : 'success');
   }
 
-  private loadTutorialExample(): void {
+  private async loadTutorialExample(): Promise<void> {
     // Reset project selection so the dropdown doesn't show a stale project
     this.currentProjectName = null;
     this.projectSelect.value = '';
 
     // Try loading MCU from localStorage first, then fetch
-    const storedXml = localStorage.getItem('mcu-xml:STM32H755IIKx');
+    const storedXml = await getKv().get('mcu-xml:STM32H755IIKx');
     if (storedXml) {
       this.loadMcuXml(storedXml, 'STM32H755IIKx.xml');
       this.fetchTutorialConstraints();
@@ -1319,7 +1334,7 @@ export class App {
     ];
   }
 
-  private loadDmaXml(xmlString: string, fileName: string): void {
+  private async loadDmaXml(xmlString: string, fileName: string): Promise<void> {
     const version = getDmaXmlVersion(xmlString);
     if (!version) {
       this.showStatus(`No version found in DMA XML ${fileName}`, 'error');
@@ -1331,7 +1346,7 @@ export class App {
 
     // Store the raw DMA XML keyed by version
     try {
-      localStorage.setItem(`dma-xml:${version}`, xmlString);
+      await getKv().set(`dma-xml:${version}`, xmlString);
     } catch {
       console.warn('Failed to store DMA XML (storage full?)');
     }
@@ -1348,11 +1363,11 @@ export class App {
       if (mcu.dma) {
         // Update the stored MCU metadata tags
         try {
-          const metaStr = localStorage.getItem(`mcu-meta:${mcu.refName}`);
+          const metaStr = await getKv().get(`mcu-meta:${mcu.refName}`);
           const meta = metaStr ? JSON.parse(metaStr) : { tags: ['PIN'] };
           if (!meta.tags.includes('DMA')) {
             meta.tags.push('DMA');
-            localStorage.setItem(`mcu-meta:${mcu.refName}`, JSON.stringify(meta));
+            await getKv().set(`mcu-meta:${mcu.refName}`, JSON.stringify(meta));
           }
         } catch { /* ignore */ }
 
@@ -1366,13 +1381,13 @@ export class App {
    * Find the DMA IP version in the MCU's peripherals and try to load
    * matching DMA XML from localStorage.
    */
-  private attachDmaData(mcu: Mcu): void {
+  private async attachDmaData(mcu: Mcu): Promise<void> {
     // Find the DMA peripheral's version tag
     const dmaPeripheral = mcu.peripherals.find(p => p.type === 'DMA' || p.originalType === 'DMA');
     if (!dmaPeripheral?.version) return;
 
     const dmaVersion = dmaPeripheral.version;
-    const dmaXml = localStorage.getItem(`dma-xml:${dmaVersion}`);
+    const dmaXml = await getKv().get(`dma-xml:${dmaVersion}`);
     if (!dmaXml) return;
 
     try {
@@ -1394,7 +1409,7 @@ export class App {
     }
   }
 
-  private loadIocData(text: string, fileName: string): void {
+  private async loadIocData(text: string, fileName: string): Promise<void> {
     const ioc = parseIocFile(text);
 
     if (!ioc.mcuName) {
@@ -1404,7 +1419,7 @@ export class App {
 
     // Try to load matching MCU from localStorage
     if (!this.currentMcu || this.currentMcu.refName !== ioc.mcuName) {
-      const storedXml = localStorage.getItem(`mcu-xml:${ioc.mcuName}`);
+      const storedXml = await getKv().get(`mcu-xml:${ioc.mcuName}`);
       if (storedXml) {
         this.loadMcuXml(storedXml, `${ioc.mcuName} (from storage)`);
       } else {
@@ -1452,20 +1467,15 @@ export class App {
     this.showStatus('New project', 'info');
   }
 
-  private listProjectNames(): string[] {
-    const projects: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith('project:')) {
-        projects.push(key.substring('project:'.length));
-      }
-    }
-    return projects.sort();
+  private async listProjectNames(): Promise<string[]> {
+    const keys = await getKv().keysWithPrefix('project:');
+    return keys.map(k => k.substring('project:'.length)).sort();
   }
 
-  private listProjects(): { name: string; size: number; tags: string[]; versionCount: number }[] {
-    return this.listProjectNames().map(name => {
-      const raw = localStorage.getItem(`project:${name}`);
+  private async listProjects(): Promise<{ name: string; size: number; tags: string[]; versionCount: number }[]> {
+    const names = await this.listProjectNames();
+    return Promise.all(names.map(async name => {
+      const raw = await getKv().get(`project:${name}`);
       const size = raw ? raw.length : 0;
       const tags: string[] = [];
       let versionCount = 0;
@@ -1481,17 +1491,17 @@ export class App {
         }
       } catch { /* ignore */ }
       return { name, size, tags, versionCount };
-    });
+    }));
   }
 
   /** Save project by overwriting the latest version (header Save + project list Save) */
-  private saveProject(name: string): void {
+  private async saveProject(name: string): Promise<void> {
     const version = this.buildCurrentVersion(0);
 
     // Load existing project data
     let projectData: ProjectData = { name, versions: [] };
     try {
-      const existing = localStorage.getItem(`project:${name}`);
+      const existing = await getKv().get(`project:${name}`);
       if (existing) {
         projectData = migrateProjectData(JSON.parse(existing));
         projectData.name = name;
@@ -1511,7 +1521,7 @@ export class App {
   }
 
   /** Save As: prompt for name, append a new version */
-  private saveProjectAs(): void {
+  private async saveProjectAs(): Promise<void> {
     const name = prompt('Project name:', this.currentProjectName || '');
     if (!name?.trim()) return;
     const trimmed = name.trim();
@@ -1519,7 +1529,7 @@ export class App {
     // Load existing project data (may or may not exist)
     let projectData: ProjectData = { name: trimmed, versions: [] };
     try {
-      const existing = localStorage.getItem(`project:${trimmed}`);
+      const existing = await getKv().get(`project:${trimmed}`);
       if (existing) {
         projectData = migrateProjectData(JSON.parse(existing));
         projectData.name = trimmed;
@@ -1540,18 +1550,18 @@ export class App {
     return { id, timestamp: Date.now(), constraintText: text, mcuRef, solutions };
   }
 
-  private persistProject(name: string, projectData: ProjectData, version: ProjectVersion): void {
+  private async persistProject(name: string, projectData: ProjectData, version: ProjectVersion): Promise<void> {
     const json = JSON.stringify(projectData);
 
     try {
-      localStorage.setItem(`project:${name}`, json);
+      await getKv().set(`project:${name}`, json);
     } catch {
       // Quota exceeded - try trimming old versions (keep latest 2)
       if (projectData.versions.length > 2) {
         projectData.versions = projectData.versions.slice(-2);
         projectData.versions.forEach((v, i) => v.id = i);
         try {
-          localStorage.setItem(`project:${name}`, JSON.stringify(projectData));
+          await getKv().set(`project:${name}`, JSON.stringify(projectData));
           this.showStatus(`Project "${name}" saved (trimmed old versions to fit)`, 'success');
           this.currentProjectName = name;
           localStorage.setItem('current-project', name);
@@ -1564,7 +1574,7 @@ export class App {
       const liteVersion: ProjectVersion = { ...version, solutions: [] };
       const liteData: ProjectData = { name, versions: [liteVersion] };
       try {
-        localStorage.setItem(`project:${name}`, JSON.stringify(liteData));
+        await getKv().set(`project:${name}`, JSON.stringify(liteData));
         this.showStatus(`Storage full - saved without solutions (${(json.length / 1024).toFixed(0)}KB needed)`, 'error');
         this.currentProjectName = name;
         localStorage.setItem('current-project', name);
@@ -1584,8 +1594,8 @@ export class App {
     this.showStatus(`Project "${name}" saved (v${version.id}, ${solCount} solutions)`, 'success');
   }
 
-  loadProject(name: string): void {
-    const raw = localStorage.getItem(`project:${name}`);
+  async loadProject(name: string): Promise<void> {
+    const raw = await getKv().get(`project:${name}`);
     if (!raw) {
       this.showStatus(`Project "${name}" not found`, 'error');
       return;
@@ -1603,8 +1613,8 @@ export class App {
     }
   }
 
-  private loadProjectVersion(name: string, versionId: number): void {
-    const raw = localStorage.getItem(`project:${name}`);
+  private async loadProjectVersion(name: string, versionId: number): Promise<void> {
+    const raw = await getKv().get(`project:${name}`);
     if (!raw) return;
     try {
       const projectData = migrateProjectData(JSON.parse(raw));
@@ -1619,7 +1629,7 @@ export class App {
     }
   }
 
-  private applyProjectVersion(name: string, version: ProjectVersion): void {
+  private async applyProjectVersion(name: string, version: ProjectVersion): Promise<void> {
     this.loadingProject = true;
     this.constraintEditor.setText(version.constraintText || '');
     this.currentProjectName = name;
@@ -1655,25 +1665,26 @@ export class App {
       if (solveBtn) {
         const parseResult = this.constraintEditor.getParseResult();
         const hasErrors = !parseResult || parseResult.errors.length > 0;
-        solveBtn.disabled = hasErrors || !this.currentMcu;
+        const hasMcuFilter = parseResult?.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
+        solveBtn.disabled = hasErrors || (!this.currentMcu && !hasMcuFilter);
       }
     }, 400);
     const solCount = version.solutions?.length ?? 0;
     this.showStatus(`Project "${name}" loaded (v${version.id}${solCount > 0 ? `, ${solCount} solutions` : ''})`, 'success');
   }
 
-  deleteProject(name: string): void {
-    localStorage.removeItem(`project:${name}`);
+  async deleteProject(name: string): Promise<void> {
+    await getKv().delete(`project:${name}`);
     if (this.currentProjectName === name) {
       this.currentProjectName = null;
       localStorage.removeItem('current-project');
     }
-    this.refreshProjectList();
+    await this.refreshProjectList();
   }
 
-  private refreshProjectList(): void {
+  private async refreshProjectList(): Promise<void> {
     if (!this.projectSelect) return;
-    const projects = this.listProjectNames();
+    const projects = await this.listProjectNames();
     this.projectSelect.innerHTML = '<option value="">-- No project --</option>';
     for (const name of projects) {
       const opt = document.createElement('option');
@@ -1765,10 +1776,10 @@ export class App {
     });
   }
 
-  private restoreState(): void {
+  private async restoreState(): Promise<void> {
     // Restore current project name
     this.currentProjectName = localStorage.getItem('current-project') || null;
-    this.refreshProjectList();
+    void this.refreshProjectList();
 
     // Try URL hash first, then localStorage
     const hash = window.location.hash.slice(1);
@@ -1804,7 +1815,7 @@ export class App {
 
     // If we have a current project, load it (with versioned format)
     if (this.currentProjectName) {
-      const raw = localStorage.getItem(`project:${this.currentProjectName}`);
+      const raw = await getKv().get(`project:${this.currentProjectName}`);
       if (raw) {
         try {
           const projectData = migrateProjectData(JSON.parse(raw));
@@ -2051,8 +2062,8 @@ export class App {
     });
   }
 
-  private loadStoredMcu(refName: string): void {
-    const xml = localStorage.getItem(`mcu-xml:${refName}`);
+  private async loadStoredMcu(refName: string): Promise<void> {
+    const xml = await getKv().get(`mcu-xml:${refName}`);
     if (!xml) {
       this.showStatus(`Stored MCU "${refName}" not found`, 'error');
       return;
@@ -2090,22 +2101,20 @@ export class App {
     }
   }
 
-  private listStoredMcus(): { refName: string; size: number; tags: string[] }[] {
-    const mcus: { refName: string; size: number; tags: string[] }[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith('mcu-xml:')) {
-        const refName = key.substring('mcu-xml:'.length);
-        const size = (localStorage.getItem(key) || '').length;
-        let tags: string[] = [];
-        try {
-          const meta = localStorage.getItem(`mcu-meta:${refName}`);
-          if (meta) tags = JSON.parse(meta).tags ?? [];
-        } catch { /* ignore */ }
-        mcus.push({ refName, size, tags });
-      }
-    }
-    return mcus.sort((a, b) => a.refName.localeCompare(b.refName));
+  private async listStoredMcus(): Promise<{ refName: string; size: number; tags: string[] }[]> {
+    const kv = getKv();
+    const xmlKeys = await kv.keysWithPrefix('mcu-xml:');
+    return Promise.all(xmlKeys.map(async key => {
+      const refName = key.substring('mcu-xml:'.length);
+      const xml = await kv.get(key);
+      const size = xml ? xml.length : 0;
+      let tags: string[] = [];
+      try {
+        const meta = await kv.get(`mcu-meta:${refName}`);
+        if (meta) tags = JSON.parse(meta).tags ?? [];
+      } catch { /* ignore */ }
+      return { refName, size, tags };
+    })).then(list => list.sort((a, b) => a.refName.localeCompare(b.refName)));
   }
 
   private showDataManager(): void {
@@ -2113,18 +2122,16 @@ export class App {
     if (!result) return;
     const { modal, close } = result;
 
-    const renderContent = (): void => {
-      const storedMcus = this.listStoredMcus();
-      const projects = this.listProjects();
+    const renderContent = async (): Promise<void> => {
+      const storedMcus = await this.listStoredMcus();
+      const projects = await this.listProjects();
+      const customExports = await loadCustomExports();
 
-      // Calculate total localStorage usage
-      let totalChars = 0;
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key) totalChars += key.length + (localStorage.getItem(key) || '').length;
-      }
-      const usedKB = (totalChars / 1024).toFixed(0);
-      const limitKB = 5120; // ~10MB UTF-16 = ~5M chars
+      // Storage usage from IDB (gigabytes-scale) replaces the old
+      // ~5 MB localStorage budget. The estimate is best-effort.
+      const usage = await getKv().estimate();
+      const usedKB = usage ? (usage.usedBytes / 1024).toFixed(0) : '?';
+      const limitKB = usage && usage.quotaBytes > 0 ? (usage.quotaBytes / 1024).toFixed(0) : '?';
 
       const hasMcu = this.currentMcu !== null;
       const hasDma = this.currentMcu?.dma !== undefined;
@@ -2243,9 +2250,8 @@ export class App {
             <h3>Custom Export Functions</h3>
             <div class="dm-list">
               ${(() => {
-                const exports = loadCustomExports();
-                if (exports.length === 0) return '<p class="settings-hint">No custom export functions. Click "New" to create one.</p>';
-                return exports.map(fn => `
+                if (customExports.length === 0) return '<p class="settings-hint">No custom export functions. Click "New" to create one.</p>';
+                return customExports.map(fn => `
                   <div class="dm-row">
                     <span class="dm-name">${fn.name}</span>
                     <span class="dm-size" style="min-width:auto">${fn.description}</span>
@@ -2272,12 +2278,12 @@ export class App {
       modal.querySelector('.settings-close')!.addEventListener('click', close);
 
       modal.querySelectorAll('[data-action]').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
           const action = (btn as HTMLElement).dataset.action;
           const name = (btn as HTMLElement).dataset.name!;
           switch (action) {
             case 'load-mcu':
-              this.loadStoredMcu(name);
+              await this.loadStoredMcu(name);
               close();
               break;
             case 'export-mcu':
@@ -2293,13 +2299,13 @@ export class App {
               this.exportCurrentAst();
               break;
             case 'delete-mcu':
-              localStorage.removeItem(`mcu-xml:${name}`);
-              localStorage.removeItem(`mcu-meta:${name}`);
-              renderContent();
+              await getKv().delete(`mcu-xml:${name}`);
+              await getKv().delete(`mcu-meta:${name}`);
+              void renderContent();
               break;
             case 'reimport-all':
               this.reimportAllMcus();
-              renderContent();
+              void renderContent();
               break;
             case 'load-project':
               this.loadProject(name);
@@ -2310,7 +2316,7 @@ export class App {
               break;
             case 'delete-project':
               this.deleteProject(name);
-              renderContent();
+              void renderContent();
               break;
             case 'toggle-versions': {
               const idx = (btn as HTMLElement).dataset.idx;
@@ -2338,39 +2344,39 @@ export class App {
               break;
             case 'edit-export': {
               const exportId = (btn as HTMLElement).dataset.exportId!;
-              const exports = loadCustomExports();
+              const exports = await loadCustomExports();
               const fn = exports.find(e => e.id === exportId);
-              if (fn) this.showExportEditor(fn, result.overlay, renderContent);
+              if (fn) this.showExportEditor(fn, result.overlay, () => { void renderContent(); });
               break;
             }
             case 'delete-export': {
               const exportId = (btn as HTMLElement).dataset.exportId!;
-              deleteCustomExport(exportId);
-              renderContent();
+              await deleteCustomExport(exportId);
+              void renderContent();
               break;
             }
             case 'edit-macro-lib':
               this.showMacroLibEditor(result.overlay);
               break;
             case 'reset-macro-lib':
-              saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
-              invalidateStdlibCache();
+              await saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
+              await primeStdlibSource();
               break;
             case 'save-data-url': {
               const input = modal.querySelector('#dm-data-url') as HTMLInputElement | null;
               if (input) {
                 getDataSource().setUrl(input.value);
                 this.showStatus(input.value ? `Data URL saved: ${input.value}` : 'Data URL cleared', 'success');
-                renderContent();
+                void renderContent();
               }
               break;
             }
             case 'clear-data-url':
               getDataSource().setUrl('');
-              renderContent();
+              void renderContent();
               break;
             case 'browse-mcu':
-              this.showMcuBrowser(result.overlay, () => renderContent());
+              this.showMcuBrowser(result.overlay, () => { void renderContent(); });
               break;
             case 'load-cached': {
               // Walk the cache to find the variant. Cheaper than tracking
@@ -2388,7 +2394,7 @@ export class App {
             }
             case 'evict-cached': {
               const die = (btn as HTMLElement).dataset.die!;
-              if (getDataSource().evict(die)) renderContent();
+              if (getDataSource().evict(die)) void renderContent();
               break;
             }
           }
@@ -2396,7 +2402,7 @@ export class App {
       });
     };
 
-    renderContent();
+    void renderContent();
   }
 
   /**
@@ -2686,7 +2692,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         }
       });
 
-      modal.querySelector('#export-editor-save')!.addEventListener('click', () => {
+      modal.querySelector('#export-editor-save')!.addEventListener('click', async () => {
         const nameVal = (modal.querySelector('#export-editor-name') as HTMLInputElement).value.trim();
         const descVal = (modal.querySelector('#export-editor-desc') as HTMLInputElement).value.trim();
         const codeVal = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
@@ -2711,7 +2717,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         current.name = nameVal;
         current.description = descVal;
         current.code = codeVal;
-        saveCustomExport(current);
+        await saveCustomExport(current);
         closeExport();
         onSave();
       });
@@ -2792,7 +2798,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       syncLineNumbers();
     });
 
-    modal.querySelector('#macro-lib-save')!.addEventListener('click', () => {
+    modal.querySelector('#macro-lib-save')!.addEventListener('click', async () => {
       const source = codeEl.value;
       // Validate syntax
       const result = parseConstraints(source);
@@ -2802,16 +2808,16 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         errorEl.textContent = result.errors.map(e => `Line ${e.line}: ${e.message}`).join('; ');
         return;
       }
-      saveMacroLibrary(source);
-      invalidateStdlibCache();
+      await saveMacroLibrary(source);
+      await primeStdlibSource();
       closeMacro();
     });
   }
 
 
-  private renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): void {
+  private async renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): Promise<void> {
     try {
-      const raw = localStorage.getItem(`project:${projectName}`);
+      const raw = await getKv().get(`project:${projectName}`);
       if (!raw) return;
       const projectData = migrateProjectData(JSON.parse(raw));
       const versions = projectData.versions;
@@ -2836,18 +2842,19 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       }).join('');
 
       container.querySelectorAll('[data-action]').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', async () => {
           const action = (btn as HTMLElement).dataset.action;
           const vId = parseInt((btn as HTMLElement).dataset.versionId || '0');
           if (action === 'restore-version') {
-            this.loadProjectVersion(projectName, vId);
+            await this.loadProjectVersion(projectName, vId);
             overlay.remove();
           } else if (action === 'delete-version') {
-            this.deleteProjectVersion(projectName, vId);
-            if (this.listProjectNames().includes(projectName)) {
-              this.renderVersionList(container, projectName, overlay, renderContent);
+            await this.deleteProjectVersion(projectName, vId);
+            const names = await this.listProjectNames();
+            if (names.includes(projectName)) {
+              await this.renderVersionList(container, projectName, overlay, renderContent);
             } else {
-              renderContent();
+              void renderContent();
             }
           } else if (action === 'inspect-version') {
             const panel = container.querySelector(`[data-inspect-version="${vId}"]`) as HTMLElement;
@@ -2933,8 +2940,8 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     </div>`;
   }
 
-  private deleteProjectVersion(projectName: string, versionId: number): void {
-    const raw = localStorage.getItem(`project:${projectName}`);
+  private async deleteProjectVersion(projectName: string, versionId: number): Promise<void> {
+    const raw = await getKv().get(`project:${projectName}`);
     if (!raw) return;
     try {
       const projectData = migrateProjectData(JSON.parse(raw));
@@ -2945,7 +2952,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       }
       // Re-number version ids
       projectData.versions.forEach((v, i) => v.id = i);
-      localStorage.setItem(`project:${projectName}`, JSON.stringify(projectData));
+      await getKv().set(`project:${projectName}`, JSON.stringify(projectData));
       this.refreshProjectList();
     } catch { /* ignore */ }
   }
@@ -2980,11 +2987,11 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     this.downloadJson(parseResult.ast, `${name}-ast.json`);
   }
 
-  private exportMcuData(refName: string): void {
-    const mcuXml = localStorage.getItem(`mcu-xml:${refName}`);
+  private async exportMcuData(refName: string): Promise<void> {
+    const mcuXml = await getKv().get(`mcu-xml:${refName}`);
     if (!mcuXml) return;
 
-    const metaStr = localStorage.getItem(`mcu-meta:${refName}`);
+    const metaStr = await getKv().get(`mcu-meta:${refName}`);
     const meta = metaStr ? JSON.parse(metaStr) : null;
 
     // Find associated DMA XML by extracting the DMA version from MCU XML
@@ -2993,7 +3000,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     const dmaMatch = mcuXml.match(/Name="DMA"\s+Version="([^"]+)"/);
     if (dmaMatch) {
       dmaVersion = dmaMatch[1];
-      dmaXml = localStorage.getItem(`dma-xml:${dmaVersion}`);
+      dmaXml = await getKv().get(`dma-xml:${dmaVersion}`);
     }
 
     const exportData: Record<string, unknown> = { refName, mcuXml };
@@ -3004,8 +3011,8 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     this.downloadJson(exportData, `${refName}.json`);
   }
 
-  private exportProjectData(projectName: string): void {
-    const raw = localStorage.getItem(`project:${projectName}`);
+  private async exportProjectData(projectName: string): Promise<void> {
+    const raw = await getKv().get(`project:${projectName}`);
     if (!raw) return;
     const projectData = migrateProjectData(JSON.parse(raw));
     this.downloadJson(projectData, `${projectName}.json`);

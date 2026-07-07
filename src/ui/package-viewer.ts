@@ -158,7 +158,7 @@ export class PackageViewer implements Panel {
     exportBtn.className = 'btn btn-small pv-btn';
     exportBtn.title = 'Export pinout';
     exportBtn.textContent = 'Export';
-    exportBtn.addEventListener('click', () => this.showExportModal());
+    exportBtn.addEventListener('click', () => { void this.showExportModal(); });
     toolbar.appendChild(exportBtn);
 
     this.canvas = document.createElement('canvas');
@@ -274,7 +274,7 @@ export class PackageViewer implements Panel {
     this.render();
   }
 
-  private showExportModal(): void {
+  private async showExportModal(): Promise<void> {
     if (!this.mcu) return;
 
     const existing = document.querySelector('.export-overlay');
@@ -290,7 +290,7 @@ export class PackageViewer implements Panel {
     modal.className = 'export-modal';
     const hasAssignments = this.assignments.length > 0;
 
-    const customExports = loadCustomExports();
+    const customExports = await loadCustomExports();
 
     let customHtml = '';
     if (customExports.length > 0) {

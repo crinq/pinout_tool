@@ -620,24 +620,37 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
     logicalSignalSet.set(lp.name, sigSet);
   }
 
-  // Synthesize GPIO peripheral entries for every GPIO port that pin
-  // signals reference, matching what the XML path does.
+  // Synthesize peripheral entries for every instance a signal references
+  // that isn't already in `peripherals[]`. Real peripherals (USART, SPI)
+  // are already covered; this catches synthetic ones the vendor JSON
+  // exposes only via gpio alternate_functions — DEBUG_SWDIO on H7 (no
+  // DEBUG peripheral) or RCC_MCO on any family, plus every GPIO port.
+  // Without this, the constraint solver's peripheral-availability check
+  // reports "0 instances" for buckets that actually exist as signals.
   const peripherals = [...a.peripherals];
-  for (const gpioInst of gpioInstances) {
-    if (!peripheralByInstance.has(gpioInst)) {
-      const gpioPeripheral: Peripheral = {
-        instanceName: gpioInst,
-        type: 'GPIO',
-        originalType: 'GPIO',
-        version: '',
-      };
-      peripherals.push(gpioPeripheral);
-      peripheralByInstance.set(gpioInst, gpioPeripheral);
-      const arr = typeToInstances.get('GPIO') ?? [];
-      arr.push(gpioInst);
-      typeToInstances.set('GPIO', arr);
+  for (const [instance, sigs] of peripheralSignals) {
+    if (peripheralByInstance.has(instance)) continue;
+    // Derive type from the first signal that mentions this instance so we
+    // agree with `signal.peripheralType` (already normalized).
+    let type = 'GPIO';
+    for (const lp of logicalPins) {
+      const found = lp.signals.find(s => s.peripheralInstance === instance);
+      if (found?.peripheralType) { type = found.peripheralType; break; }
     }
+    const synth: Peripheral = {
+      instanceName: instance,
+      type,
+      originalType: type,
+      version: '',
+    };
+    peripherals.push(synth);
+    peripheralByInstance.set(instance, synth);
+    const arr = typeToInstances.get(type) ?? [];
+    arr.push(instance);
+    typeToInstances.set(type, arr);
+    void sigs;   // marker — we only care that the instance had signals.
   }
+  void gpioInstances;   // still populated for backwards-compat, unused here.
 
   return {
     refName: a.pkg.variant,
@@ -703,7 +716,10 @@ function addLogical(
     signals,
     gpioPort: gpio?.port,
     gpioNumber: gpio?.number,
-    isAssignable: isAssignable && (gpio !== null || pinType === 'MonoIO'),
+    // Trust the JSON `type` discriminator. H7 `_C` analog-switch pins are
+    // `type: "io"` but don't parse as `P[A-Z]\d+` — the gpio-required
+    // guard would drop them and their ADC signals disappear.
+    isAssignable,
     isDefaultVariant: isDefault,
     variantGroup,
     physical,

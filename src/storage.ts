@@ -1,4 +1,5 @@
 import type { Solution, SolverResult, Assignment, ConfigCombinationAssignment, CustomExportFunction } from './types';
+import { getKv } from './kv';
 
 // ============================================================
 // Serialized Types (JSON-safe, no Map/Set)
@@ -166,25 +167,26 @@ export function serializeSolverResult(result: SolverResult): SerializedSolution[
 
 const CUSTOM_EXPORT_PREFIX = 'custom-export:';
 
-export function loadCustomExports(): CustomExportFunction[] {
+export async function loadCustomExports(): Promise<CustomExportFunction[]> {
   const results: CustomExportFunction[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key?.startsWith(CUSTOM_EXPORT_PREFIX)) {
-      try {
-        results.push(JSON.parse(localStorage.getItem(key)!));
-      } catch { /* skip corrupt entries */ }
-    }
+  const kv = getKv();
+  const keys = await kv.keysWithPrefix(CUSTOM_EXPORT_PREFIX);
+  for (const k of keys) {
+    const v = await kv.get(k);
+    if (v == null) continue;
+    try {
+      results.push(JSON.parse(v));
+    } catch { /* skip corrupt entries */ }
   }
   return results.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function saveCustomExport(fn: CustomExportFunction): void {
-  localStorage.setItem(CUSTOM_EXPORT_PREFIX + fn.id, JSON.stringify(fn));
+export async function saveCustomExport(fn: CustomExportFunction): Promise<void> {
+  await getKv().set(CUSTOM_EXPORT_PREFIX + fn.id, JSON.stringify(fn));
 }
 
-export function deleteCustomExport(id: string): void {
-  localStorage.removeItem(CUSTOM_EXPORT_PREFIX + id);
+export async function deleteCustomExport(id: string): Promise<void> {
+  await getKv().delete(CUSTOM_EXPORT_PREFIX + id);
 }
 
 export const DEFAULT_EXPORT_EXAMPLE: CustomExportFunction = {
@@ -216,11 +218,13 @@ for (const r of rows) {
 return lines.join('\\n');`,
 };
 
-export function seedDefaultExports(): void {
+export async function seedDefaultExports(): Promise<void> {
+  // `custom-export-seeded` stays on localStorage (sync-friendly) so we
+  // can short-circuit cheaply on every boot. The actual export blob
+  // moved to the async kv.
   if (localStorage.getItem('custom-export-seeded')) return;
-  if (!localStorage.getItem(CUSTOM_EXPORT_PREFIX + DEFAULT_EXPORT_EXAMPLE.id)) {
-    saveCustomExport(DEFAULT_EXPORT_EXAMPLE);
-  }
+  const existing = await getKv().get(CUSTOM_EXPORT_PREFIX + DEFAULT_EXPORT_EXAMPLE.id);
+  if (existing == null) await saveCustomExport(DEFAULT_EXPORT_EXAMPLE);
   localStorage.setItem('custom-export-seeded', '1');
 }
 
@@ -230,12 +234,12 @@ export function seedDefaultExports(): void {
 
 const MACRO_LIB_KEY = 'macro-library';
 
-export function loadMacroLibrary(): string | null {
-  try { return localStorage.getItem(MACRO_LIB_KEY); } catch { return null; }
+export async function loadMacroLibrary(): Promise<string | null> {
+  try { return await getKv().get(MACRO_LIB_KEY); } catch { return null; }
 }
 
-export function saveMacroLibrary(source: string): void {
-  try { localStorage.setItem(MACRO_LIB_KEY, source); } catch { /* storage unavailable */ }
+export async function saveMacroLibrary(source: string): Promise<void> {
+  try { await getKv().set(MACRO_LIB_KEY, source); } catch { /* storage unavailable */ }
 }
 
 // ============================================================

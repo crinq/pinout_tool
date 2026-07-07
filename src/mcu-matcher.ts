@@ -7,6 +7,7 @@
 
 import type { ProgramNode } from './parser/constraint-ast';
 import { escapeRegex } from './utils';
+import { getKv } from './kv';
 
 export interface McuMetadata {
   refName: string;
@@ -76,16 +77,18 @@ export function matchesPatterns(value: string, patterns: string[]): boolean {
 }
 
 /**
- * List all stored MCU metadata from localStorage.
- * Uses mcu-meta: entries. If metadata is missing ram/flash/package fields
- * (legacy entries), extracts them from the raw MCU XML and updates the metadata.
+ * List all stored MCU metadata via the async KV store.
+ * Uses `mcu-meta:` entries. If a metadata entry is missing ram/flash/
+ * package fields (legacy entries) the raw MCU XML is reparsed lightly
+ * and the metadata is rewritten in-place so subsequent scans skip the
+ * reparse.
  */
-export function listStoredMcuMetadata(): McuMetadata[] {
+export async function listStoredMcuMetadata(): Promise<McuMetadata[]> {
   const results: McuMetadata[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key?.startsWith('mcu-xml:')) continue;
+  const kv = getKv();
+  const xmlKeys = await kv.keysWithPrefix('mcu-xml:');
 
+  for (const key of xmlKeys) {
     const refName = key.substring('mcu-xml:'.length);
     let pkg = '';
     let ram = 0;
@@ -99,7 +102,7 @@ export function listStoredMcuMetadata(): McuMetadata[] {
     let tags: string[] = [];
 
     try {
-      const metaStr = localStorage.getItem(`mcu-meta:${refName}`);
+      const metaStr = await kv.get(`mcu-meta:${refName}`);
       if (metaStr) {
         const meta = JSON.parse(metaStr);
         tags = meta.tags ?? [];
@@ -114,9 +117,9 @@ export function listStoredMcuMetadata(): McuMetadata[] {
         cores = meta.cores ?? [];
       }
 
-      // Backfill missing fields from the XML root element attributes
+      // Backfill missing fields from the XML root element attributes.
       if (!pkg || !ram || !flash || !frequency || (!tempMin && !tempMax) || cores.length === 0) {
-        const xml = localStorage.getItem(key);
+        const xml = await kv.get(key);
         if (xml) {
           const extracted = extractMetaFromXml(xml);
           if (extracted) {
@@ -129,9 +132,9 @@ export function listStoredMcuMetadata(): McuMetadata[] {
             voltageMin = voltageMin || extracted.voltageMin;
             voltageMax = voltageMax || extracted.voltageMax;
             if (cores.length === 0) cores = extracted.cores;
-            // Update stored metadata so we don't parse XML again
+            // Rewrite metadata so we skip the reparse next time.
             try {
-              localStorage.setItem(`mcu-meta:${refName}`, JSON.stringify({
+              await kv.set(`mcu-meta:${refName}`, JSON.stringify({
                 tags, package: pkg, ram, flash, frequency,
                 tempMin, tempMax, voltageMin, voltageMax, cores,
               }));
@@ -311,11 +314,11 @@ export function extractMcuFilters(ast: ProgramNode): {
  * Filter stored MCUs by constraint criteria.
  * Returns matching MCU refNames.
  */
-export function filterStoredMcus(ast: ProgramNode): string[] {
+export async function filterStoredMcus(ast: ProgramNode): Promise<string[]> {
   const filters = extractMcuFilters(ast);
   if (!filters) return [];
 
-  const allMcus = listStoredMcuMetadata();
+  const allMcus = await listStoredMcuMetadata();
 
   return allMcus
     .filter(m => {
