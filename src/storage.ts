@@ -243,6 +243,20 @@ export async function saveMacroLibrary(source: string): Promise<void> {
 }
 
 // ============================================================
+// Common-error lint library
+// ============================================================
+
+const LINT_LIB_KEY = 'common-errors-library';
+
+export async function loadCommonErrorsLibrary(): Promise<string | null> {
+  try { return await getKv().get(LINT_LIB_KEY); } catch { return null; }
+}
+
+export async function saveCommonErrorsLibrary(source: string): Promise<void> {
+  try { await getKv().set(LINT_LIB_KEY, source); } catch { /* storage unavailable */ }
+}
+
+// ============================================================
 // Project Data Migration
 // ============================================================
 

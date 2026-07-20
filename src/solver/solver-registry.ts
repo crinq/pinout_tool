@@ -19,7 +19,6 @@ const SOLVER_TIERS: Record<string, 'simple' | 'two-phase' | 'group'> = {
   'mrv-group': 'group',
   'ratio-mrv-group': 'group',
   'hybrid': 'group',
-  // Complex-problem solvers scale WITH hardness (group-tier multipliers)
   'conflict-directed': 'group',
   'cegar': 'group',
   'lns-repair': 'group',
@@ -156,13 +155,13 @@ registerSolver({
 registerSolver({
   id: 'conflict-directed',
   name: 'Conflict-Directed (CBJ + dom/wdeg)',
-  description: 'Backjumps straight to conflict causes, learns hard variables via weighted-degree ordering, Luby restarts with phase saving',
+  description: 'Backjumps to conflict causes, learns hard variables via weighted-degree ordering, Luby restarts with phase saving',
 });
 
 registerSolver({
   id: 'cegar',
   name: 'CEGAR Instance-Refinement',
-  description: 'Closed-loop two-phase: matching oracle kills unroutable groups instantly, pin-level failures become instance nogoods steering discovery',
+  description: 'Closed-loop two-phase: matching oracle kills unroutable groups instantly, pin-level failures become instance nogoods',
 });
 
 registerSolver({
@@ -174,5 +173,5 @@ registerSolver({
 registerSolver({
   id: 'adaptive',
   name: 'Adaptive Portfolio',
-  description: 'Races LNS and conflict-directed for a fast first solution, then feeds their instance groups into CEGAR for diversity',
+  description: 'Races LNS and conflict-directed for a fast first solution, then feeds instance groups into CEGAR for diversity',
 });

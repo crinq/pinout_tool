@@ -2,7 +2,9 @@ import type { Panel } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
-import { getStdlibMacroNames } from '../parser/stdlib-macros';
+import { getStdlibMacroNames, getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { expandAllMacros } from '../parser/macro-expander';
+import { lintForCommonErrors, getCachedLintLib, type LintWarning } from '../parser/lint-common-errors';
 import { escapeHtml, escapeRegex, createModal } from '../utils';
 import { ConstraintMinimap } from './constraint-minimap';
 
@@ -76,6 +78,8 @@ export class ConstraintEditor implements Panel {
   private errorPanel!: HTMLDivElement;
   private solverStatusBar!: HTMLDivElement;
   private parseResult: ParseResult | null = null;
+  private lintWarnings: LintWarning[] = [];
+  private lintWarningLines: Set<number> = new Set();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private changeCallbacks: Array<(text: string, result: ParseResult) => void> = [];
 
@@ -247,7 +251,7 @@ export class ConstraintEditor implements Panel {
     const parserErrors = this.parseResult.errors.map(e => e.line);
     const allErrors = [...new Set([...parserErrors, ...lines])];
     const totalLines = this.textarea.value.split('\n').length;
-    this.minimap.update(this.parseResult.ast, totalLines, allErrors);
+    this.minimap.update(this.parseResult.ast, totalLines, allErrors, [...this.lintWarningLines]);
   }
 
   /** Move cursor to the start of a given line (1-based) and scroll into view */
@@ -344,13 +348,15 @@ export class ConstraintEditor implements Panel {
   private doParse(): void {
     const text = this.textarea.value;
     this.parseResult = parseConstraints(text);
-    this.updateErrors(this.parseResult.errors);
-    this.updateHighlight(); // re-highlight with error info
+    this.lintWarnings = computeLintWarnings(this.parseResult);
+    this.lintWarningLines = new Set(this.lintWarnings.map(w => w.line).filter((n): n is number => n !== undefined));
+    this.updateErrors(this.parseResult.errors, this.lintWarnings);
+    this.updateHighlight(); // re-highlight with error/warning info
 
     // Update minimap
     const totalLines = text.split('\n').length;
     const errorLines = this.parseResult.errors.map(e => e.line);
-    this.minimap.update(this.parseResult.ast, totalLines, errorLines);
+    this.minimap.update(this.parseResult.ast, totalLines, errorLines, [...this.lintWarningLines]);
 
     for (const cb of this.changeCallbacks) {
       cb(text, this.parseResult);
@@ -460,6 +466,8 @@ export class ConstraintEditor implements Panel {
       let html = this.highlightLine(line);
       if (errorLines.has(lineNum)) {
         html = `<span class="ce-error-line">${html}</span>`;
+      } else if (this.lintWarningLines.has(lineNum)) {
+        html = `<span class="ce-warning-line">${html}</span>`;
       }
       return html;
     });
@@ -500,14 +508,15 @@ export class ConstraintEditor implements Panel {
     }
   }
 
-  private updateErrors(errors: ParseError[]): void {
-    if (errors.length === 0) {
+  private updateErrors(errors: ParseError[], warnings: LintWarning[] = []): void {
+    if (errors.length === 0 && warnings.length === 0) {
       this.errorPanel.style.display = 'none';
       return;
     }
 
     this.errorPanel.style.display = 'block';
-    this.errorPanel.innerHTML = errors
+
+    const errorHtml = errors
       .slice(0, 5)
       .map(err => {
         const suggestion = err.suggestion ? `<span class="ce-suggestion">${escapeHtml(err.suggestion)}</span>` : '';
@@ -519,8 +528,24 @@ export class ConstraintEditor implements Panel {
       })
       .join('');
 
-    if (errors.length > 5) {
-      this.errorPanel.innerHTML += `<div class="ce-error-more">...and ${errors.length - 5} more errors</div>`;
+    const remaining = Math.max(0, 5 - errors.length);
+    const warningHtml = warnings
+      .slice(0, remaining)
+      .map(w => {
+        const loc = w.line !== undefined ? `Line ${w.line}` : 'Warning';
+        return `<div class="ce-error-item ce-warning-item">
+          <span class="ce-error-loc">${loc}</span>
+          <span class="ce-error-msg">${escapeHtml(w.message)}</span>
+        </div>`;
+      })
+      .join('');
+
+    this.errorPanel.innerHTML = errorHtml + warningHtml;
+
+    const shown = Math.min(errors.length, 5) + Math.min(warnings.length, remaining);
+    const total = errors.length + warnings.length;
+    if (total > shown) {
+      this.errorPanel.innerHTML += `<div class="ce-error-more">...and ${total - shown} more</div>`;
     }
   }
 
@@ -834,4 +859,24 @@ port SENSOR:
 
     modal.querySelector('.ce-help-close')!.addEventListener('click', close);
   }
+}
+
+/**
+ * Run common-error lint on the parsed AST. Macro expansion is best-effort
+ * — if it throws (usually because of unfinished user edits), we fall back
+ * to linting the raw AST so direct mappings still get flagged.
+ */
+function computeLintWarnings(parseResult: ParseResult): LintWarning[] {
+  const lib = getCachedLintLib();
+  if (lib.siblingsByToken.size === 0 || !parseResult.ast) return [];
+
+  let ast = parseResult.ast;
+  try {
+    const expanded = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+    if (expanded.ast) ast = expanded.ast;
+  } catch {
+    // Fall back to raw AST — direct mappings still get linted.
+  }
+
+  return lintForCommonErrors(ast, lib);
 }

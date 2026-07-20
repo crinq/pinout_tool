@@ -65,6 +65,7 @@ export class ConstraintMinimap {
   private ast: ProgramNode | null = null;
   private assignments: Assignment[] | null = null;
   private errorLines: number[] = [];
+  private warningLines: number[] = [];
 
   private scrollCallback: ((scrollTop: number) => void) | null = null;
   private highlightCallback: ((pins: Set<string>, color?: string) => void) | null = null;
@@ -109,10 +110,11 @@ export class ConstraintMinimap {
   }
 
   /** Update from parsed AST */
-  update(ast: ProgramNode | null, totalLines: number, errorLines?: number[]): void {
+  update(ast: ProgramNode | null, totalLines: number, errorLines?: number[], warningLines?: number[]): void {
     this.ast = ast;
     this.totalLines = totalLines;
     this.errorLines = errorLines || [];
+    this.warningLines = warningLines || [];
     this.buildBlocks();
     this.paint();
   }
@@ -294,6 +296,16 @@ export class ConstraintMinimap {
     ctx.strokeStyle = this.getViewportStroke();
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, vpY + 0.5, w - 1, vpH - 1);
+
+    // Warning markers (drawn first so errors overlay)
+    if (this.warningLines.length > 0) {
+      ctx.fillStyle = 'rgba(202, 138, 4, 0.6)';
+      for (const line of this.warningLines) {
+        const ey = lineToY(line);
+        const eh = Math.max(3, LINE_HEIGHT * scale);
+        ctx.fillRect(0, ey, w, eh);
+      }
+    }
 
     // Error markers
     if (this.errorLines.length > 0) {

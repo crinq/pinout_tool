@@ -14,7 +14,9 @@ import { getSolvers } from './solver/solver-registry';
 import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary } from './storage';
+import { DEFAULT_COMMON_ERRORS_LIBRARY } from './parser/lint-common-errors';
+import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import type { CustomExportFunction } from './types';
@@ -139,11 +141,11 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 1000,
+  maxSolutions: 5000,
   solverTimeoutMs: 2500,
-  dynamicTimeoutMultiplier: 2,
-  solverTypes: ['two-phase', 'randomized-restarts', 'cost-guided', 'diverse-instances', 'dynamic-mrv', 'priority-diverse', 'mrv-group', 'ratio-mrv-group', 'hybrid', 'conflict-directed', 'cegar', 'lns-repair', 'adaptive'],
-  maxGroups: 250,
+  dynamicTimeoutMultiplier: 5,
+  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid'],
+  maxGroups: 500,
   maxSolutionsPerGroup: 100,
   numRestarts: 150,
   costWeights: {
@@ -262,6 +264,10 @@ export class App {
       void this.restoreState();
       void seedDefaultExports();
       void seedMacroLibrary();
+      // Seed + prime the common-error lint library.
+      const existing = await loadCommonErrorsLibrary();
+      if (existing == null) await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
+      primeCommonErrorsLib((await loadCommonErrorsLibrary()) ?? DEFAULT_COMMON_ERRORS_LIBRARY.trim());
     })();
 
     // Show tutorial for first-time users
@@ -479,7 +485,15 @@ export class App {
       this.mcuCache.set(this.currentMcu.refName, this.currentMcu);
     }
 
-    const solverTypes = this.settings.solverTypes;
+    // Drop any solver names not in the current registry — stale settings
+    // (renamed or removed solvers) would otherwise send an unknown name
+    // to the worker's switch-default and eat resources on backtracking.
+    const knownIds = new Set(getSolvers().map(s => s.id));
+    const solverTypes = this.settings.solverTypes.filter(s => {
+      if (knownIds.has(s)) return true;
+      console.warn(`[settings] ignoring unknown solver "${s}"`);
+      return false;
+    });
     if (solverTypes.length === 0) {
       this.showStatus('No solvers selected', 'error');
       return;
@@ -656,10 +670,19 @@ export class App {
 
       worker.onerror = (err) => {
         console.error(`Solver worker error (${jobLabel}):`, err);
+        // ErrorEvent.message is often empty for cross-origin / module-load
+        // failures. Piece together whatever we can so the modal shows
+        // something actionable.
+        const parts = [
+          err.message || null,
+          err.filename ? `at ${err.filename}${err.lineno ? ':' + err.lineno : ''}` : null,
+          (err as ErrorEvent & { error?: Error }).error?.message || null,
+        ].filter(Boolean);
+        const detail = parts.length > 0 ? parts.join(' — ') : 'worker failed to load (check browser console for details)';
         const errorResult: SolverResult = {
           mcuRef: mcu.refName,
           solutions: [],
-          errors: [{ type: 'error', message: `${jobLabel} crashed: ${err.message}` }],
+          errors: [{ type: 'error', message: `${jobLabel} crashed: ${detail}` }],
           statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
         };
         results.push({ solverId: jobLabel, result: errorResult });
@@ -2272,6 +2295,15 @@ export class App {
               <button class="btn btn-small" data-action="reset-macro-lib">Reset to Default</button>
             </div>
           </section>
+
+          <section class="settings-section">
+            <h3>Common-error Lint Library</h3>
+            <p class="settings-hint">Groups of signal names that are commonly swapped by mistake (miso/mosi, tx/rx, …). One group per line, tokens space-separated. Warns when a channel name and its signal pattern reference different tokens from the same group.</p>
+            <div style="margin-top:6px">
+              <button class="btn btn-small" data-action="edit-lint-lib">Edit</button>
+              <button class="btn btn-small" data-action="reset-lint-lib">Reset to Default</button>
+            </div>
+          </section>
         </div>
       `;
 
@@ -2361,6 +2393,14 @@ export class App {
             case 'reset-macro-lib':
               await saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
               await primeStdlibSource();
+              break;
+            case 'edit-lint-lib':
+              this.showLintLibEditor();
+              break;
+            case 'reset-lint-lib':
+              await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
+              primeCommonErrorsLib(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
+              this.showStatus('Lint library reset to default', 'success');
               break;
             case 'save-data-url': {
               const input = modal.querySelector('#dm-data-url') as HTMLInputElement | null;
@@ -2811,6 +2851,42 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       await saveMacroLibrary(source);
       await primeStdlibSource();
       closeMacro();
+    });
+  }
+
+  private async showLintLibEditor(): Promise<void> {
+    // ponytail: plain textarea, no syntax highlight. Line-based format
+    // needs zero editor tooling.
+    const r = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
+    if (!r) return;
+    const { modal, close } = r;
+    const current = (await loadCommonErrorsLibrary()) ?? DEFAULT_COMMON_ERRORS_LIBRARY.trim();
+    modal.innerHTML = `
+      <div class="settings-header">
+        <strong>Common-error Lint Library</strong>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-small" id="lint-lib-reset">Reset</button>
+          <button class="btn btn-small settings-close">Close</button>
+        </div>
+      </div>
+      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
+        <textarea id="lint-lib-code" spellcheck="false" style="flex:1;min-height:200px;font-family:monospace;font-size:12px;padding:6px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px">${current.replace(/</g, '&lt;')}</textarea>
+        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
+          <button class="btn btn-small btn-primary" id="lint-lib-save">Save</button>
+        </div>
+      </div>
+    `;
+    const codeEl = modal.querySelector('#lint-lib-code') as HTMLTextAreaElement;
+    modal.querySelector('.settings-close')!.addEventListener('click', close);
+    modal.querySelector('#lint-lib-reset')!.addEventListener('click', () => {
+      codeEl.value = DEFAULT_COMMON_ERRORS_LIBRARY.trim();
+    });
+    modal.querySelector('#lint-lib-save')!.addEventListener('click', async () => {
+      const source = codeEl.value;
+      await saveCommonErrorsLibrary(source);
+      primeCommonErrorsLib(source);
+      this.showStatus('Lint library saved', 'success');
+      close();
     });
   }
 

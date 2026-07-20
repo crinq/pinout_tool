@@ -29,6 +29,14 @@ import {
   incrementCost, decrementCost, updateCostThreshold,
   parseBgaPosition, parsePackagePinCount,
 } from './cost-functions';
+import {
+  lintForCommonErrors,
+  primeCommonErrorsLib as primeLintLib,
+  getCachedLintLib,
+} from '../parser/lint-common-errors';
+
+// Re-export so callers using the old solver-side name keep working.
+export const primeCommonErrorsLib = primeLintLib;
 
 // ============================================================
 // Solver Configuration
@@ -1573,6 +1581,17 @@ export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   const variables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
   validateInstanceExclusivity(variables, sharedPatterns, ports, errors);
   validateSignalExclusivity(variables, ports, errors);
+
+  // Common-error lint. `getCachedLintLib` returns the cached lib
+  // populated at boot; empty when the user hasn't configured one.
+  for (const w of lintForCommonErrors(expandedAst, getCachedLintLib())) {
+    errors.push({
+      type: 'warning',
+      message: `${w.portName}.${w.channelName}: ${w.message}`,
+      line: w.line,
+      source: 'lint',
+    });
+  }
 
   return errors;
 }

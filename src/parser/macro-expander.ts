@@ -65,7 +65,9 @@ export function expandAllMacros(
     }
   }
 
-  // Collect port templates: ports from this AST + extra templates (from stdlib)
+  // Collect port templates: every port_decl (including ones that
+  // themselves use `from`) is a template candidate — chains resolve
+  // recursively below with cycle detection.
   const templates = new Map<string, PortDeclNode>();
   if (extraTemplates) {
     for (const [name, tmpl] of extraTemplates) {
@@ -73,26 +75,38 @@ export function expandAllMacros(
     }
   }
   for (const stmt of ast.statements) {
-    if (stmt.type === 'port_decl' && !stmt.template) {
-      templates.set(stmt.name, stmt);
-    }
+    if (stmt.type === 'port_decl') templates.set(stmt.name, stmt);
   }
 
   const errors: MacroError[] = [];
 
+  /** Walk the `from` chain; cache results; guard cycles. */
+  const resolved = new Map<string, PortDeclNode>();
+  const resolvePort = (port: PortDeclNode, chain: Set<string>): PortDeclNode => {
+    if (!port.template) return port;
+    if (chain.has(port.name)) {
+      errors.push({ message: `Port template cycle: ${[...chain, port.name].join(' → ')}`, macroName: port.name });
+      return port;
+    }
+    const cached = resolved.get(port.name);
+    if (cached) return cached;
+    const base = templates.get(port.template);
+    if (!base) {
+      errors.push({ message: `Unknown port template '${port.template}'`, macroName: port.template });
+      return port;
+    }
+    const chain2 = new Set(chain); chain2.add(port.name);
+    const resolvedBase = resolvePort(base, chain2);
+    const merged = applyTemplate(port, resolvedBase);
+    resolved.set(port.name, merged);
+    return merged;
+  };
+
   const newStatements = ast.statements.map(stmt => {
     if (stmt.type !== 'port_decl') return stmt;
 
-    // Apply template if specified
-    let port = stmt;
-    if (stmt.template) {
-      const tmpl = templates.get(stmt.template);
-      if (!tmpl) {
-        errors.push({ message: `Unknown port template '${stmt.template}'`, macroName: stmt.template });
-      } else {
-        port = applyTemplate(stmt, tmpl);
-      }
-    }
+    // Apply template chain if specified.
+    const port = stmt.template ? resolvePort(stmt, new Set()) : stmt;
 
     const newConfigs = port.configs.map(cfg => {
       const expandedBody = expandBody(cfg.body, macros, new Set(), errors);
