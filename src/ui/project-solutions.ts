@@ -15,7 +15,9 @@ export class ProjectSolutions implements Panel {
   private sortKey: SortKey = 'id';
   private sortDir: SortDir = 'asc';
   private focusedIndex = -1;
+  private selectedIds: Set<number> = new Set();
   private selectionCallbacks: Array<(solution: Solution) => void> = [];
+  private multiSelectionCallbacks: Array<(solutions: Solution[]) => void> = [];
   private focusCallbacks: Array<() => void> = [];
 
   createView(container: HTMLElement): void {
@@ -51,8 +53,18 @@ export class ProjectSolutions implements Panel {
     this.selectionCallbacks.push(callback);
   }
 
+  /** Fires whenever the multi-selection set changes (0, 1, or N solutions). */
+  onSelectionChanged(callback: (solutions: Solution[]) => void): void {
+    this.multiSelectionCallbacks.push(callback);
+  }
+
   onFocusGained(callback: () => void): void {
     this.focusCallbacks.push(callback);
+  }
+
+  /** Current multi-selection, in list order. */
+  getSelectedSolutions(): Solution[] {
+    return this.solutions.filter(s => this.selectedIds.has(s.id));
   }
 
   /** Populate from deserialized project data */
@@ -88,13 +100,17 @@ export class ProjectSolutions implements Panel {
   clear(): void {
     this.solutions = [];
     this.focusedIndex = -1;
+    this.selectedIds.clear();
     this.render();
+    this.emitSelectionChanged();
   }
 
   /** Clear visual selection (called when the other list gains focus) */
   deselect(): void {
     this.focusedIndex = -1;
+    this.selectedIds.clear();
     this.render();
+    this.emitSelectionChanged();
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -155,9 +171,33 @@ export class ProjectSolutions implements Panel {
 
   private activateItem(index: number): void {
     const sol = this.solutions[index];
-    if (sol) {
-      for (const cb of this.selectionCallbacks) cb(sol);
+    if (!sol) return;
+    // Single-select: replaces the selection set.
+    this.selectedIds = new Set([sol.id]);
+    for (const cb of this.selectionCallbacks) cb(sol);
+    this.emitSelectionChanged();
+  }
+
+  private toggleItem(index: number): void {
+    const sol = this.solutions[index];
+    if (!sol) return;
+    if (this.selectedIds.has(sol.id)) {
+      this.selectedIds.delete(sol.id);
+    } else {
+      this.selectedIds.add(sol.id);
     }
+    // Fire single-selection callback only when exactly one remains — keeps
+    // downstream single-selection viewers correct without needing a new API.
+    const remaining = this.getSelectedSolutions();
+    if (remaining.length === 1) {
+      for (const cb of this.selectionCallbacks) cb(remaining[0]);
+    }
+    this.emitSelectionChanged();
+  }
+
+  private emitSelectionChanged(): void {
+    const list = this.getSelectedSolutions();
+    for (const cb of this.multiSelectionCallbacks) cb(list);
   }
 
   private scrollToFocused(): void {
@@ -236,9 +276,13 @@ export class ProjectSolutions implements Panel {
       // Find the original index in this.solutions for focus matching
       const origIdx = this.solutions.indexOf(sol);
       const isFocused = origIdx === this.focusedIndex;
+      const isSelected = this.selectedIds.has(sol.id);
 
       const tr = document.createElement('tr');
-      tr.className = isFocused ? 'st-row-selected st-focused' : '';
+      const cls = [];
+      if (isSelected) cls.push('st-row-selected');
+      if (isFocused) cls.push('st-focused');
+      tr.className = cls.join(' ');
       tr.dataset.solutionId = String(sol.id);
 
       const displayName = sol.name || `Solution ${sol.id}`;
@@ -251,9 +295,13 @@ export class ProjectSolutions implements Panel {
         <td class="st-cell-perif">${this.countPeripherals(sol)}</td>
       `;
 
-      tr.addEventListener('click', () => {
+      tr.addEventListener('click', (e) => {
         this.focusedIndex = origIdx;
-        this.activateItem(origIdx);
+        if (e.metaKey || e.ctrlKey) {
+          this.toggleItem(origIdx);
+        } else {
+          this.activateItem(origIdx);
+        }
         this.render();
       });
       tbody.appendChild(tr);

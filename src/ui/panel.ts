@@ -1,4 +1,5 @@
-import type { Mcu, Assignment, SolverResult, CompatibilityResult } from '../types';
+import type { Mcu, Assignment, Solution, SolverResult, CompatibilityResult } from '../types';
+import type { DivergentPin } from '../solution-compare';
 
 // Re-export the generic Panel interface from ts_lib
 export type { Panel } from '../../ts_lib/src/panel';
@@ -6,6 +7,7 @@ export type { Panel } from '../../ts_lib/src/panel';
 export type StateChangeType =
   | 'mcu-loaded'
   | 'solution-selected'
+  | 'compare-selected'
   | 'constraints-changed'
   | 'solver-complete'
   | 'theme-changed'
@@ -27,4 +29,8 @@ export interface StateChange {
   highlightPins?: Set<string>;
   /** Color for the highlighted pins */
   highlightColor?: string;
+  /** Compare-mode payload */
+  solutions?: Solution[];
+  solutionColors?: string[];
+  divergentByPin?: Map<string, DivergentPin>;
 }

@@ -4,6 +4,7 @@ import { PackageViewer } from './ui/package-viewer';
 import { ConstraintEditor, highlightConstraintCode } from './ui/constraint-editor';
 import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
+import { compareSolutions, solutionCompareColor } from './solution-compare';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
 import { getDataSource, type IndexDeviceEntry } from './datasource';
@@ -347,6 +348,12 @@ export class App {
 
     this.solverSolutions.onSolutionSelected(handleSolutionSelected);
     this.projectSolutions.onSolutionSelected(handleSolutionSelected);
+
+    // Multi-select from project list -> broadcast compare state (or fall
+    // back to single-selection view when only one row is picked).
+    this.projectSolutions.onSelectionChanged((solutions) => {
+      this.handleCompareSelectionChanged(solutions);
+    });
 
     // Focus coordination: when one list gains focus, deselect the other
     this.solverSolutions.onFocusGained(() => this.projectSolutions.deselect());
@@ -1738,6 +1745,26 @@ export class App {
       type: 'solution-selected',
       assignments: pinAssignments,
       portColors: new Map(),
+    });
+  }
+
+  private handleCompareSelectionChanged(solutions: Solution[]): void {
+    // Only 0 or 1 selected -> nothing to compare; single-select flow
+    // (handleSolutionSelected) already handled the render.
+    if (solutions.length < 2) return;
+
+    const cmp = compareSolutions(solutions);
+    const portColors = this.getPortColors();
+    const channelComments = interpolateAllComments(this.getChannelComments(), cmp.common);
+    const solutionColors = solutions.map((_, i) => solutionCompareColor(i));
+    this.layout.broadcastStateChange({
+      type: 'compare-selected',
+      solutions,
+      solutionColors,
+      assignments: cmp.common,
+      divergentByPin: cmp.divergent,
+      portColors,
+      channelComments,
     });
   }
 

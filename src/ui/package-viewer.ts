@@ -1,4 +1,5 @@
-import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction } from '../types';
+import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
+import type { DivergentPin } from '../solution-compare';
 import { escapeHtml } from '../utils';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
@@ -94,7 +95,13 @@ export class PackageViewer implements Panel {
   private groupHighlightPins: Set<string> = new Set();
   private groupHighlightColor: string = '#a78bfa';
 
-  // Unified pulsating animation (shared by search, hover, group highlights)
+  // Compare mode (divergent pins across N selected solutions)
+  private compareSolutions: Solution[] = [];
+  private compareColors: string[] = [];
+  private divergentByPin: Map<string, DivergentPin> = new Map();
+  private compareStep = 0;
+
+  // Unified pulsating animation (shared by search, hover, group, compare highlights)
   private pulsePhase = 0;
   private pulseAnimId: number | null = null;
 
@@ -192,6 +199,24 @@ export class PackageViewer implements Panel {
       this.channelComments = change.channelComments || new Map();
       this.dmaAssignment = change.dmaStreamAssignment ?? new Map();
       this.compatibility = change.compatibility ?? null;
+      // Leaving compare mode
+      this.compareSolutions = [];
+      this.compareColors = [];
+      this.divergentByPin = new Map();
+      this.compareStep = 0;
+      this.updateAnimation();
+      this.setAssignments(change.assignments);
+    }
+    if (change.type === 'compare-selected' && change.assignments && change.divergentByPin && change.solutions && change.solutionColors) {
+      this.portColors = change.portColors || new Map();
+      this.channelComments = change.channelComments || new Map();
+      this.dmaAssignment = new Map(); // per-solution DMA differs; skip in compare view
+      this.compatibility = null;
+      this.compareSolutions = change.solutions;
+      this.compareColors = change.solutionColors;
+      this.divergentByPin = change.divergentByPin;
+      this.compareStep = 0;
+      this.updateAnimation();
       this.setAssignments(change.assignments);
     }
     if (change.type === 'theme-changed') {
@@ -1517,6 +1542,20 @@ export class PackageViewer implements Panel {
         html += '<span class="tooltip-none">No peripheral signals</span>';
       }
       html += '<br>';
+
+      // Compare mode: if any logical on this pad is divergent, show per-solution breakdown.
+      const div = this.divergentByPin.get(lp.name);
+      if (div && this.compareColors.length > 0) {
+        html += '<div class="tooltip-compare-head">Compare</div>';
+        for (const slice of div.slices) {
+          const dot = `<span class="tooltip-compare-dot" style="background:${this.compareColors[slice.solutionIndex]}"></span>`;
+          const name = escapeHtml(slice.solutionName);
+          const label = slice.assignment
+            ? `${escapeHtml(slice.assignment.portName)}.${escapeHtml(slice.assignment.channelName)}: ${escapeHtml(slice.assignment.signalName)}`
+            : '<span class="tooltip-none">—</span>';
+          html += `<div class="tooltip-compare-row">${dot}<span class="tooltip-compare-sol">${name}</span> ${label}</div>`;
+        }
+      }
     }
 
     this.tooltip.innerHTML = html;
@@ -1675,7 +1714,8 @@ export class PackageViewer implements Panel {
     const needsAnimation =
       this.searchMatchPins.size > 0 ||
       this.hoverMatchPins.size > 0 ||
-      this.groupHighlightPins.size > 0;
+      this.groupHighlightPins.size > 0 ||
+      this.divergentByPin.size > 0;
     if (needsAnimation) {
       this.startPulseAnimation();
     } else {
@@ -1692,7 +1732,12 @@ export class PackageViewer implements Panel {
     const animate = (now: number) => {
       const dt = now - lastTime;
       lastTime = now;
-      this.pulsePhase = (this.pulsePhase + dt / PULSE_PERIOD_MS) % 1;
+      const nextPhase = this.pulsePhase + dt / PULSE_PERIOD_MS;
+      // On wrap, advance to the next selected solution (compare mode only).
+      if (nextPhase >= 1 && this.compareSolutions.length > 0) {
+        this.compareStep = (this.compareStep + 1) % this.compareSolutions.length;
+      }
+      this.pulsePhase = nextPhase % 1;
       this.render();
       this.pulseAnimId = requestAnimationFrame(animate);
     };
@@ -1730,11 +1775,22 @@ export class PackageViewer implements Panel {
    * Search/hover highlights use amber; group highlights use the port color.
    */
   private getPinHighlightColor(pinName: string): string | null {
+    // Hover / peripheral / search win over compare so those interactions
+    // remain readable while browsing.
     if (this.searchMatchPins.has(pinName) || this.hoverMatchPins.has(pinName)) {
       return '#fbbf24'; // amber
     }
     if (this.groupHighlightPins.has(pinName)) {
       return this.groupHighlightColor;
+    }
+    if (this.divergentByPin.has(pinName) && this.compareColors.length > 0) {
+      const div = this.divergentByPin.get(pinName)!;
+      const slice = div.slices[this.compareStep];
+      if (!slice || !slice.assignment) {
+        // Solution doesn't touch this pin — dim grey slice indicates "gap".
+        return '#6b7280';
+      }
+      return this.compareColors[this.compareStep];
     }
     return null;
   }
