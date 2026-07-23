@@ -1236,15 +1236,30 @@ export class App {
     const storedXml = await getKv().get('mcu-xml:STM32H755IIKx');
     if (storedXml) {
       this.loadMcuXml(storedXml, 'STM32H755IIKx.xml');
+      void this.fetchTutorialDma();
       this.fetchTutorialConstraints();
     } else {
       fetch('examples/STM32H755IIKx.xml')
         .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
-        .then(xml => {
+        .then(async xml => {
           this.loadMcuXml(xml, 'STM32H755IIKx.xml');
+          await this.fetchTutorialDma();
           this.fetchTutorialConstraints();
         })
         .catch(() => { /* Example not available, tutorial continues without data */ });
+    }
+  }
+
+  private async fetchTutorialDma(): Promise<void> {
+    // The bundled H755 example advertises DMA IP version STM32H753_dma2_v1_3;
+    // the matching modes XML lives in public/examples alongside the MCU file.
+    try {
+      const res = await fetch('examples/DMA-STM32H753_dma2_v1_3_Modes.xml');
+      if (!res.ok) return;
+      const xml = await res.text();
+      await this.loadDmaXml(xml, 'DMA-STM32H753_dma2_v1_3_Modes.xml');
+    } catch {
+      // Non-fatal: tutorial still works, but dma() constraints will fail.
     }
   }
 
@@ -1296,7 +1311,11 @@ export class App {
     TX = USART*_TX
     RX = USART*_RX
     require same_instance(TX, RX)</pre>
-          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click the <b>Help</b> button for the full syntax reference.`,
+          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click the <b>Help</b> button for the full syntax reference.<br><br>
+          Syntax errors show a red squiggle; suspected signal-name swaps (e.g. a
+          <code>miso</code> channel mapped to <code>SPI*_MOSI</code>) show a yellow
+          squiggle. Both list in the status panel below. Edit the swap-group library via
+          <b>Data Manager &gt; Common-error Lint Library</b>.`,
         placement: 'left',
       },
       {
@@ -1320,7 +1339,11 @@ export class App {
         title: 'Project Solutions',
         body: `Save interesting solutions here for later comparison.
           Select a solver solution and press <b>Enter</b> to add it to the project.<br><br>
-          Project solutions persist across solver runs and are included when you save the project.`,
+          Project solutions persist across solver runs and are included when you save the project.<br><br>
+          <b>Compare mode:</b> Ctrl/Cmd-click multiple rows to compare them in the
+          package viewer &mdash; matching pins render normally, differing pins pulse
+          through one color per selected solution, and their tooltip lists every
+          per-solution mapping.`,
         placement: 'top',
       },
       {

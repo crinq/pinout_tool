@@ -761,6 +761,39 @@ port ENC2 from encoder_port color "red":
   config "quadrature":
     A = TIM[1-3]_CH1
     B = TIM[1-3]_CH2</pre>
+          <p>Templates chain &mdash; a port declared with <code>from X</code> can itself be used as a template
+          by another port. Cycles are detected and reported as errors.</p>
+        </section>
+
+        <section>
+          <h3>Common-Error Lint</h3>
+          <p>The editor warns when a channel name and its signal pattern reference
+          different tokens from the same "confusable" group &mdash; e.g. a channel called
+          <code>miso</code> mapped to <code>SPI*_MOSI</code>.</p>
+          <p>Warning lines get a yellow wavy underline and a matching marker in the
+          minimap; details appear in the status panel below the editor.
+          Edit the swap-group library via <b>Data Manager &gt; Common-error Lint Library</b>.</p>
+          <pre class="ce-help-code"># Library format: one group per line, tokens separated by spaces.
+# The lint flags any mapping where channel + signal contain
+# different tokens from the same group.
+miso mosi
+tx rx
+cts rts
+ch1 ch2 ch3 ch4</pre>
+        </section>
+
+        <section>
+          <h3>Comparing Solutions</h3>
+          <p>Ctrl/Cmd-click multiple rows in the Project Solutions list to compare them
+          in the package viewer:</p>
+          <ul>
+            <li>Pins with the same mapping in every selected solution render normally.</li>
+            <li>Pins that differ pulse through one solution color per cycle. A grey
+            slice means that solution doesn't touch the pin at all.</li>
+            <li>Hover a divergent pin &mdash; the tooltip lists every selected solution
+            with a color dot and its mapping (or "&mdash;" if unassigned).</li>
+          </ul>
+          <p>Click a single row (no modifier) to leave compare mode.</p>
         </section>
 
         <section>

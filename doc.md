@@ -20,8 +20,10 @@
    - [Built-in Functions](#built-in-functions)
    - [Macros](#macros)
    - [Standard Library](#standard-library)
+   - [Common-Error Lint](#common-error-lint)
 4. [Practical Examples](#practical-examples)
 5. [Package Viewer](#package-viewer)
+   - [Comparing Solutions](#comparing-solutions)
 6. [Solver](#solver)
 7. [Solution Browser](#solution-browser)
 8. [Project Management](#project-management)
@@ -623,6 +625,21 @@ Body-less ports (no colon, no body) simply clone the template as-is:
 port ENC0 from encoder_port color "orange"
 ```
 
+**Chained templates:** A derived port can itself be used as a template. Cycles
+are detected and reported as errors.
+
+```
+port encoder_port:
+  channel A
+  channel B
+
+port encoder_z from encoder_port:
+  channel Z
+
+# encoder_z was declared from encoder_port and is now used as a template.
+port ENC0 from encoder_z color "orange"
+```
+
 ### Standard Library
 
 Pre-defined macros available in all projects. The macro library can be edited via the **Data Manager** (click Edit under "Macro Library"). Changes apply to all projects. Use Reset to restore the defaults.
@@ -640,6 +657,34 @@ Pre-defined macros available in all projects. The macro library can be edited vi
 | `dac(OUT)` | 1 channel | DAC output 1-2 |
 | `adc(IN)` | 1 channel | ADC input 0-15 |
 | `can_port(TX, RX)` | 2 channels | CAN bus, same instance |
+
+### Common-Error Lint
+
+The editor runs a lint pass over the parsed AST that warns when a channel name and its
+signal pattern reference different tokens from the same "confusable" group. Classic case:
+a channel called `miso` mapped to `SPI*_MOSI`.
+
+- Warning lines get a yellow wavy underline and a matching marker in the editor minimap.
+- Details show below the editor alongside parser errors (parser errors have priority
+  when both appear on the same line).
+- The library is empty by default until seeded from **Data Manager > Common-error Lint
+  Library**; use **Reset** to restore the shipped defaults.
+
+Library syntax: one group per line, tokens space-separated, `#` for comments. Every pair
+of tokens in a group is treated as a "swap": if a channel name contains token A and the
+signal pattern contains token B (or vice versa), a warning is raised.
+
+```
+# Groups of signal names commonly swapped by mistake.
+miso mosi
+tx rx
+cts rts
+ch1 ch2 ch3 ch4
+```
+
+Token matching is case-insensitive with word-boundary matching (a token surrounded by
+non-alphanumerics or the string edge), so `enc_miso` matches `miso` but `context` does
+not match `tx`.
 
 ---
 
@@ -833,6 +878,25 @@ The search field accepts the same pattern syntax as constraint signal patterns:
 
 Matching pins pulse with an amber glow animation. Press **Escape** to clear the search.
 
+### Comparing Solutions
+
+Ctrl/Cmd-click multiple rows in the **Project Solutions** list to switch the package
+viewer into compare mode. It highlights how the selected solutions differ:
+
+- Pins with an identical mapping in every selected solution render normally (port
+  color).
+- Pins that differ pulse through one solution color per cycle (~1.2 s per solution).
+  Each selected solution gets a distinct color assigned by selection order.
+- A grey slice in the cycle means that solution doesn't assign the pin at all,
+  making "assigned in some, empty in others" visually obvious.
+- Hovering a divergent pin shows a **Compare** section in the tooltip with one row
+  per selected solution: a colored dot, the solution name, and its mapping
+  (or `—` when unassigned).
+
+Compare mode is exclusive with normal peripheral / hover / search highlights, which
+temporarily override the compare pulse on the pins they touch. Click a single row
+(no modifier) to leave compare mode.
+
 ---
 
 ## Solver
@@ -984,6 +1048,8 @@ Access via the **Data** button. Shows:
 - **Projects** -- saved projects with load/delete actions
 - **Custom Export Functions** -- user-defined JavaScript export functions (create, edit, delete)
 - **Macro Library** -- edit shared macros available in all constraints (edit, reset to default)
+- **Common-error Lint Library** -- edit the swap-group library that powers the
+  editor's yellow-squiggle lint (see [Common-Error Lint](#common-error-lint))
 
 ### Custom Export Functions
 

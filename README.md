@@ -4,7 +4,7 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 
 ## Features
 
-- **14 solver algorithms** -- backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, diverse instances, priority backtracking, priority two-phase, priority diverse, priority group, MRV group, ratio MRV group, and hybrid
+- **18 solver algorithms** -- backtracking, two-phase, cost-guided, AC-3, dynamic MRV, randomized restarts, diverse instances, priority backtracking, priority two-phase, priority diverse, priority group, MRV group, ratio MRV group, hybrid, conflict-directed (CBJ + dom/wdeg), CEGAR instance-refinement, LNS repair (min-conflicts), and adaptive portfolio
 - **Parallel multi-solver** -- run multiple solvers simultaneously and merge results
 - **Visual package viewer** -- interactive canvas with zoom, rotation, pin assignment popup, and signal search
 - **Multiple package types** -- LQFP, BGA, and WLCSP support with correct ball/pin rendering
@@ -19,6 +19,8 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **DMA stream assignment** -- `dma()` constraints with automatic stream exclusivity checking (STM32F4 fixed mapping + STM32H7 DMAMUX)
 - **CubeMX .ioc import** -- import pin assignments from STM32CubeMX project files
 - **Editable macro library** -- customize and extend the standard library macros via Data Manager
+- **Common-error lint** -- editable library of "confusable" signal names (miso/mosi, tx/rx, ch1..4) that flags likely name swaps directly in the editor with yellow squiggles + minimap markers
+- **Compare solutions** -- Ctrl/Cmd-click multiple project solutions to overlay them in the package viewer; matching pins render normally, divergent pins pulse through one color per solution and expose per-solution mappings in the tooltip
 - **Custom export functions** -- user-defined JavaScript export functions for any output format
 - **Interactive tutorial** -- guided tour for first-time users
 - **Dark mode** -- full light/dark theme support
