@@ -47,6 +47,8 @@ export interface SolverConfig {
   timeoutMs: number;
   costWeights: Map<string, number>;
   skipGpioMapping?: boolean;
+  /** Run the greedy single-pin post-optimization pass after solving. */
+  postOptimize?: boolean;
 }
 
 export const DEFAULT_SOLVER_CONFIG: SolverConfig = {

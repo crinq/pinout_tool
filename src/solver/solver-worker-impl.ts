@@ -22,10 +22,28 @@ import { getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { computePortPriority } from './port-priority';
 import { estimateCandidateCost } from './cost-functions';
+import { postOptimizeSolutions } from './post-optimize';
 import { toWire } from './solution-transfer';
 import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import type { SolverVariable } from './solver';
+
+/** Post-optimization pass (settings-gated): greedy single-pin polishing. */
+function maybePostOptimize(
+  result: SolverResult, ast: ProgramNode, mcu: Mcu, config: Partial<SolverConfig>
+): SolverResult {
+  if (!config.postOptimize || result.solutions.length === 0) return result;
+  const { solutions, improved, processed } = postOptimizeSolutions(result.solutions, ast, mcu, {
+    costWeights: config.costWeights ?? new Map(),
+    skipGpioMapping: config.skipGpioMapping,
+    timeoutMs: Math.min(config.timeoutMs ?? 5000, 5000),
+  });
+  result.solutions = solutions;
+  if (improved > 0) {
+    result.errors.push({ type: 'warning', message: `Post-optimization improved ${improved}/${processed} solution(s)` });
+  }
+  return result;
+}
 
 /** Short display names for solver IDs, used in error/warning messages. */
 const SOLVER_LABELS: Record<string, string> = {
@@ -228,7 +246,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       }
 
       const merged = mergeResults(labeled, config.maxSolutions ?? 100);
-      self.postMessage(toWire(merged));
+      self.postMessage(toWire(maybePostOptimize(merged, ast, mcu, config)));
       return;
     }
 
@@ -237,7 +255,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       solverType ?? 'backtracking', ast, mcu, config,
       twoPhaseConfig, randomizedConfig, complexity
     );
-    self.postMessage(toWire(result));
+    self.postMessage(toWire(maybePostOptimize(result, ast, mcu, config)));
   } catch (err) {
     self.postMessage({
       mcuRef: '',

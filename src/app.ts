@@ -135,6 +135,7 @@ export interface AppSettings {
   maxZoom: number;
   mouseZoomGain: number;
   skipGpioMapping: boolean;
+  postOptimize: boolean;
   dataInspector: boolean;
   dynamicTimeoutMultiplier: number;
   solverDebugOverlay: boolean;
@@ -162,6 +163,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   maxZoom: 2,
   mouseZoomGain: 0.025,
   skipGpioMapping: true,
+  postOptimize: false,
   dataInspector: false,
   solverDebugOverlay: false,
   urlEncoding: 'full',
@@ -632,6 +634,7 @@ export class App {
       timeoutMs: this.settings.solverTimeoutMs,
       costWeights: new Map(Object.entries(this.settings.costWeights)),
       skipGpioMapping: this.settings.skipGpioMapping,
+      postOptimize: this.settings.postOptimize,
     };
 
     for (const job of workerJobs) {
@@ -2025,6 +2028,10 @@ export class App {
             <label title="Skip pin assignment for IN/OUT (GPIO) channels; only verify enough free pins are available">Skip GPIO mapping</label>
             <input type="checkbox" id="set-skip-gpio" ${this.settings.skipGpioMapping ? 'checked' : ''}>
           </div>
+          <div class="settings-row">
+            <label title="After solving, greedily relocate single-signal pins to free alternatives that lower total cost (repeats until no move improves)">Post-optimize pins</label>
+            <input type="checkbox" id="set-post-optimize" ${this.settings.postOptimize ? 'checked' : ''}>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -2115,6 +2122,7 @@ export class App {
       });
 
       this.settings.skipGpioMapping = (modal.querySelector('#set-skip-gpio') as HTMLInputElement).checked;
+      this.settings.postOptimize = (modal.querySelector('#set-post-optimize') as HTMLInputElement).checked;
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
       this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;
       this.settings.urlEncoding = (modal.querySelector('#set-url-encoding') as HTMLSelectElement).value as AppSettings['urlEncoding'];
@@ -2138,7 +2146,15 @@ export class App {
   private async loadStoredMcu(refName: string): Promise<void> {
     const xml = await getKv().get(`mcu-xml:${refName}`);
     if (!xml) {
-      this.showStatus(`Stored MCU "${refName}" not found`, 'error');
+      // Not in local storage. Try the in-memory cache (fetched this session),
+      // then fall back to the remote data source so projects referencing an
+      // MCU the user never imported still open.
+      const cached = this.mcuCache.get(refName);
+      if (cached) {
+        this.activateLoadedMcu(cached);
+        return;
+      }
+      await this.loadRemoteMcu(refName);
       return;
     }
     try {
@@ -2171,6 +2187,33 @@ export class App {
       this.showStatus(`Loaded ${mcu.refName} from storage${dmaInfo}`, 'success');
     } catch (err) {
       this.showStatus(`Failed to parse stored MCU "${refName}": ${err}`, 'error');
+    }
+  }
+
+  /**
+   * Fallback loader: fetch an MCU variant from the configured remote data
+   * source when it is not in local storage. Remote JSON MCUs carry their own
+   * DMA data, so they route straight through activateLoadedMcu (no separate
+   * dma-xml attach). The result is memory-cached by activateLoadedMcu.
+   */
+  private async loadRemoteMcu(refName: string): Promise<void> {
+    const ds = getDataSource();
+    if (!ds.baseUrl()) {
+      this.showStatus(`MCU "${refName}" is not in local storage and no data source is configured`, 'error');
+      return;
+    }
+    const controller = new AbortController();
+    this.showStatus(`Fetching ${refName} from data source…`, 'info');
+    try {
+      const mcu = await ds.loadVariant(refName, controller.signal);
+      if (!mcu) {
+        this.showStatus(`MCU "${refName}" not found in local storage or the data source`, 'error');
+        return;
+      }
+      this.activateLoadedMcu(mcu);
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return;
+      this.showStatus(`Failed to fetch "${refName}" from the data source: ${err}`, 'error');
     }
   }
 

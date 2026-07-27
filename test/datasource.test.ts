@@ -341,4 +341,60 @@ describe('DataSource', () => {
     expect(list.map(x => x.die).sort()).toEqual(['stm32a', 'stm32b']);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  // --------------------------------------------------------------
+  // loadVariant — the project-reopen fallback
+  // --------------------------------------------------------------
+
+  // Die 'stm32h755ii' is a prefix of every variant it produces.
+  const H755_INDEX = {
+    schema_version: 1, vendor: 'stm32',
+    devices: {
+      stm32h755ii: { file: 'mcu/stm32h755ii.json', family: 'stm32h7', packages: ['LQFP176', 'UFBGA176'] },
+      stm32h755zi: { file: 'mcu/stm32h755zi.json', family: 'stm32h7', packages: ['LQFP144'] },
+    },
+  };
+  function h755DieDoc() {
+    return {
+      schema: 1, name: 'stm32h755ii', family: 'stm32h7', line: 'STM32H755',
+      cores: [{ name: 'cm7', freq_max_hz: 480_000_000 }],
+      voltage: { min_v: 1.62, max_v: 3.6 }, temperature: { min_c: -40, max_c: 85 },
+      memory: [{ kind: 'flash', size: 2048 * 1024 }, { kind: 'ram', size: 1024 * 1024, name: 'SRAM' }],
+      packages: [
+        { name: 'LQFP176', variant: 'STM32H755IITx', pins: [{ position: '1', name: 'PA0', alt_names: [] }] },
+        { name: 'UFBGA176', variant: 'STM32H755IIKx', pins: [{ position: 'A1', name: 'PA0', alt_names: [] }] },
+      ],
+      peripherals: [{ name: 'USART1', kind: 'usart', version: 'v1', pins: [{ pin: 'PA0', signal: 'TX', af: 7 }] }],
+    };
+  }
+  function h755Fetch() {
+    return vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/index.json')) return jsonResponse(H755_INDEX);
+      if (url.endsWith('/mcu/stm32h755ii.json')) return jsonResponse(h755DieDoc());
+      throw new Error(`Unexpected ${url}`);
+    });
+  }
+
+  it('loadVariant resolves a variant refName via its prefix die', async () => {
+    const fetchImpl = h755Fetch();
+    const ds = new DataSource({ url: 'https://x.test/data', fetchImpl });
+    const mcu = await ds.loadVariant('STM32H755IIKx');
+    expect(mcu?.refName).toBe('STM32H755IIKx');
+    expect(mcu?.package).toBe('UFBGA176');
+    // index + exactly the one prefix-matching die (not stm32h755zi)
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('loadVariant is case-insensitive on the refName', async () => {
+    const ds = new DataSource({ url: 'https://x.test/data', fetchImpl: h755Fetch() });
+    const mcu = await ds.loadVariant('stm32h755iikx');
+    expect(mcu?.refName).toBe('STM32H755IIKx');
+  });
+
+  it('loadVariant returns null when no variant matches', async () => {
+    const ds = new DataSource({ url: 'https://x.test/data', fetchImpl: h755Fetch() });
+    expect(await ds.loadVariant('STM32H755IIZZ')).toBeNull(); // die matches, variant does not
+    expect(await ds.loadVariant('STM32F407VGTx')).toBeNull(); // no prefix die at all
+  });
 });

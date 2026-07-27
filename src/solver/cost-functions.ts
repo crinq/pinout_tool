@@ -269,11 +269,25 @@ export function updateCostThreshold(tracker: IncrementalCostTracker, solutionCos
 // Pin Proximity Helpers
 // ============================================================
 
+// JEDEC BGA row labels skip I, O, Q, S, X, Z (avoids confusion with 1/0/2/5/×/2).
+// Raw ASCII (letter - 'A') therefore over-counts the row index by one per skipped
+// letter below it, stretching vertical distances and adding a phantom row every
+// time a pin swap crosses a skip boundary (e.g. H↔J, N↔P, P↔R read as 2 not 1).
+const BGA_SKIP_ROWS = new Set(['I', 'O', 'Q', 'S', 'X', 'Z']);
+
+/** Physical row index for a single-letter BGA row label, honoring JEDEC skips. */
+function bgaRowIndex(letter: string): number {
+  const code = letter.charCodeAt(0);
+  let skipped = 0;
+  for (const s of BGA_SKIP_ROWS) if (s.charCodeAt(0) < code) skipped++;
+  return code - 'A'.charCodeAt(0) - skipped;
+}
+
 export function parseBgaPosition(pos: string): { row: number; col: number } | null {
   const match = pos.match(/^([A-Z])(\d+)$/);
   if (!match) return null;
   return {
-    row: match[1].charCodeAt(0) - 'A'.charCodeAt(0),
+    row: bgaRowIndex(match[1]),
     col: parseInt(match[2], 10),
   };
 }
@@ -291,7 +305,9 @@ registerCostFunction({
     const isBGA = /BGA|WLCSP/i.test(mcu.package);
     const totalPins = parsePackagePinCount(mcu.package);
 
-    // Group pins by logical port → get positions
+    // Group pins by logical port → positions across ALL of its configs. Every
+    // config is routed on the PCB (only one is active at runtime, CPU-selected),
+    // so proximity legitimately spans a port's full pin footprint.
     const portPositions = new Map<string, string[]>();
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
@@ -339,7 +355,9 @@ registerCostFunction({
     const isBGA = /BGA|WLCSP/i.test(mcu.package);
     const totalPins = parsePackagePinCount(mcu.package);
 
-    // Group unique pin positions by port
+    // Group unique pin positions by logical port, spanning ALL of its configs.
+    // Every config is physically routed (runtime-multiplexed by the CPU), so a
+    // port's routing proximity is measured over its complete pin footprint.
     const portPins = new Map<string, string[]>();
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {

@@ -783,20 +783,6 @@ ch1 ch2 ch3 ch4</pre>
         </section>
 
         <section>
-          <h3>Comparing Solutions</h3>
-          <p>Ctrl/Cmd-click multiple rows in the Project Solutions list to compare them
-          in the package viewer:</p>
-          <ul>
-            <li>Pins with the same mapping in every selected solution render normally.</li>
-            <li>Pins that differ pulse through one solution color per cycle. A grey
-            slice means that solution doesn't touch the pin at all.</li>
-            <li>Hover a divergent pin &mdash; the tooltip lists every selected solution
-            with a color dot and its mapping (or "&mdash;" if unassigned).</li>
-          </ul>
-          <p>Click a single row (no modifier) to leave compare mode.</p>
-        </section>
-
-        <section>
           <h3>Standard Library Macros</h3>
           <p>Pre-defined macros for common peripherals. Edit via <b>Data Manager &gt; Macro Library</b>.</p>
           <table>

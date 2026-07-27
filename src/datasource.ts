@@ -309,6 +309,33 @@ export class DataSource {
     return out;
   }
 
+  /**
+   * Fetch the parsed `Mcu` for a specific package variant by its refName
+   * (e.g. "STM32H755IIKx"). The index is keyed by die, and a die's name is
+   * a prefix of every variant it produces (die `stm32h755ii` →
+   * `STM32H755IIKx`), so we load the longest-prefix die(s) and return the
+   * variant whose refName matches. Returns null if no configured source
+   * carries it. Used as a fallback when a project references an MCU that is
+   * not in local storage.
+   */
+  async loadVariant(refName: string, signal?: AbortSignal): Promise<Mcu | null> {
+    const idx = await this.loadIndex(signal);
+    const lc = refName.toLowerCase();
+    const candidates = Object.keys(idx.devices ?? {})
+      .filter(die => lc.startsWith(die.toLowerCase()))
+      .sort((a, b) => b.length - a.length); // most-specific die first
+    for (const die of candidates) {
+      try {
+        const mcus = await this.loadDie(die, signal);
+        const hit = mcus.find(m => m.refName.toLowerCase() === lc);
+        if (hit) return hit;
+      } catch {
+        // This die failed to fetch/parse — try the next prefix candidate.
+      }
+    }
+    return null;
+  }
+
   /** Fetch a single die's JSON and parse into per-variant Mcu list. */
   async loadDie(die: string, signal?: AbortSignal): Promise<Mcu[]> {
     const cached = this.cache.get(die);
