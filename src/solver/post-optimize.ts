@@ -61,14 +61,7 @@ export function postOptimizeSolutions(
   if (!ctx) return { solutions, improved: 0, processed: 0 };
 
   const reservedPositions = resolveReservePatterns(ctx.expandedAst, mcu).positions;
-
-  // (port, config, channel) -> variables, for reconstructing assignments
-  const varsByChannel = new Map<string, SolverVariable[]>();
-  for (const v of ctx.variables) {
-    const key = `${v.portName}\0${v.configName}\0${v.channelName}`;
-    if (!varsByChannel.has(key)) varsByChannel.set(key, []);
-    varsByChannel.get(key)!.push(v);
-  }
+  const varsByChannel = buildVarsByChannel(ctx.variables);
 
   const startTime = performance.now();
   const out: Solution[] = [];
@@ -99,8 +92,19 @@ export function postOptimizeSolutions(
   return { solutions: deduped, improved, processed };
 }
 
+/** Build a (port, config, channel) → variables index for assignment reconstruction. */
+export function buildVarsByChannel(variables: SolverVariable[]): Map<string, SolverVariable[]> {
+  const varsByChannel = new Map<string, SolverVariable[]>();
+  for (const v of variables) {
+    const key = `${v.portName}\0${v.configName}\0${v.channelName}`;
+    if (!varsByChannel.has(key)) varsByChannel.set(key, []);
+    varsByChannel.get(key)!.push(v);
+  }
+  return varsByChannel;
+}
+
 /** Reconstruct variable assignments for a solution from its config-combo assignments. */
-function reconstructAssignments(
+export function reconstructAssignments(
   sol: Solution,
   varsByChannel: Map<string, SolverVariable[]>,
 ): Map<SolverVariable, SignalCandidate> {

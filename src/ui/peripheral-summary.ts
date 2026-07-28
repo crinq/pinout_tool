@@ -17,11 +17,19 @@ export class PeripheralSummary implements Panel {
   private dmaStreamAssignment = new Map<string, string>();
   private highlightCallback: ((pins: Set<string>, color?: string) => void) | null = null;
   private persistentHighlight: { type: 'port' | 'peripheral'; key: string } | null = null;
+  private editMode = false;
+  private portEditCallback: ((port: string, e: MouseEvent) => void) | null = null;
+  private peripheralEditCallback: ((port: string, instance: string, e: MouseEvent) => void) | null = null;
 
   /** Register a callback to highlight pins in the package viewer */
   onHighlightPins(callback: (pins: Set<string>, color?: string) => void): void {
     this.highlightCallback = callback;
   }
+
+  /** Edit-mode hooks: in edit mode, port/peripheral clicks fire these (for swap menus). */
+  onPortEdit(cb: (port: string, e: MouseEvent) => void): void { this.portEditCallback = cb; }
+  onPeripheralEdit(cb: (port: string, instance: string, e: MouseEvent) => void): void { this.peripheralEditCallback = cb; }
+  setEditMode(on: boolean): void { this.editMode = on; }
 
   createView(container: HTMLElement): void {
     this.container = container;
@@ -191,7 +199,11 @@ export class PeripheralSummary implements Panel {
           this.emitHighlight(new Set());
         }
       });
-      portSpan.addEventListener('click', () => {
+      portSpan.addEventListener('click', (e) => {
+        if (this.editMode && this.portEditCallback) {
+          this.portEditCallback(port, e);
+          return;
+        }
         if (this.persistentHighlight?.type === 'port' && this.persistentHighlight.key === port) {
           // Toggle off
           this.persistentHighlight = null;
@@ -236,6 +248,10 @@ export class PeripheralSummary implements Panel {
         });
         instSpan.addEventListener('click', (e) => {
           e.stopPropagation();
+          if (this.editMode && this.peripheralEditCallback) {
+            this.peripheralEditCallback(port, inst, e);
+            return;
+          }
           if (this.persistentHighlight?.type === 'peripheral' && this.persistentHighlight.key === inst) {
             this.persistentHighlight = null;
             this.emitHighlight(new Set());

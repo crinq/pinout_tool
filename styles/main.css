@@ -178,6 +178,15 @@
   display: block;
 }
 
+/* Foreground pulse-ring layer: sits over the canvas AND the tooltip so the
+   highlight of alternative pins stays visible. Purely decorative — never
+   intercepts pointer events. Geometry synced to the canvas in render(). */
+.package-canvas-overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 101;   /* above .pin-tooltip (100), below menus (200+) */
+}
+
 .pin-tooltip {
   position: absolute;
   background: var(--bg-primary);
@@ -339,6 +348,38 @@
   font-size: 11px;
   border-top: 1px dashed var(--border);
   padding-top: 2px;
+}
+
+.tooltip-compare-head {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-top: 1px dashed var(--border);
+  padding-top: 3px;
+}
+
+.tooltip-compare-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tooltip-compare-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tooltip-compare-sol {
+  color: var(--text-secondary);
+  margin-right: 4px;
 }
 
 /* ============================================================
@@ -1308,3 +1349,152 @@
 }
 
 /* Tutorial styles are in ts_lib/styles/tutorial.css */
+
+/* ============================================================
+   Solution editor (modify mode): toolbar controls + edit menu
+   ============================================================ */
+.pv-edit-controls {
+  margin-left: auto;      /* push to the right end of the viewer toolbar */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pv-edit-cost { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
+.pv-edit-delta.good { color: #22c55e; }
+.pv-edit-delta.bad { color: #ef4444; }
+.pv-edit-delta.neutral { color: var(--text-secondary); }
+.pv-btn.pv-btn-primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.pv-btn.pv-btn-primary:hover { background: #1d4ed8; }
+
+.edit-menu {
+  position: fixed;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 220px;
+  max-width: 360px;
+  max-height: 340px;
+  overflow-y: auto;
+  z-index: 400;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+}
+.edit-menu-title {
+  padding: 5px 8px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  position: sticky;
+  top: 0;
+  background: var(--panel-bg);
+}
+.edit-menu-empty { padding: 6px 8px; color: var(--text-secondary); }
+.edit-menu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.edit-menu-row:hover { background: var(--border); }
+.edit-menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-menu-delta { flex: none; font-variant-numeric: tabular-nums; }
+.edit-menu-delta.good { color: #22c55e; }
+.edit-menu-delta.bad { color: #ef4444; }
+.edit-menu-delta.neutral { color: var(--text-secondary); }
+
+/* ============================================================
+   Documentation viewer (Docs button) — rendered from doc.md
+   ============================================================ */
+.docs-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.docs-modal {
+  background: var(--panel-bg, var(--bg-primary));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.docs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.docs-body {
+  overflow-y: auto;
+  padding: 12px 18px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+/* Rendered-markdown typography (shared class .md-body) */
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+  line-height: 1.25;
+  margin: 1.1em 0 0.5em;
+  scroll-margin-top: 8px;
+}
+.md-body h1 { font-size: 1.6em; }
+.md-body h2 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.md-body h3 { font-size: 1.15em; }
+.md-body h4 { font-size: 1.02em; }
+.md-body p { margin: 0.5em 0; }
+.md-body ul, .md-body ol { margin: 0.4em 0; padding-left: 1.5em; }
+.md-body li { margin: 0.15em 0; }
+.md-body a { color: #2563eb; text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body code {
+  background: var(--bg-secondary);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+.md-body pre.md-code {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.md-body pre.md-code code { background: none; padding: 0; font-size: 0.85em; }
+.md-body blockquote {
+  margin: 0.6em 0;
+  padding: 0.2em 0.9em;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.md-body table.md-table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.92em;
+  display: block;
+  overflow-x: auto;
+}
+.md-body table.md-table th, .md-body table.md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md-body table.md-table th { background: var(--bg-secondary); }
+
+/* Project-solution validity badges (see solver/solution-status.ts) */
+.st-cell-status { width: 1.4em; text-align: center; padding-right: 0; }
+.sv-icon { font-weight: 700; cursor: help; }
+.sv-valid { color: #22c55e; }
+.sv-extra { color: #3b82f6; }
+.sv-invalid { color: #ef4444; }

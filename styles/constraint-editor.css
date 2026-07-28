@@ -189,6 +189,18 @@
   border-bottom-color: #f87171;
 }
 
+/* Warning line highlight (common-error lint) */
+.ce-warning-line {
+  background: rgba(234, 179, 8, 0.28);
+  display: inline;
+  border-bottom: 2px wavy #a16207;
+}
+
+[data-theme="dark"] .ce-warning-line {
+  background: rgba(250, 204, 21, 0.24);
+  border-bottom-color: #fbbf24;
+}
+
 /* Error panel */
 .ce-error-panel {
   max-height: 100px;
@@ -212,6 +224,14 @@
   font-weight: 600;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.ce-error-item.ce-warning-item .ce-error-loc {
+  color: #a16207;
+}
+
+[data-theme="dark"] .ce-error-item.ce-warning-item .ce-error-loc {
+  color: #fbbf24;
 }
 
 .ce-error-msg {

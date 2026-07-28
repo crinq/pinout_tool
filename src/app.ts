@@ -12,6 +12,10 @@ import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
 import { getSolvers } from './solver/solver-registry';
+import { SolutionEditor, type EditCandidate } from './solver/solution-editor';
+import { renderMarkdown } from './ui/markdown';
+import docMd from '../doc.md?raw';
+import { classifyProjectSolutions } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
@@ -194,6 +198,9 @@ export class App {
   private diagnosticsByMcu = new Map<string, SolverDiagnosticsReport>();
   private isDynamicTimeoutRetry = false;
   private debugOverlay = new SolverDebugOverlay();
+  /** Active solution editor (modify mode); null when not editing. */
+  private editor: SolutionEditor | null = null;
+  private editMenu: HTMLElement | null = null;
   private currentSolution: Solution | null = null;
   private currentProjectName: string | null = null;
   /** Cache of parsed MCU objects for multi-MCU solving */
@@ -227,7 +234,7 @@ export class App {
     const bottomSplitter = HorizontalSplitter();
     bottomSplitter.add(this.solverSolutions, 1);
     bottomSplitter.add(this.projectSolutions, 1);
-    bottomSplitter.add(this.peripheralSummary, 0.5);
+    bottomSplitter.add(this.peripheralSummary, 0.75);
 
     const vSplitter = VerticalSplitter();
     vSplitter.add(this.packageViewer, 1);
@@ -292,7 +299,9 @@ export class App {
 
     // Solution selection -> package viewer (shared by both lists)
     const handleSolutionSelected = (solution: Solution) => {
+      if (this.editor) return; // ignore list selection while editing; Save/Discard first
       this.currentSolution = solution;
+      this.refreshEditControls();
 
       // Switch MCU if the solution is from a different MCU (multi-MCU mode)
       if (solution.mcuRef && (!this.currentMcu || this.currentMcu.refName !== solution.mcuRef)) {
@@ -308,31 +317,7 @@ export class App {
         }
       }
 
-      const seen = new Set<string>();
-      const assignments = solution.configAssignments.flatMap(ca => ca.assignments).filter(a => {
-        const key = `${a.pinName}:${a.signalName}:${a.portName}:${a.channelName}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      // Merge DMA stream assignments from all config combinations
-      const dmaStreamAssignment = new Map<string, string>();
-      for (const ca of solution.configAssignments) {
-        if (ca.dmaStreamAssignment) {
-          for (const [sig, stream] of ca.dmaStreamAssignment) {
-            dmaStreamAssignment.set(sig, stream);
-          }
-        }
-      }
-      const portColors = this.getPortColors();
-      const channelComments = interpolateAllComments(this.getChannelComments(), assignments);
-      const compatibility = this.checkSolutionCompatibility(assignments, solution.mcuRef);
-      this.layout.broadcastStateChange({
-        type: 'solution-selected', assignments, portColors, channelComments,
-        gpioCount: solution.gpioCount,
-        dmaStreamAssignment: dmaStreamAssignment.size > 0 ? dmaStreamAssignment : undefined,
-        compatibility,
-      });
+      const compatibility = this.renderSolutionToPanels(solution);
       if (compatibility && compatibility.isCrossMcu) {
         if (compatibility.isCompatible) {
           this.showStatus(`Cross-MCU: all ${compatibility.totalCount} assignments compatible with ${this.currentMcu!.refName}`, 'success');
@@ -380,6 +365,9 @@ export class App {
 
       // Show pin declarations on viewer immediately (before solving)
       this.showPinPreview(result.ast);
+
+      // Re-flag which saved solutions still fit the edited constraints.
+      this.updateProjectSolutionValidity();
     });
 
     // Pin assignment popup -> constraint editor
@@ -391,6 +379,25 @@ export class App {
     });
     this.packageViewer.onPinUnassign((pinName) => {
       this.constraintEditor.removePinDeclaration(pinName);
+    });
+
+    // --- Solution editor (modify mode) ---
+    this.refreshEditControls();
+    this.packageViewer.onPinClick((pin, e) => {
+      if (!this.editor) return;
+      this.showEditMenu(e.clientX, e.clientY, this.editor.movesForPin(pin.name), `Pin ${pin.name}`);
+    });
+    this.peripheralSummary.onPortEdit((port, e) => {
+      if (!this.editor) return;
+      this.showEditMenu(e.clientX, e.clientY, this.editor.listPortSwaps(port), `Swap all of ${port}`);
+    });
+    this.peripheralSummary.onPeripheralEdit((port, inst, e) => {
+      if (!this.editor) return;
+      const cands = [
+        ...this.editor.listPeripheralSwaps(port, inst),
+        ...this.editor.listUnusedReplacements(port, inst),
+      ];
+      this.showEditMenu(e.clientX, e.clientY, cands, `${inst} on ${port}`);
     });
 
     // Enter in solver list -> add to project solutions
@@ -405,6 +412,7 @@ export class App {
         costs: new Map(solution.costs),
       };
       this.projectSolutions.addSolution(clone);
+      this.updateProjectSolutionValidity();
     });
 
   }
@@ -994,6 +1002,7 @@ export class App {
       <div class="header-right">
         <button class="btn btn-small" id="btn-import-xml">Import</button>
         <button class="btn btn-small" id="btn-tutorial">Tutorial</button>
+        <button class="btn btn-small" id="btn-docs" title="Full documentation">Docs</button>
         <button class="btn btn-small" id="btn-data-manager">Data</button>
         <button class="btn btn-small" id="btn-settings">Settings</button>
         <button class="btn btn-small" id="btn-theme-toggle" title="Toggle dark mode">Light</button>
@@ -1053,6 +1062,9 @@ export class App {
       });
     });
 
+    // Docs button
+    header.querySelector('#btn-docs')!.addEventListener('click', () => this.showDocs());
+
     // Data manager button
     header.querySelector('#btn-data-manager')!.addEventListener('click', () => this.showDataManager());
 
@@ -1078,6 +1090,39 @@ export class App {
 
     themeBtn.addEventListener('click', () => {
       cycleThemeMode();
+    });
+  }
+
+  /** Full documentation viewer — renders the bundled doc.md. */
+  private showDocs(): void {
+    const result = createModal({
+      overlayClass: 'docs-overlay',
+      modalClass: 'docs-modal',
+      toggle: '.docs-overlay',
+      modalStyle: { width: 'min(900px, 92vw)', maxHeight: '88vh' },
+    });
+    if (!result) return;
+    const { modal, close } = result;
+    const body = document.createElement('div');
+    body.className = 'docs-body md-body';
+    body.innerHTML = renderMarkdown(docMd);
+
+    const header = document.createElement('div');
+    header.className = 'docs-header';
+    header.innerHTML = `<strong>Documentation</strong><button class="btn btn-small docs-close">Close</button>`;
+    header.querySelector('.docs-close')!.addEventListener('click', close);
+
+    modal.appendChild(header);
+    modal.appendChild(body);
+
+    // In-page anchor links (TOC) scroll within the modal instead of the page.
+    body.addEventListener('click', (e) => {
+      const a = (e.target as HTMLElement).closest('a');
+      const href = a?.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        const target = body.querySelector(`#${CSS.escape(href.slice(1))}`);
+        if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+      }
     });
   }
 
@@ -1196,6 +1241,7 @@ export class App {
 
     const dmaInfo = mcu.dma ? `, ${mcu.dma.streams.length} DMA streams` : '';
     this.showStatus(`Loaded ${mcu.refName} (${mcu.physicalPins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
+    this.updateProjectSolutionValidity();
   }
 
   private async reimportAllMcus(): Promise<void> {
@@ -1314,7 +1360,7 @@ export class App {
     TX = USART*_TX
     RX = USART*_RX
     require same_instance(TX, RX)</pre>
-          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click the <b>Help</b> button for the full syntax reference.<br><br>
+          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click <b>Syntax Help</b> for the language reference, or <b>Docs</b> (top bar) for the full documentation.<br><br>
           Syntax errors show a red squiggle; suspected signal-name swaps (e.g. a
           <code>miso</code> channel mapped to <code>SPI*_MOSI</code>) show a yellow
           squiggle. Both list in the status panel below. Edit the swap-group library via
@@ -1343,6 +1389,10 @@ export class App {
         body: `Save interesting solutions here for later comparison.
           Select a solver solution and press <b>Enter</b> to add it to the project.<br><br>
           Project solutions persist across solver runs and are included when you save the project.<br><br>
+          A <b>validity badge</b> on each row shows whether it still fits the <i>current</i> constraints:
+          <b style="color:#22c55e">✓</b> valid, <b style="color:#3b82f6">●</b> valid but with assignments
+          the constraints no longer require, <b style="color:#ef4444">✕</b> invalid. It updates live as you
+          edit the constraint text &mdash; handy for spotting which saved solutions survived a change.<br><br>
           <b>Compare mode:</b> Ctrl/Cmd-click multiple rows to compare them in the
           package viewer &mdash; matching pins render normally, differing pins pulse
           through one color per selected solution, and their tooltip lists every
@@ -1357,6 +1407,22 @@ export class App {
         placement: 'top',
       },
       {
+        target: () => {
+          const el = document.querySelector('.pv-edit-controls') as HTMLElement | null;
+          return el && el.childElementCount > 0 ? el : null;
+        },
+        title: 'Modify a Solution',
+        body: `With a solution selected, click <b>✎ Modify</b> in the package-viewer toolbar to hand-tune
+          the routing for your board &mdash; no re-solving needed. In modify mode:<br><br>
+          &bull; click a <b>pin</b> to move its signal to another free pin, or place an unmapped IN/OUT signal<br>
+          &bull; click a <b>port</b> in the peripheral summary to swap all its peripherals with a compatible port<br>
+          &bull; click a <b>peripheral</b> to swap it with another port's, or with an unused instance<br><br>
+          Every option shows its <b>cost change</b> and glows the pins it moves when you hover it.
+          <b>Ctrl+Z / Ctrl+Shift+Z</b> undo/redo; <b>Save</b> adds the edited solution to the project,
+          <b>Discard</b> exits without keeping changes.`,
+        placement: 'bottom',
+      },
+      {
         target: '#project-select',
         title: 'Projects',
         body: `Your work is organized into projects. Use the dropdown to switch between projects.<br><br>
@@ -1364,7 +1430,8 @@ export class App {
           <b>Save</b> &mdash; save constraints, MCU, and project solutions<br>
           <b>Save As</b> &mdash; save under a new name, or as a new version with the old name<br><br>
           Each save as creates a <b>version</b>, so you can go back to previous states.
-          Projects are stored in your browser's local storage.`,
+          Projects are stored in your browser's local storage. If a project's MCU isn't stored
+          locally, it's fetched automatically from the configured remote data source on open.`,
         placement: 'bottom',
       },
       {
@@ -1377,7 +1444,9 @@ export class App {
       {
         target: '#btn-settings',
         title: 'Settings',
-        body: `Configure solver algorithms, timeouts, cost function weights, and display options.`,
+        body: `Configure which of the 18 solver algorithms run, timeouts, cost-function weights, and display options.<br><br>
+          Two options worth knowing: <b>Skip GPIO mapping</b> (faster when there are many IN/OUT channels)
+          and <b>Post-optimize pins</b> (after solving, greedily relocate pins to lower the cost).`,
         placement: 'bottom',
       },
       {
@@ -1724,6 +1793,8 @@ export class App {
         const hasMcuFilter = parseResult?.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
         solveBtn.disabled = hasErrors || (!this.currentMcu && !hasMcuFilter);
       }
+      // MCU + parse are settled now → badge the restored solutions.
+      this.updateProjectSolutionValidity();
     }, 400);
     const solCount = version.solutions?.length ?? 0;
     this.showStatus(`Project "${name}" loaded (v${version.id}${solCount > 0 ? `, ${solCount} solutions` : ''})`, 'success');
@@ -1749,6 +1820,205 @@ export class App {
       if (name === this.currentProjectName) opt.selected = true;
       this.projectSelect.appendChild(opt);
     }
+  }
+
+  // ============================================================
+  // Solution editor (modify mode)
+  // ============================================================
+
+  /** Recompute per-solution validity badges in the project list vs. current constraints. */
+  private updateProjectSolutionValidity(): void {
+    const sols = this.projectSolutions.getSolutions();
+    const ast = this.constraintEditor.getParseResult()?.ast;
+    if (sols.length === 0 || !ast || !this.currentMcu) {
+      this.projectSolutions.setValidity(new Map());
+      return;
+    }
+    try {
+      this.projectSolutions.setValidity(
+        classifyProjectSolutions(sols, ast, this.currentMcu, this.settings.skipGpioMapping));
+    } catch (err) {
+      console.warn('Solution validity check failed:', err);
+      this.projectSolutions.setValidity(new Map());
+    }
+  }
+
+  /** Flatten a solution and push it to the viewer + peripheral list. Returns compatibility info. */
+  private renderSolutionToPanels(solution: Solution): CompatibilityResult | undefined {
+    const seen = new Set<string>();
+    const assignments = solution.configAssignments.flatMap(ca => ca.assignments).filter(a => {
+      const key = `${a.pinName}:${a.signalName}:${a.portName}:${a.channelName}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const dmaStreamAssignment = new Map<string, string>();
+    for (const ca of solution.configAssignments) {
+      if (ca.dmaStreamAssignment) {
+        for (const [sig, stream] of ca.dmaStreamAssignment) dmaStreamAssignment.set(sig, stream);
+      }
+    }
+    const portColors = this.getPortColors();
+    const channelComments = interpolateAllComments(this.getChannelComments(), assignments);
+    const compatibility = this.checkSolutionCompatibility(assignments, solution.mcuRef);
+    this.layout.broadcastStateChange({
+      type: 'solution-selected', assignments, portColors, channelComments,
+      gpioCount: solution.gpioCount,
+      dmaStreamAssignment: dmaStreamAssignment.size > 0 ? dmaStreamAssignment : undefined,
+      compatibility,
+    });
+    return compatibility;
+  }
+
+  /** Render the modify-mode controls into the package-viewer toolbar. */
+  private refreshEditControls(): void {
+    const host = this.packageViewer.getEditControlsHost();
+    if (!host) return; // viewer not mounted yet
+    if (!this.editor) {
+      host.innerHTML = this.currentSolution
+        ? `<button class="btn btn-small pv-btn" data-act="enter" title="Hand-tune this solution's routing">✎ Modify</button>`
+        : '';
+      host.querySelector('[data-act="enter"]')?.addEventListener('click', () => this.enterModifyMode());
+      return;
+    }
+    const ed = this.editor;
+    const delta = ed.currentCost - ed.baselineCost;
+    const cls = delta < -1e-9 ? 'good' : delta > 1e-9 ? 'bad' : 'neutral';
+    const sign = delta < -1e-9 ? '' : delta > 1e-9 ? '+' : '±';
+    host.innerHTML = `
+      <span class="pv-edit-cost">cost ${ed.currentCost.toFixed(1)} <span class="pv-edit-delta ${cls}">${sign}${delta.toFixed(1)}</span></span>
+      <button class="btn btn-small pv-btn pv-btn-primary" data-act="save" title="Save edited solution to project">✓ Save</button>
+      <button class="btn btn-small pv-btn" data-act="discard" title="Discard edits (Ctrl+Z undoes single steps)">✕ Discard</button>`;
+    host.querySelector('[data-act="save"]')?.addEventListener('click', () => this.exitModifyMode(true));
+    host.querySelector('[data-act="discard"]')?.addEventListener('click', () => this.exitModifyMode(false));
+  }
+
+  private enterModifyMode(): void {
+    if (this.editor) return;
+    if (!this.currentSolution || !this.currentMcu) {
+      this.showStatus('Select a solution first', 'error');
+      return;
+    }
+    const ast = this.constraintEditor.getParseResult()?.ast;
+    if (!ast) {
+      this.showStatus('Cannot edit: constraints have errors', 'error');
+      return;
+    }
+    const weights = new Map(Object.entries(this.settings.costWeights));
+    // skipGpioMapping=false so IN/OUT channels are real variables the user can
+    // place by hand (the solve may have skipped them; here they're editable).
+    const editor = SolutionEditor.fromSolution(this.currentSolution, ast, this.currentMcu, weights, false);
+    if (!editor) {
+      this.showStatus('Cannot start editor for this solution', 'error');
+      return;
+    }
+    this.editor = editor;
+    this.packageViewer.setEditMode(true);
+    this.peripheralSummary.setEditMode(true);
+    this.refreshEditPreview();
+    this.showStatus('Modify mode: click pins, ports, or peripherals to change routing', 'info');
+  }
+
+  private exitModifyMode(save: boolean): void {
+    const editor = this.editor;
+    this.closeEditMenu();
+    this.editor = null;
+    this.packageViewer.setEditMode(false);
+    this.peripheralSummary.setEditMode(false);
+    this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: new Set() });
+
+    if (save && editor) {
+      const edited = editor.toSolution();
+      const base = this.currentSolution;
+      const suggested = (base?.name ? `${base.name} (edited)` : `Edited ${base?.id ?? ''}`).trim();
+      const name = prompt('Save edited solution as:', suggested);
+      if (name !== null) {
+        edited.name = name.trim() || suggested;
+        this.projectSolutions.addSolution(edited);
+        this.currentSolution = edited;
+        this.projectSolutions.setSolutions(this.projectSolutions.getSolutions());
+        this.showStatus(`Saved "${edited.name}" to project`, 'success');
+      }
+    }
+    // Restore the (possibly new) current solution in the panels.
+    if (this.currentSolution) this.renderSolutionToPanels(this.currentSolution);
+    this.refreshEditControls();
+    this.updateProjectSolutionValidity();
+  }
+
+  private refreshEditPreview(): void {
+    if (!this.editor) return;
+    this.renderSolutionToPanels(this.editor.toSolution());
+    this.refreshEditControls();
+  }
+
+  private closeEditMenu(): void {
+    if (!this.editMenu) return;
+    this.editMenu.remove();
+    this.editMenu = null;
+    // Stop the candidate-preview pulse the menu's hover left behind.
+    this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: new Set() });
+  }
+
+  private showEditMenu(x: number, y: number, candidates: EditCandidate[], title: string): void {
+    this.closeEditMenu();
+    const menu = document.createElement('div');
+    menu.className = 'edit-menu';
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+
+    const head = document.createElement('div');
+    head.className = 'edit-menu-title';
+    head.textContent = title;
+    menu.appendChild(head);
+
+    if (candidates.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'edit-menu-empty';
+      empty.textContent = 'No compatible options';
+      menu.appendChild(empty);
+    }
+    for (const cand of candidates.slice(0, 60)) {
+      const row = document.createElement('div');
+      row.className = 'edit-menu-row';
+      const d = cand.costDelta;
+      const cls = d < -1e-9 ? 'good' : d > 1e-9 ? 'bad' : 'neutral';
+      const sign = d < -1e-9 ? '' : d > 1e-9 ? '+' : '±';
+      row.innerHTML = `<span class="edit-menu-label"></span><span class="edit-menu-delta ${cls}">${sign}${d.toFixed(1)}</span>`;
+      row.querySelector('.edit-menu-label')!.textContent = cand.label;
+      row.addEventListener('mouseenter', () => {
+        this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: new Set(cand.highlightPins), highlightColor: '#a78bfa' });
+      });
+      row.addEventListener('click', () => {
+        cand.apply();
+        this.closeEditMenu();
+        this.refreshEditPreview();
+      });
+      menu.appendChild(row);
+    }
+
+    // Leaving the menu stops the preview pulse even while it stays open.
+    menu.addEventListener('mouseleave', () => {
+      this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: new Set() });
+    });
+
+    document.body.appendChild(menu);
+    // Keep the menu on-screen.
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - rect.width - 4)}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${Math.max(4, window.innerHeight - rect.height - 4)}px`;
+
+    // Close on outside click (next tick so this click doesn't immediately close it).
+    setTimeout(() => {
+      const onDoc = (ev: MouseEvent) => {
+        if (this.editMenu && !this.editMenu.contains(ev.target as Node)) {
+          this.closeEditMenu();
+          document.removeEventListener('mousedown', onDoc);
+        }
+      };
+      document.addEventListener('mousedown', onDoc);
+    }, 0);
+    this.editMenu = menu;
   }
 
   private showPinPreview(ast: ProgramNode | null): void {
@@ -1840,9 +2110,20 @@ export class App {
         return;
       }
 
+      // Solution-editor undo/redo (only while editing, and not while typing in a field).
+      if (this.editor && (e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z' || e.key === 'y' || e.key === 'Y')) {
+        const el = e.target as HTMLElement | null;
+        const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+        if (typing) return;
+        const redo = e.key === 'y' || e.key === 'Y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z'));
+        e.preventDefault();
+        if (redo ? this.editor.redo() : this.editor.undo()) this.refreshEditPreview();
+        return;
+      }
+
       // Escape: close any open modal
       if (e.key === 'Escape') {
-        const overlay = document.querySelector('.settings-overlay, .ce-help-overlay, .pv-assign-popup');
+        const overlay = document.querySelector('.settings-overlay, .ce-help-overlay, .docs-overlay, .pv-assign-popup');
         if (overlay) {
           overlay.remove();
           e.preventDefault();
@@ -2185,6 +2466,7 @@ export class App {
 
       const dmaInfo = mcu.dma ? ` (+DMA)` : '';
       this.showStatus(`Loaded ${mcu.refName} from storage${dmaInfo}`, 'success');
+      this.updateProjectSolutionValidity();
     } catch (err) {
       this.showStatus(`Failed to parse stored MCU "${refName}": ${err}`, 'error');
     }

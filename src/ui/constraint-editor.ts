@@ -119,7 +119,8 @@ export class ConstraintEditor implements Panel {
 
     const helpBtn = document.createElement('button');
     helpBtn.className = 'btn btn-small';
-    helpBtn.textContent = 'Help';
+    helpBtn.textContent = 'Syntax Help';
+    helpBtn.title = 'Constraint language syntax reference';
     helpBtn.addEventListener('click', () => this.showHelp());
     toolbar.appendChild(helpBtn);
     this.container.appendChild(toolbar);

@@ -66,7 +66,12 @@ export class PackageViewer implements Panel {
   private hoveredPhys: PhysicalPin | null = null;
   private selectedPhys: PhysicalPin | null = null;
   /** Click callback receives the logical pin the user clicked (for shared pads, the primary). */
-  private pinClickCallbacks: Array<(pin: LogicalPin) => void> = [];
+  private pinClickCallbacks: Array<(pin: LogicalPin, e: MouseEvent) => void> = [];
+  private editMode = false;
+  private editControlsHost!: HTMLElement;
+  /** Foreground layer for pulse rings so they stay visible over the tooltip. */
+  private overlay!: HTMLCanvasElement;
+  private pendingRings: Array<{ kind: 'rect' | 'arc'; x: number; y: number; a: number; b: number; color: string }> = [];
   private popup: HTMLElement | null = null;
   private popupCloseHandler: ((ev: MouseEvent) => void) | null = null;
   private pinAssignCallbacks: Array<(pinName: string, signalName: string) => void> = [];
@@ -168,9 +173,19 @@ export class PackageViewer implements Panel {
     exportBtn.addEventListener('click', () => { void this.showExportModal(); });
     toolbar.appendChild(exportBtn);
 
+    // Right-aligned host the app fills with solution-editor controls (Modify / Save / Discard).
+    this.editControlsHost = document.createElement('span');
+    this.editControlsHost.className = 'pv-edit-controls';
+    toolbar.appendChild(this.editControlsHost);
+
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'package-canvas';
     this.container.appendChild(this.canvas);
+
+    // Transparent layer above the tooltip that carries only the pulse rings.
+    this.overlay = document.createElement('canvas');
+    this.overlay.className = 'package-canvas-overlay';
+    this.container.appendChild(this.overlay);
 
     this.tooltip = document.createElement('div');
     this.tooltip.className = 'pin-tooltip';
@@ -250,7 +265,17 @@ export class PackageViewer implements Panel {
     this.render();
   }
 
-  onPinClick(callback: (pin: LogicalPin) => void): void {
+  /** When on, pin clicks fire onPinClick callbacks and the default assign popup is suppressed. */
+  setEditMode(on: boolean): void {
+    this.editMode = on;
+  }
+
+  /** Toolbar host the app fills with solution-editor controls. */
+  getEditControlsHost(): HTMLElement {
+    return this.editControlsHost;
+  }
+
+  onPinClick(callback: (pin: LogicalPin, e: MouseEvent) => void): void {
     this.pinClickCallbacks.push(callback);
   }
 
@@ -614,6 +639,7 @@ export class PackageViewer implements Panel {
     ctx.scale(this.zoom, this.zoom);
     ctx.translate(-cx, -cy);
 
+    this.pendingRings.length = 0;
     if (this.isBGA()) {
       this.renderBGA(ctx, width, height);
     } else if (this.isDualRow()) {
@@ -622,6 +648,52 @@ export class PackageViewer implements Panel {
       this.renderLQFP(ctx, width, height);
     }
 
+    this.drawHighlightOverlay(width, height, dpr);
+  }
+
+  /**
+   * Draw the pulse rings collected during the main pass onto the foreground
+   * overlay canvas (above the tooltip), using the same view transform.
+   */
+  private drawHighlightOverlay(width: number, height: number, dpr: number): void {
+    const o = this.overlay;
+    // Match the main canvas box exactly (it fills the space below the toolbar).
+    o.style.left = `${this.canvas.offsetLeft}px`;
+    o.style.top = `${this.canvas.offsetTop}px`;
+    o.style.width = `${width}px`;
+    o.style.height = `${height}px`;
+    o.width = width * dpr;
+    o.height = height * dpr;
+
+    const ctx = o.getContext('2d')!;
+    ctx.clearRect(0, 0, o.width, o.height);
+    if (this.pendingRings.length === 0) return;
+
+    ctx.scale(dpr, dpr);
+    const cx = width / 2, cy = height / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(this.rotation * Math.PI / 2);
+    ctx.scale(this.zoom, this.zoom);
+    ctx.translate(-cx, -cy);
+
+    const intensity = this.getPulseIntensity();
+    for (const r of this.pendingRings) {
+      ctx.save();
+      ctx.globalAlpha = intensity;
+      ctx.shadowColor = r.color;
+      ctx.strokeStyle = r.color;
+      ctx.lineWidth = 2.5;
+      if (r.kind === 'rect') {
+        ctx.shadowBlur = 6 + 6 * intensity;
+        ctx.strokeRect(r.x, r.y, r.a, r.b);
+      } else {
+        ctx.shadowBlur = 8 + 8 * intensity;
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, r.a, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   private isBGA(): boolean {
@@ -656,6 +728,11 @@ export class PackageViewer implements Panel {
     ctx.font = '14px monospace';
     ctx.textAlign = 'center';
     ctx.fillText('Drop an MCU XML file to view package', width / 2, height / 2);
+
+    // No pins → clear any leftover pulse rings on the overlay.
+    if (this.overlay) {
+      this.overlay.getContext('2d')!.clearRect(0, 0, this.overlay.width, this.overlay.height);
+    }
   }
 
   private renderLQFP(ctx: CanvasRenderingContext2D, width: number, height: number): void {
@@ -805,15 +882,8 @@ export class PackageViewer implements Panel {
       ctx.fillRect(x, y, pw, ph);
 
       if (hlColor) {
-        const intensity = this.getPulseIntensity();
-        ctx.save();
-        ctx.globalAlpha = intensity;
-        ctx.shadowColor = hlColor;
-        ctx.shadowBlur = 6 + 6 * intensity;
-        ctx.strokeStyle = hlColor;
-        ctx.lineWidth = 2.5;
-        ctx.strokeRect(x, y, pw, ph);
-        ctx.restore();
+        // Deferred to the foreground overlay so it stays visible over the tooltip.
+        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor });
       } else {
         ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
         ctx.lineWidth = 0.5;
@@ -999,15 +1069,7 @@ export class PackageViewer implements Panel {
       ctx.fillRect(x, y, pw, ph);
 
       if (hlColor) {
-        const intensity = this.getPulseIntensity();
-        ctx.save();
-        ctx.globalAlpha = intensity;
-        ctx.shadowColor = hlColor;
-        ctx.shadowBlur = 6 + 6 * intensity;
-        ctx.strokeStyle = hlColor;
-        ctx.lineWidth = 2.5;
-        ctx.strokeRect(x, y, pw, ph);
-        ctx.restore();
+        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor });
       } else {
         ctx.strokeStyle = textPri;
         ctx.lineWidth = 0.5;
@@ -1241,17 +1303,7 @@ export class PackageViewer implements Panel {
       ctx.fill();
 
       if (hlColor) {
-        const intensity = this.getPulseIntensity();
-        ctx.save();
-        ctx.globalAlpha = intensity;
-        ctx.shadowColor = hlColor;
-        ctx.shadowBlur = 8 + 8 * intensity;
-        ctx.beginPath();
-        ctx.arc(cx, cy, ballRadius + 1, 0, Math.PI * 2);
-        ctx.strokeStyle = hlColor;
-        ctx.lineWidth = 2.5;
-        ctx.stroke();
-        ctx.restore();
+        this.pendingRings.push({ kind: 'arc', x: cx, y: cy, a: ballRadius + 1, b: 0, color: hlColor });
       } else {
         ctx.strokeStyle = textColor;
         ctx.lineWidth = 0.5;
@@ -1351,9 +1403,12 @@ export class PackageViewer implements Panel {
       this.render();
       const primary = pickPrimaryLogical(phys, this.buildAssignmentMap());
       for (const cb of this.pinClickCallbacks) {
-        cb(primary);
+        cb(primary, e);
       }
 
+      // In edit mode the app owns the click (shows its own edit menu); skip the
+      // default assign-signal popup so the two don't fight.
+      if (this.editMode) return;
       const assignableLogicals = phys.logicals.filter(l => l.isAssignable);
       if (assignableLogicals.length > 0) {
         this.showAssignmentPopup(e, phys);

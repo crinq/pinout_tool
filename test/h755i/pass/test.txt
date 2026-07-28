@@ -1,0 +1,220 @@
+mcu: STM32H755
+package: UFBGA176
+#package: TFBGA240
+
+port clock:
+  channel IN = RCC_OSCIN
+  channel OUT = RCC_OSCOUT
+  color "brown"
+  
+  
+port debug:
+  channel DIO = *_SWDIO
+  channel CLK = *_SWCLK
+  channel SWO = *_SWO
+  channel TX = USART*_TX $u
+  channel RX = USART*_RX $u
+  #channel DP = USB*_OTGFSDP
+  #channel DM = USB*_OTGFSDM
+  require dma(TX, "USART_TX")
+  require dma(RX, "USART_RX")
+  color "brown"
+    
+
+port MEM:
+  channel RAM_A0 = FMC_A0
+  channel RAM_A1 = FMC_A1
+  channel RAM_A2 = FMC_A2
+  channel RAM_A3 = FMC_A3
+  channel RAM_A4 = FMC_A4
+  channel RAM_A5 = FMC_A5
+  channel RAM_A6 = FMC_A6
+  channel RAM_A7 = FMC_A7
+  channel RAM_A8 = FMC_A8
+  channel RAM_A9 = FMC_A9
+  channel RAM_A10 = FMC_A10
+  channel RAM_A11 = FMC_A11
+  channel RAM_A12 = FMC_A12
+  channel RAM_BA0 = FMC_BA0
+  channel RAM_BA1 = FMC_BA1
+  channel RAM_D0 = FMC_D0
+  channel RAM_D1 = FMC_D1
+  channel RAM_D2 = FMC_D2
+  channel RAM_D3 = FMC_D3
+  channel RAM_D4 = FMC_D4
+  channel RAM_D5 = FMC_D5
+  channel RAM_D6 = FMC_D6
+  channel RAM_D7 = FMC_D7
+  channel RAM_D8 = FMC_D8
+  channel RAM_D9 = FMC_D9
+  channel RAM_D10 = FMC_D10
+  channel RAM_D11 = FMC_D11
+  channel RAM_D12 = FMC_D12
+  channel RAM_D13 = FMC_D13
+  channel RAM_D14 = FMC_D14
+  channel RAM_D15 = FMC_D15
+  channel RAM_SDCKE0 = FMC_SDCKE0
+  channel RAM_SDCLK = FMC_SDCLK
+  channel RAM_SDNCAS = FMC_SDNCAS
+  channel RAM_SDNE0 = FMC_SDNE0
+  channel RAM_SDNRAS = FMC_SDNRAS
+  channel RAM_SDNWE = FMC_SDNWE
+  
+  # channel RAM_CLK = QUADSPI_CLK
+  # channel RAM_NCS = QUADSPI_BK1NCS
+  # channel RAM_IO0 = QUADSPI_BK1IO0
+  # channel RAM_IO1 = QUADSPI_BK1IO1
+  # channel RAM_IO2 = QUADSPI_BK1IO2
+  # channel RAM_IO3 = QUADSPI_BK1IO3
+
+  channel ROM_CLK = QUADSPI_CLK
+  channel ROM_NCS = QUADSPI_BK2NCS
+  channel ROM_IO0 = QUADSPI_BK2IO0
+  channel ROM_IO1 = QUADSPI_BK2IO1
+  channel ROM_IO2 = QUADSPI_BK2IO2
+  channel ROM_IO3 = QUADSPI_BK2IO3
+
+
+port SAFETY:
+  channel TX = USART*_TX $u
+  channel RX = USART*_RX $u
+  require dma(TX, "USART_TX")
+  require dma(RX, "USART_TX")
+
+
+port ECAT_GD:
+  # spi used for ethercat and gate driver
+  channel mosi = SPI*_MISO $s
+  channel miso = SPI*_MOSI $s
+  channel sck = SPI*_SCK $s
+  channel cs_ecat = SPI*_NSS $s
+  channel cs_gd = OUT # gate driver cs
+  #channel sda = I2C*_SDA $i # optional I2C for ecat eeprom
+  #channel scl = I2C*_SCL $i
+  channel sync0 = IN
+  channel sync1 = OUT
+  channel irq = IN
+  require dma(mosi, "SPI_TX")
+  require dma(miso, "SPI_RX")
+  color "red"
+
+
+port ENC0:
+  channel MA
+  channel MO
+  channel SL
+  channel CS
+  color "orange"
+
+  config "SPI":
+    SL = SPI*_MISO $s
+    MA = SPI*_SCK $s
+    MO = SPI*_MOSI $s # reserved for future use
+    CS = SPI*_NSS $s # reserved for future use
+    require dma(SL, "SPI_RX")
+    
+  # optional
+  config "UART": 
+    SL = USART*_RX $u # reserved for future use, connected
+    MA = USART*_TX $u # reserved for future use, connected
+    require dma(MA, "USART_TX")
+    require dma(SL, "USART_RX")
+
+
+port ENC1 from ENC0:
+  color "green"
+  
+port ENC2 from ENC0:
+  channel MO
+  channel MA_txen
+  channel MO_txen
+  color "red"
+  
+  config "SPI":
+    SL = SPI*_MISO $s
+    MO = SPI*_MOSI $s
+    MA = SPI*_SCK $s
+    MO_txen = OUT
+    require dma(MO, "SPI_TX")
+    require dma(SL, "SPI_RX")
+  
+  config "UART":
+    SL = USART*_RX $u
+    MA = USART*_TX $u
+    MA_txen = USART*_DE $u
+    MO_txen = OUT
+    require dma(MA, "USART_TX")
+    require dma(SL, "USART_RX")
+    
+  config "TIM":
+    MO = TIM[1,2,3,4,5,8,20]_CH[1,2] $t
+    SL = TIM*_CH[1,2] $t
+    MA = TIM*_CH[3,4] $t
+    MO_txen = OUT
+    MA_txen = OUT
+
+
+port MOT:
+  # pwm
+  channel A = TIM[1,8,20]_CH1 $t
+  channel AN = TIM[1,8,20]_CH1N $t
+  channel B = TIM[1,8,20]_CH2 $t
+  channel BN = TIM[1,8,20]_CH2N $t
+  channel C = TIM[1,8,20]_CH3 $t
+  channel CN = TIM[1,8,20]_CH3N $t
+  channel BRAKE = TIM[1,8,20]_CH4 $t
+  channel FAN = TIM*_CH*
+  
+  # alternative mapping for hrtim
+  #channel A = HRTIM_CHA1 
+  #channel AN = HRTIM_CHA2
+  #channel B = HRTIM_CHB1
+  #channel BN = HRTIM_CHB2
+  #channel C = HRTIM_CHC1
+  #channel CN = HRTIM_CHC2
+  #channel BRAKE = HRTIM_CHE1
+  
+  # sto
+  channel STO0 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2 $t
+  channel STO1 = TIM[1,8]_BKIN | TIM[1,8]_BKIN2 $t
+
+  # phase, dc, brake currents
+  channel IA = ADC1_INP[0-3]
+  channel IB = ADC2_INP[0-3]
+  channel IC = ADC3_INP[0-3]
+  channel IDC = ADC1_INP[7-18]
+  channel IBRAKE = ADC3_INP[7-18] # optional, might be needed for SIL
+
+  # phase, dc voltages
+  channel UA = ADC1_INP[1-6]
+  channel UB = ADC2_INP[1-6]
+  channel UC = ADC3_INP[1-6]
+  channel UDC = ADC2_INP[7-18]
+
+  # temperatures
+  channel TMOT_A = ADC1_INP[7-18]
+  channel TMOT_B = ADC2_INP[7-18]
+  channel TMOT_C = ADC3_INP[7-18]
+  channel TFET = ADC1_INP[7-18]
+  channel THEATSINK = ADC2_INP[7-18]
+  channel TBRAKE = ADC3_INP[7-18]
+  
+  require dma(IA)
+  require dma(IB)
+  require dma(IC)
+  color "blue"
+
+port IO:
+  # UID/calibration power EEPROM, optional IMU
+  channel sda = I2C*_SDA $i
+  channel scl = I2C*_SCL $i
+  
+  # external status LEDs
+  channel LED_GREEN = TIM*_CH*
+  channel LED_YELLOW = TIM*_CH*
+  channel LED_RED = TIM*_CH*
+  
+  # optional ws2812 LED
+  #channel LED_RGB = SPI*_MOSI
+  #require dma(LED_RGB, "SPI_TX")
+  

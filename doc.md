@@ -9,6 +9,9 @@
    - [Package Filter](#package-filter)
    - [Memory Filters](#memory-filters)
    - [Frequency Filter](#frequency-filter)
+   - [Temperature Filter](#temperature-filter)
+   - [Voltage Filter](#voltage-filter)
+   - [Core Filter](#core-filter)
    - [Pin Reservations](#pin-reservations)
    - [Fixed Pin Assignments](#fixed-pin-assignments)
    - [Shared Peripherals](#shared-peripherals)
@@ -16,9 +19,12 @@
    - [Configurations](#configurations)
    - [Signal Patterns](#signal-patterns)
    - [Mappings](#mappings)
+   - [Variable Assignment ($)](#variable-assignment)
+   - [Optional Mappings and Requires](#optional-mappings-and-requires)
    - [Constraints (require)](#constraints-require)
    - [Built-in Functions](#built-in-functions)
    - [Macros](#macros)
+   - [Port Templates](#port-templates)
    - [Standard Library](#standard-library)
    - [Common-Error Lint](#common-error-lint)
 4. [Practical Examples](#practical-examples)
@@ -26,6 +32,8 @@
    - [Comparing Solutions](#comparing-solutions)
 6. [Solver](#solver)
 7. [Solution Browser](#solution-browser)
+   - [Solution Validity Badges](#solution-validity-badges)
+   - [Editing a Solution (Modify Mode)](#editing-a-solution-modify-mode)
 8. [Project Management](#project-management)
 
 ---
@@ -34,9 +42,11 @@
 
 The STM32 Pinout Tool is a browser-based application for finding optimal pin assignments on STM32 microcontrollers. You describe your hardware requirements using a constraint language -- which peripherals you need, how they relate to each other -- and the solver finds all valid assignments, ranked by cost.
 
-14 solver algorithms are available, ranging from simple single-phase backtracking to advanced three-phase solvers with instance permutation and a hybrid solver that combines single-phase and two-phase strategies. Multiple solvers can run in parallel using separate Web Workers, with results automatically merged, deduplicated, and ranked.
+18 solver algorithms are available, ranging from simple single-phase backtracking, through two- and three-phase solvers with instance permutation, to conflict-directed search, CEGAR instance-refinement, local-search repair, and an adaptive portfolio for very hard problems. Multiple solvers can run in parallel using separate Web Workers, with results automatically merged, deduplicated, and ranked.
 
-The tool works entirely in the browser. MCU data is loaded from STM32CubeMX XML files and stored in localStorage.
+The tool works entirely in the browser. MCU data is loaded from STM32CubeMX XML files and stored in localStorage, or fetched on demand from a remote catalogue.
+
+You can open this documentation any time with the **Docs** button in the header; the constraint editor's **Syntax Help** button opens a focused language reference.
 
 ---
 
@@ -54,8 +64,12 @@ work for testing, GitHub raw / Pages URLs work for production.
   Type to filter by name. Click a die to fetch + parse it. Multi-package
   dies present a variant picker before loading.
 - The fetched MCU becomes the **current MCU** and is held in an
-  in-memory cache (10 dies / 500 KB, whichever fills first). Cache is
-  cleared on page reload — long-term storage is not enabled yet.
+  in-memory cache (10 dies / 500 KB, whichever fills first). This remote
+  cache is transient — cleared on page reload. (MCUs you **Import** from
+  XML are stored persistently; see [Loading MCU Data](#loading-mcu-data).)
+  Opening a saved project whose MCU isn't stored locally will also
+  auto-fetch it from this remote source — see
+  [Project Management](#saving-and-loading).
 
 ### Multi-MCU Solving with `mcu:` filters
 
@@ -945,6 +959,12 @@ Error messages include the sender (solver name) to identify which component prod
 | **MRV Group** | Three-phase with dynamic MRV + forward checking in Phase 2. Most robust for complex problems. |
 | **Ratio MRV Group** | MRV Group with normalized priority (candidates per signal ratio instead of raw pin count). |
 | **Hybrid** | Runs priority-backtracking, extracts instance groups from solutions, permutes symmetric ports, then runs Phase 2. Best when two-phase Phase 1 finds infeasible groups but single-phase solvers succeed. |
+| **Conflict-Directed** | Single-phase search with conflict-directed backjumping and weighted-degree (dom/wdeg) variable ordering plus Luby restarts. Fast first solution on heavily-constrained problems where late, blocking constraints defeat static ordering. |
+| **CEGAR Instance-Refinement** | Closed-loop two-phase: a bipartite-matching oracle rejects unroutable instance groups instantly, and pin-level failures become learned instance "nogoods" that steer discovery toward routable groups. Strong structural diversity on very hard problems. |
+| **LNS Repair** | Local search (min-conflicts) over complete assignments with destroy/repair. Fastest time-to-first-solution on very large problems; the destroy operator also doubles as a diversity engine. Incomplete — pair with a systematic solver. |
+| **Adaptive Portfolio** | Races LNS and Conflict-Directed for a fast first solution, then feeds their instance groups into CEGAR for diversity. Best default for unknown/hard problems; easy problems fall through to Two-Phase. |
+
+The last four target **very complex problems** (many mutually-blocking peripheral constraints) where the classic solvers time out or collapse to a single group. See `ai_docs/complex_solvers.md` for the design rationale.
 
 ### Parallel Multi-Solver
 
@@ -984,6 +1004,8 @@ Access via the **Settings** button:
 - **Num restarts** -- number of restarts for randomized-restarts solver (default: 150)
 - **Timeout** -- abort after this many milliseconds (default: 2500)
 - **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 5)
+- **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on)
+- **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
 - **Cost weights** -- adjust the ranking formula for all 7 cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
 
@@ -1027,6 +1049,39 @@ After a solver run, the solution list is automatically focused for immediate key
 
 All columns except Name are sortable (click header to toggle ascending/descending).
 
+### Solution Validity Badges
+
+Each row in the **project** solution list carries a small badge showing whether
+that saved solution still fits the **current** constraint text (recomputed as
+you edit the constraints, change MCU, or load a project):
+
+| Badge | Meaning |
+|-------|---------|
+| ✓ green | **Valid** -- every required channel is assigned and all constraints (pin/instance exclusivity, `require`, DMA) are satisfied |
+| ● blue | **Valid, with extras** -- satisfies the current constraints, but also carries assignments for channels no longer present in the constraint text (harmless leftovers from an earlier version) |
+| ✕ red | **Invalid** -- a required channel is unassigned (e.g. a new/renamed port) or a constraint is now violated |
+
+Badges make it easy to see which stored solutions are still usable after editing
+the constraints. Solutions for a different MCU than the one loaded show no badge.
+
+### Editing a Solution (Modify Mode)
+
+To hand-tune a solution's routing for your board -- optimizing for things the
+cost function can't see, such as connector placement -- select it and click
+**✎ Modify** in the package-viewer toolbar. This edits a copy; the live cost and
+its delta are shown next to the button. In modify mode:
+
+- **Click a pin** -- move its signal to another free pin, bring a signal here
+  from another pin, or place an unmapped IN/OUT signal.
+- **Click a port** in the Peripheral Summary -- swap all of its peripherals with
+  a compatible port (e.g. exchange two encoders).
+- **Click a peripheral** -- swap it with the same-type peripheral on another
+  port, or replace it with a compatible unused instance.
+
+Each option lists its **cost change** and highlights the pins it would move when
+you hover it. **Ctrl+Z** / **Ctrl+Shift+Z** undo/redo. **Save** adds the edited
+solution to the project; **Discard** exits without keeping changes.
+
 ---
 
 ## Project Management
@@ -1038,7 +1093,11 @@ All columns except Name are sortable (click header to toggle ascending/descendin
 - **Save As** -- save with a new project name
 - **Project dropdown** -- switch between saved projects
 
-Projects store the constraint text in localStorage.
+Projects store the constraint text, the referenced MCU, and any saved solutions
+in localStorage. When you open a project whose MCU isn't in local storage, the
+tool automatically fetches it from the configured
+[remote data source](#loading-mcu-data-remote-catalogue-optional) (if one is set)
+so the project opens without a manual re-import.
 
 ### Data Manager
 
