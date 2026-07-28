@@ -1276,49 +1276,18 @@ export class App {
     this.showStatus(msg, failed ? 'error' : 'success');
   }
 
-  private async loadTutorialExample(): Promise<void> {
-    // Reset project selection so the dropdown doesn't show a stale project
+  private loadTutorialExample(): void {
+    // Reset project selection so the dropdown doesn't show a stale project.
     this.currentProjectName = null;
     this.projectSelect.value = '';
 
-    // Try loading MCU from localStorage first, then fetch
-    const storedXml = await getKv().get('mcu-xml:STM32H755IIKx');
-    if (storedXml) {
-      this.loadMcuXml(storedXml, 'STM32H755IIKx.xml');
-      void this.fetchTutorialDma();
-      this.fetchTutorialConstraints();
-    } else {
-      fetch('examples/STM32H755IIKx.xml')
-        .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
-        .then(async xml => {
-          this.loadMcuXml(xml, 'STM32H755IIKx.xml');
-          await this.fetchTutorialDma();
-          this.fetchTutorialConstraints();
-        })
-        .catch(() => { /* Example not available, tutorial continues without data */ });
-    }
-  }
-
-  private async fetchTutorialDma(): Promise<void> {
-    // The bundled H755 example advertises DMA IP version STM32H753_dma2_v1_3;
-    // the matching modes XML lives in public/examples alongside the MCU file.
-    try {
-      const res = await fetch('examples/DMA-STM32H753_dma2_v1_3_Modes.xml');
-      if (!res.ok) return;
-      const xml = await res.text();
-      await this.loadDmaXml(xml, 'DMA-STM32H753_dma2_v1_3_Modes.xml');
-    } catch {
-      // Non-fatal: tutorial still works, but dma() constraints will fail.
-    }
-  }
-
-  private fetchTutorialConstraints(): void {
+    // The example constraints begin with an `mcu:` filter, so the MCU (and any
+    // DMA data) is fetched from the remote data source at solve time — nothing
+    // to preload here.
     fetch('examples/ecat_complex.txt')
       .then(r => { if (!r.ok) throw new Error(r.statusText); return r.text(); })
-      .then(text => {
-        this.constraintEditor.setText(text);
-      })
-      .catch(() => { /* Example not available */ });
+      .then(text => { this.constraintEditor.setText(text); })
+      .catch(() => { /* Example not available, tutorial continues without it */ });
   }
 
   private getTutorialSteps(): TutorialStep[] {
