@@ -147,10 +147,10 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 5000,
+  maxSolutions: 2600,
   solverTimeoutMs: 2500,
-  dynamicTimeoutMultiplier: 5,
-  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid'],
+  dynamicTimeoutMultiplier: 3,
+  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid', 'dynamic-mrv', 'adaptive'],
   maxGroups: 500,
   maxSolutionsPerGroup: 100,
   numRestarts: 150,
@@ -170,7 +170,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   postOptimize: false,
   dataInspector: false,
   solverDebugOverlay: false,
-  urlEncoding: 'full',
+  urlEncoding: 'none',
 };
 
 interface UrlState {
