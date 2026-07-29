@@ -184,24 +184,31 @@ Specify CPU frequency requirements in MHz. Use `<` for upper bounds or ranges.
 ### Temperature Filter
 
 ```
-temp: -40           # MCU must be rated for -40°C (range covers -40)
-temp: 130           # MCU must be rated for 130°C (range covers 130)
-temp: < 125         # MCU must support up to 125°C
-temp: -40 < 85      # MCU must cover -40°C to 85°C range
+temp: -40           # -40°C must be a valid working point (tempMin ≤ -40 ≤ tempMax)
+temp: 130           # 130°C must be a valid working point (excludes a 125°C part)
+temp: < 125         # 125°C must be a valid working point (same as bare, both ends)
+temp: -40 < 85      # the whole -40..85°C range must fit inside the MCU's range
 ```
 
-Filters MCUs by operating temperature range. The MCU's supported range must cover the specified value(s).
+Filters MCUs by operating temperature. The value or range specifies **working
+point(s) that must lie inside the MCU's `[tempMin, tempMax]` range**. A single
+value (with or without `<`) must satisfy `tempMin ≤ value ≤ tempMax`; a range
+`lo < hi` must satisfy `tempMin ≤ lo` and `hi ≤ tempMax`.
 
 ### Voltage Filter
 
 ```
-voltage: 1.8        # minimum 1.8V (MCU must support 1.8V and above)
-voltage: < 3.6      # maximum 3.6V
-voltage: 1.8 < 3.6  # MCU must cover 1.8V to 3.6V range
+voltage: 3.3        # 3.3V must be a valid working point (voltageMin ≤ 3.3 ≤ voltageMax)
+voltage: < 2.5      # 2.5V must be a valid working point (same as bare, both ends)
+voltage: 1.8 < 3.6  # the whole 1.8..3.6V range must fit inside the MCU's range
 voltage: 3.3V       # optional V suffix ignored
 ```
 
-Filters MCUs by operating voltage range. Same `min`, `< max`, `min < max` syntax as ram/rom/freq. Supports decimal values. An optional `V` unit suffix is accepted and ignored.
+Filters MCUs by operating voltage using the same working-point semantics as
+temperature: a single value (with or without `<`) must satisfy
+`voltageMin ≤ value ≤ voltageMax`, and a range `lo < hi` must satisfy
+`voltageMin ≤ lo` and `hi ≤ voltageMax`. Supports decimal values; an optional
+`V` unit suffix is accepted and ignored.
 
 ### Core Filter
 

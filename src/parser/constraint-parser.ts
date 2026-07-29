@@ -514,8 +514,10 @@ class Parser {
   }
 
   // temp: -40 < 85 | temp: 85 | temp: < 125
-  // A bare value (temp: 85) is a point the part must be rated for, so the MCU's
-  // operating range must cover it on both ends (min ≤ 85 ≤ max).
+  // Every form specifies working point(s) the MCU's range must cover:
+  //   temp: 85      → point 85 in range   (min ≤ 85 ≤ max)
+  //   temp: < 85    → point 85 in range   (same as bare — the point must fit)
+  //   temp: -40 < 85 → interval [-40, 85] in range (min ≤ -40, 85 ≤ max)
   private parseTempDecl(): TempDeclNode {
     const loc = this.loc();
     this.expectKeyword('temp');
@@ -526,7 +528,9 @@ class Parser {
 
     if (this.check('LT')) {
       this.advance();
-      maxTemp = this.parseDecimalNumber();
+      const value = this.parseDecimalNumber();
+      minTemp = value;
+      maxTemp = value;
     } else {
       const value = this.parseDecimalNumber();
       if (this.check('LT')) {
@@ -544,6 +548,10 @@ class Parser {
   }
 
   // voltage: 1.8 < 3.3 | voltage: 3.3 | voltage: < 3.6
+  // Working-point coverage, same as temp:
+  //   voltage: 3.3     → point 3.3 in range   (min ≤ 3.3 ≤ max)
+  //   voltage: < 2.5   → point 2.5 in range   (same as bare)
+  //   voltage: 1.8 < 3.6 → interval [1.8, 3.6] in range (min ≤ 1.8, 3.6 ≤ max)
   // Optional V suffix ignored (e.g., voltage: 3.3V, voltage: 1.8V < 3.6V)
   private parseVoltageDecl(): VoltageDeclNode {
     const loc = this.loc();
@@ -564,7 +572,9 @@ class Parser {
 
     if (this.check('LT')) {
       this.advance();
-      maxVoltage = parseVoltageValue();
+      const value = parseVoltageValue();
+      minVoltage = value;
+      maxVoltage = value;
     } else {
       const value = parseVoltageValue();
       if (this.check('LT')) {
@@ -573,6 +583,7 @@ class Parser {
         maxVoltage = parseVoltageValue();
       } else {
         minVoltage = value;
+        maxVoltage = value;
       }
     }
 

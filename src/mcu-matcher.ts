@@ -319,72 +319,50 @@ export async function filterStoredMcus(ast: ProgramNode): Promise<string[]> {
   if (!filters) return [];
 
   const allMcus = await listStoredMcuMetadata();
+  return allMcus.filter(m => matchesMcuFilters(m, filters)).map(m => m.refName);
+}
 
-  return allMcus
-    .filter(m => {
-      // MCU name filter
-      if (filters.mcuPatterns.length > 0 && !matchesPatterns(m.refName, filters.mcuPatterns)) {
-        return false;
-      }
+/** The numeric/pattern bounds produced by extractMcuFilters. */
+export type McuFilters = NonNullable<ReturnType<typeof extractMcuFilters>>;
 
-      // Package filter
-      if (filters.packagePatterns.length > 0 && !matchesPatterns(m.package, filters.packagePatterns)) {
-        return false;
-      }
+/**
+ * Test one MCU's metadata against extracted filters. Bounds are inclusive; a
+ * bound of 0 (ram/rom/freq) or undefined (temp/voltage) means "no limit".
+ *
+ * Memory/frequency filters are simple min/max on the MCU's own capacity.
+ * Temperature and voltage are coverage filters — the MCU's operating range must
+ * cover the requested point(s): mcu.min ≤ reqMin and mcu.max ≥ reqMax.
+ */
+export function matchesMcuFilters(m: McuMetadata, filters: McuFilters): boolean {
+  // MCU name / package
+  if (filters.mcuPatterns.length > 0 && !matchesPatterns(m.refName, filters.mcuPatterns)) return false;
+  if (filters.packagePatterns.length > 0 && !matchesPatterns(m.package, filters.packagePatterns)) return false;
 
-      // RAM filter (metadata stores KB, filter is in bytes)
-      if (filters.minRamBytes > 0 && m.ram * 1024 < filters.minRamBytes) {
-        return false;
-      }
-      if (filters.maxRamBytes > 0 && m.ram * 1024 > filters.maxRamBytes) {
-        return false;
-      }
+  // RAM / ROM (metadata stores KB, filter is in bytes)
+  if (filters.minRamBytes > 0 && m.ram * 1024 < filters.minRamBytes) return false;
+  if (filters.maxRamBytes > 0 && m.ram * 1024 > filters.maxRamBytes) return false;
+  if (filters.minRomBytes > 0 && m.flash * 1024 < filters.minRomBytes) return false;
+  if (filters.maxRomBytes > 0 && m.flash * 1024 > filters.maxRomBytes) return false;
 
-      // ROM/Flash filter (metadata stores KB, filter is in bytes)
-      if (filters.minRomBytes > 0 && m.flash * 1024 < filters.minRomBytes) {
-        return false;
-      }
-      if (filters.maxRomBytes > 0 && m.flash * 1024 > filters.maxRomBytes) {
-        return false;
-      }
+  // Frequency (both in MHz)
+  if (filters.minFreqMHz > 0 && m.frequency < filters.minFreqMHz) return false;
+  if (filters.maxFreqMHz > 0 && m.frequency > filters.maxFreqMHz) return false;
 
-      // Frequency filter (both in MHz)
-      if (filters.minFreqMHz > 0 && m.frequency < filters.minFreqMHz) {
-        return false;
-      }
-      if (filters.maxFreqMHz > 0 && m.frequency > filters.maxFreqMHz) {
-        return false;
-      }
+  // Temperature — the requested working point(s) must lie within the MCU's range:
+  //   temp: 130      → mcu.tempMin ≤ 130 ≤ mcu.tempMax
+  //   temp: < 85     → mcu.tempMin ≤ 85 ≤ mcu.tempMax  (point, same as bare)
+  //   temp: -40 < 85 → mcu.tempMin ≤ -40 and 85 ≤ mcu.tempMax  (interval fits)
+  if (filters.reqTempMin !== undefined && m.tempMin > filters.reqTempMin) return false;
+  if (filters.reqTempMax !== undefined && m.tempMax < filters.reqTempMax) return false;
 
-      // Temperature filter: MCU range must cover the required operating point(s)
-      // temp: 130 → MCU must be rated for 130°C (mcu.tempMin ≤ 130 ≤ mcu.tempMax)
-      // temp: < 85 → MCU must support up to 85°C (mcu.tempMax ≥ 85)
-      // temp: -40 < 85 → MCU must cover [-40, 85] range
-      if (filters.reqTempMin !== undefined && m.tempMin > filters.reqTempMin) {
-        return false;
-      }
-      if (filters.reqTempMax !== undefined && m.tempMax < filters.reqTempMax) {
-        return false;
-      }
+  // Voltage — same working-point semantics as temperature.
+  if (filters.reqVoltageMin !== undefined && m.voltageMin > filters.reqVoltageMin) return false;
+  if (filters.reqVoltageMax !== undefined && m.voltageMax < filters.reqVoltageMax) return false;
 
-      // Voltage filter: MCU range must cover the required operating voltage(s)
-      if (filters.reqVoltageMin !== undefined && m.voltageMin > filters.reqVoltageMin) {
-        return false;
-      }
-      if (filters.reqVoltageMax !== undefined && m.voltageMax < filters.reqVoltageMax) {
-        return false;
-      }
+  // Core — each AND group must match at least one MCU core (case-insensitive contains).
+  for (const andGroup of filters.coreRequired) {
+    if (!andGroup.some(alt => m.cores.some(c => c.toUpperCase().includes(alt.toUpperCase())))) return false;
+  }
 
-      // Core filter: each AND group must match at least one MCU core
-      // Pattern like "M4" matches "Arm Cortex-M4" or "ARM Cortex-M4" (case-insensitive contains)
-      for (const andGroup of filters.coreRequired) {
-        const matched = andGroup.some(alt =>
-          m.cores.some(c => c.toUpperCase().includes(alt.toUpperCase()))
-        );
-        if (!matched) return false;
-      }
-
-      return true;
-    })
-    .map(m => m.refName);
+  return true;
 }

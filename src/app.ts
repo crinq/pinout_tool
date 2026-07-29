@@ -16,7 +16,7 @@ import { SolutionEditor, type EditCandidate } from './solver/solution-editor';
 import { renderMarkdown } from './ui/markdown';
 import docMd from '../doc.md?raw';
 import { classifyProjectSolutions } from './solver/solution-status';
-import type { Mcu, Assignment, Solution, SolverResult, DmaData, CompatibilityResult } from './types';
+import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
 import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary } from './storage';
@@ -31,7 +31,7 @@ import { runPreSolveChecks } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport } from './solver/diagnostics';
-import { filterStoredMcus, extractMcuFilters, matchesPatterns } from './mcu-matcher';
+import { filterStoredMcus, extractMcuFilters, matchesPatterns, matchesMcuFilters, type McuFilters } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
 import type { TutorialStep } from '../ts_lib/src/tutorial';
@@ -473,6 +473,10 @@ export class App {
           this.setSolveButtonState(false);
           return;
         }
+        // Fetch armed the button as "Abort"; release it now. solve() re-arms it
+        // below (only when it dispatches workers), so any validation step that
+        // bails out between here and then leaves the button on "Solve".
+        this.setSolveButtonState(false);
         for (const mcu of remote) {
           if (!seen.has(mcu.refName)) {
             seen.add(mcu.refName);
@@ -527,10 +531,25 @@ export class App {
       return;
     }
 
-    // Run pre-solve validation checks before starting workers
-    const preErrors = runPreSolveChecks(parseResult.ast, mcuList[0]);
-    const fatalErrors = preErrors.filter(e => e.type === 'error');
-    if (fatalErrors.length > 0) {
+    // Run pre-solve validation per MCU. In a multi-MCU run an MCU that fails
+    // (e.g. lacks a required peripheral) is skipped — only abort the whole run
+    // if EVERY candidate MCU fails. A single-MCU run keeps its original UX.
+    const solvableMcus: Mcu[] = [];
+    const skippedMcus: string[] = [];
+    let firstFailPreErrors: SolverError[] | null = null;
+    for (const m of mcuList) {
+      const pe = runPreSolveChecks(parseResult.ast, m);
+      if (pe.some(e => e.type === 'error')) {
+        skippedMcus.push(m.refName);
+        if (!firstFailPreErrors) firstFailPreErrors = pe;
+      } else {
+        solvableMcus.push(m);
+      }
+    }
+
+    if (solvableMcus.length === 0) {
+      const preErrors = firstFailPreErrors ?? [];
+      const fatalErrors = preErrors.filter(e => e.type === 'error');
       const statusBar = this.constraintEditor.getSolverStatusBar();
       if (statusBar) {
         statusBar.innerHTML = preErrors
@@ -548,11 +567,21 @@ export class App {
       if (errorLines.length > 0) {
         this.constraintEditor.setPreSolveErrorLines(errorLines);
       }
-      this.showStatus(fatalErrors[0].message, 'error');
+      this.showStatus(fatalErrors[0]?.message ?? 'No MCU passed pre-solve checks', 'error');
       return;
     }
 
-    const multiLabel = mcuList.length > 1 ? ` across ${mcuList.length} MCUs` : '';
+    // Proceed with only the solvable MCUs; note any that were skipped.
+    mcuList = solvableMcus;
+    if (this.multiMcuRefs.length > 0) this.multiMcuRefs = mcuList.map(m => m.refName);
+    if (skippedMcus.length > 0) {
+      console.log(`[solver] skipped ${skippedMcus.length} MCU(s) failing pre-solve checks: ${skippedMcus.join(', ')}`);
+    }
+
+    const skipLabel = skippedMcus.length > 0 ? `, ${skippedMcus.length} skipped` : '';
+    const multiLabel = mcuList.length > 1 || skippedMcus.length > 0
+      ? ` across ${mcuList.length} MCUs${skipLabel}`
+      : '';
     const label = solverTypes.length > 1
       ? `Solving with ${solverTypes.length} solvers${multiLabel}...`
       : `Solving${multiLabel}...`;
@@ -881,17 +910,20 @@ export class App {
     }
   }
 
-  /** Whether a concrete MCU variant passes the mcu/package/memory/freq filters. */
-  private mcuMatchesFilters(mcu: Mcu, filters: NonNullable<ReturnType<typeof extractMcuFilters>>): boolean {
-    if (filters.mcuPatterns.length > 0 && !matchesPatterns(mcu.refName, filters.mcuPatterns)) return false;
-    if (filters.packagePatterns.length > 0 && !matchesPatterns(mcu.package, filters.packagePatterns)) return false;
-    if (filters.minRamBytes > 0 && mcu.ram * 1024 < filters.minRamBytes) return false;
-    if (filters.maxRamBytes > 0 && mcu.ram * 1024 > filters.maxRamBytes) return false;
-    if (filters.minRomBytes > 0 && mcu.flash * 1024 < filters.minRomBytes) return false;
-    if (filters.maxRomBytes > 0 && mcu.flash * 1024 > filters.maxRomBytes) return false;
-    if (filters.minFreqMHz > 0 && mcu.frequency < filters.minFreqMHz) return false;
-    if (filters.maxFreqMHz > 0 && mcu.frequency > filters.maxFreqMHz) return false;
-    return true;
+  /**
+   * Whether a concrete MCU variant passes the mcu/package/memory/freq/temp/
+   * voltage/core filters. Delegates to the same predicate as the localStorage
+   * path (matchesMcuFilters) so remote/cache MCUs get the full filter set —
+   * notably `core:` AND-groups, which a bespoke check here previously skipped.
+   */
+  private mcuMatchesFilters(mcu: Mcu, filters: McuFilters): boolean {
+    return matchesMcuFilters({
+      refName: mcu.refName, package: mcu.package, ram: mcu.ram, flash: mcu.flash,
+      frequency: mcu.frequency,
+      tempMin: mcu.temperature.min, tempMax: mcu.temperature.max,
+      voltageMin: mcu.voltage.min, voltageMax: mcu.voltage.max,
+      cores: mcu.cores, tags: [],
+    }, filters);
   }
 
   /**
@@ -902,7 +934,7 @@ export class App {
    * the user aborted, otherwise the list of accepted Mcu instances.
    */
   private async fetchRemoteMatches(
-    filters: NonNullable<ReturnType<typeof extractMcuFilters>>,
+    filters: McuFilters,
   ): Promise<Mcu[] | null> {
     this.fetchAbort = new AbortController();
     this.setSolveButtonState(true);

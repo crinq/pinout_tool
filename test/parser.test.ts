@@ -139,19 +139,19 @@ describe('Constraint parser', () => {
       expect(temp.maxTemp).toBe(125);
     });
 
-    it('should parse temp with max only', () => {
+    it('should parse temp with < value as a point (covers both ends)', () => {
       const ast = parseOk('temp: < 85');
       const temp = ast.statements[0] as TempDeclNode;
-      expect(temp.minTemp).toBeUndefined();
+      expect(temp.minTemp).toBe(85);
       expect(temp.maxTemp).toBe(85);
     });
 
-    it('should parse voltage with single value', () => {
+    it('should parse voltage with single value as a point (covers both ends)', () => {
       const ast = parseOk('voltage: 3.3');
       const v = ast.statements[0] as VoltageDeclNode;
       expect(v.type).toBe('voltage_decl');
       expect(v.minVoltage).toBe(3.3);
-      expect(v.maxVoltage).toBeUndefined();
+      expect(v.maxVoltage).toBe(3.3);
     });
 
     it('should parse voltage with range', () => {
@@ -161,10 +161,10 @@ describe('Constraint parser', () => {
       expect(v.maxVoltage).toBe(3.6);
     });
 
-    it('should parse voltage with < max', () => {
+    it('should parse voltage with < value as a point (covers both ends)', () => {
       const ast = parseOk('voltage: < 3.6');
       const v = ast.statements[0] as VoltageDeclNode;
-      expect(v.minVoltage).toBeUndefined();
+      expect(v.minVoltage).toBe(3.6);
       expect(v.maxVoltage).toBe(3.6);
     });
 
@@ -172,7 +172,7 @@ describe('Constraint parser', () => {
       const ast = parseOk('voltage: 3.3V');
       const v = ast.statements[0] as VoltageDeclNode;
       expect(v.minVoltage).toBe(3.3);
-      expect(v.maxVoltage).toBeUndefined();
+      expect(v.maxVoltage).toBe(3.3);
     });
 
     it('should parse voltage range with V suffix', () => {
