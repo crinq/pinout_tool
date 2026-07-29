@@ -28,7 +28,9 @@ import {
   computeTotalCost, type IncrementalCostTracker,
   incrementCost, decrementCost, updateCostThreshold,
   parseBgaPosition, parsePackagePinCount,
+  setActiveAnchors, getActiveAnchors,
 } from './cost-functions';
+import { buildAnchors, filterByHardAnchors } from './pin-anchors';
 import {
   lintForCommonErrors,
   primeCommonErrorsLib as primeLintLib,
@@ -122,6 +124,10 @@ export function finalizeSolutions(
   reservedPins: string[],
   pinnedAssignments: PinnedAssignment[],
 ): SolverResult {
+  // Drop solutions that violate a hard fixed anchor (`port/config @ PA1`).
+  const anchors = getActiveAnchors();
+  if (anchors) solutions = filterByHardAnchors(solutions, anchors);
+
   for (const sol of solutions) {
     sol.mcuRef = mcu.refName;
     computeTotalCost(sol, mcu, costWeights);
@@ -1625,6 +1631,17 @@ export interface SolverContext {
  * resolve variables, build eager-check structures.
  * Returns null if there are fatal errors (empty domains, macro errors with type 'error').
  */
+/**
+ * Set the active placement anchors from a raw (un-expanded) AST + MCU.
+ * Call once at a solve entry point so every solver — including those that don't
+ * go through prepareSolverContext (two-phase, mrv-group, priority-*) — has the
+ * anchors available for the pin_anchor cost and the hard-anchor filter.
+ */
+export function setActiveAnchorsFor(ast: ProgramNode, mcu: Mcu): void {
+  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  setActiveAnchors(buildAnchors(expandedAst, mcu));
+}
+
 export function prepareSolverContext(
   ast: ProgramNode, mcu: Mcu, errors: SolverError[],
   skipGpioMapping?: boolean
@@ -1638,6 +1655,10 @@ export function prepareSolverContext(
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const pinnedAssignments = extractPinnedAssignments(expandedAst);
   const sharedPatterns = extractSharedPatterns(expandedAst);
+
+  // Placement anchors (`@ ~...` soft hints + hard `@ PA1`) — read by the
+  // pin_anchor cost function and the hard-anchor filter via a module global.
+  setActiveAnchors(buildAnchors(expandedAst, mcu));
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
@@ -1750,6 +1771,9 @@ export function solveConstraints(
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const pinnedAssignments = extractPinnedAssignments(expandedAst);
   const sharedPatterns = extractSharedPatterns(expandedAst);
+
+  // Placement anchors — see prepareSolverContext.
+  setActiveAnchors(buildAnchors(expandedAst, mcu));
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {

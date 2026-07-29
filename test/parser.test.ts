@@ -117,18 +117,19 @@ describe('Constraint parser', () => {
   // ========== temp/voltage declarations ==========
 
   describe('temp/voltage declarations', () => {
-    it('should parse temp with single value', () => {
+    it('should parse temp with single value as a point (covers both ends)', () => {
       const ast = parseOk('temp: 85');
       const temp = ast.statements[0] as TempDeclNode;
       expect(temp.type).toBe('temp_decl');
       expect(temp.minTemp).toBe(85);
-      expect(temp.maxTemp).toBeUndefined();
+      expect(temp.maxTemp).toBe(85);
     });
 
     it('should parse temp with negative value', () => {
       const ast = parseOk('temp: -40');
       const temp = ast.statements[0] as TempDeclNode;
       expect(temp.minTemp).toBe(-40);
+      expect(temp.maxTemp).toBe(-40);
     });
 
     it('should parse temp with range', () => {
@@ -378,6 +379,54 @@ describe('Constraint parser', () => {
       expect(port.configs).toHaveLength(2);
       expect(port.configs[0].name).toBe('USART');
       expect(port.configs[1].name).toBe('SPI');
+    });
+
+    it('parses @ placement clauses (fixed pins + anchors) on channels', () => {
+      const src = `port CMD:
+  channel FIX @ PA1, PB2
+  channel NEARP @ ~PA1
+  channel NEARN @ ~1
+  channel NEARR @ ~NW
+
+  config "c":
+    FIX = USART*_TX
+    NEARP = USART*_RX
+    NEARN = USART*_CK
+    NEARR = USART*_CTS`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      const by = (n: string) => port.channels.find(c => c.name === n)!;
+      expect(by('FIX').allowedPins).toEqual(['PA1', 'PB2']);
+      expect(by('FIX').anchor).toBeUndefined();
+      expect(by('NEARP').anchor).toEqual({ kind: 'near_pin', target: 'PA1' });
+      expect(by('NEARN').anchor).toEqual({ kind: 'near_pos', target: '1' });
+      expect(by('NEARR').anchor).toEqual({ kind: 'near_region', target: 'NW' });
+    });
+
+    it('parses @ placement clauses on the port and config headers', () => {
+      const src = `port CMD: @ PA1
+  channel TX
+
+  config "c": @ ~NW
+    TX = USART*_TX`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      expect(port.anchorFixedPins).toEqual(['PA1']);
+      expect(port.configs[0].anchor).toEqual({ kind: 'near_region', target: 'NW' });
+    });
+
+    it('allows a header-only port that only overrides placement from a template', () => {
+      const src = `port enc0:
+  channel MOSI
+
+  config "spi":
+    MOSI = SPI*_MOSI
+
+port enc1 from enc0: @ ~NW`;
+      const ast = parseOk(src);
+      const enc1 = ast.statements[1] as PortDeclNode;
+      expect(enc1.template).toBe('enc0');
+      expect(enc1.anchor).toEqual({ kind: 'near_region', target: 'NW' });
     });
 
     it('should parse inline mapping on channel line', () => {

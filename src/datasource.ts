@@ -42,7 +42,22 @@ export interface IndexDeviceEntry {
   cores?: IndexCoreInfo[];
   flash_bytes?: number;
   ram_bytes?: number;
-  packages?: string[];
+  /**
+   * Map of full variant refName → package, e.g.
+   * { "STM32H755IIKx": "UFBGA176", "STM32H755IITx": "LQFP176" }.
+   * Lets us match/search by full CPU name without fetching the die.
+   */
+  packages?: Record<string, string>;
+}
+
+/** Package names declared for an index entry. */
+export function entryPackageNames(entry: IndexDeviceEntry): string[] {
+  return entry.packages ? Object.values(entry.packages) : [];
+}
+
+/** Full variant refNames for an index entry. */
+export function entryVariantNames(entry: IndexDeviceEntry): string[] {
+  return entry.packages ? Object.keys(entry.packages) : [];
 }
 
 export interface IndexDocument {
@@ -321,9 +336,15 @@ export class DataSource {
   async loadVariant(refName: string, signal?: AbortSignal): Promise<Mcu | null> {
     const idx = await this.loadIndex(signal);
     const lc = refName.toLowerCase();
-    const candidates = Object.keys(idx.devices ?? {})
-      .filter(die => lc.startsWith(die.toLowerCase()))
-      .sort((a, b) => b.length - a.length); // most-specific die first
+    const devices = idx.devices ?? {};
+
+    // Prefer dies the index says produce this exact variant (current map format);
+    // fall back to die-name-prefix matching (legacy array format). Most-specific first.
+    const exact = Object.keys(devices).filter(die =>
+      entryVariantNames(devices[die]).some(v => v.toLowerCase() === lc));
+    const prefix = Object.keys(devices).filter(die => lc.startsWith(die.toLowerCase()));
+    const candidates = [...new Set([...exact, ...prefix])].sort((a, b) => b.length - a.length);
+
     for (const die of candidates) {
       try {
         const mcus = await this.loadDie(die, signal);

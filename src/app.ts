@@ -7,7 +7,7 @@ import { ProjectSolutions } from './ui/project-solutions';
 import { compareSolutions, solutionCompareColor } from './solution-compare';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
-import { getDataSource, type IndexDeviceEntry } from './datasource';
+import { getDataSource, entryPackageNames, entryVariantNames, type IndexDeviceEntry } from './datasource';
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions } from './solver/cost-functions';
@@ -161,6 +161,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     debug_pin_penalty: 0.0,
     pin_clustering: 0.0,
     pin_proximity: 1,
+    pin_anchor: 1,
     optional_fulfillment: 5,
   },
   minZoom: 0.5,
@@ -478,6 +479,16 @@ export class App {
             mcuList.push(mcu);
             this.mcuCache.set(mcu.refName, mcu);
           }
+        }
+      }
+
+      // (c) MCUs already loaded this session but not persisted to storage —
+      // e.g. an exact `mcu:` name imported from a .ioc or fetched for a
+      // project, which the remote die-index may not resolve by full name.
+      for (const mcu of this.mcuCache.values()) {
+        if (!seen.has(mcu.refName) && this.mcuMatchesFilters(mcu, filters)) {
+          seen.add(mcu.refName);
+          mcuList.push(mcu);
         }
       }
 
@@ -870,6 +881,19 @@ export class App {
     }
   }
 
+  /** Whether a concrete MCU variant passes the mcu/package/memory/freq filters. */
+  private mcuMatchesFilters(mcu: Mcu, filters: NonNullable<ReturnType<typeof extractMcuFilters>>): boolean {
+    if (filters.mcuPatterns.length > 0 && !matchesPatterns(mcu.refName, filters.mcuPatterns)) return false;
+    if (filters.packagePatterns.length > 0 && !matchesPatterns(mcu.package, filters.packagePatterns)) return false;
+    if (filters.minRamBytes > 0 && mcu.ram * 1024 < filters.minRamBytes) return false;
+    if (filters.maxRamBytes > 0 && mcu.ram * 1024 > filters.maxRamBytes) return false;
+    if (filters.minRomBytes > 0 && mcu.flash * 1024 < filters.minRomBytes) return false;
+    if (filters.maxRomBytes > 0 && mcu.flash * 1024 > filters.maxRomBytes) return false;
+    if (filters.minFreqMHz > 0 && mcu.frequency < filters.minFreqMHz) return false;
+    if (filters.maxFreqMHz > 0 && mcu.frequency > filters.maxFreqMHz) return false;
+    return true;
+  }
+
   /**
    * Fetch MCUs that match `extractMcuFilters` output from the remote
    * data source. Two-stage filter: dies whose name matches the mcu
@@ -889,9 +913,13 @@ export class App {
       // pattern at all, we still allow `package:` / memory filters to
       // prune across the whole catalogue — that's an opt-in cost.
       const matchedDies = await ds.listDies((die, entry) => {
+        // Match the mcu pattern against the die name, the family, or any full
+        // variant name the index lists (so `mcu: STM32H755IIKx` / `stm32h755iik*`
+        // resolves without fetching the die).
         if (filters.mcuPatterns.length > 0
             && !matchesPatterns(die, filters.mcuPatterns)
-            && !matchesPatterns(entry.family, filters.mcuPatterns)) {
+            && !matchesPatterns(entry.family, filters.mcuPatterns)
+            && !entryVariantNames(entry).some(v => matchesPatterns(v, filters.mcuPatterns))) {
           return false;
         }
         // Cheap pre-filter on indexed metadata to avoid pointless fetches.
@@ -899,8 +927,9 @@ export class App {
         if (filters.maxRamBytes > 0 && entry.ram_bytes !== undefined && entry.ram_bytes > filters.maxRamBytes) return false;
         if (filters.minRomBytes > 0 && entry.flash_bytes !== undefined && entry.flash_bytes < filters.minRomBytes) return false;
         if (filters.maxRomBytes > 0 && entry.flash_bytes !== undefined && entry.flash_bytes > filters.maxRomBytes) return false;
-        if (filters.packagePatterns.length > 0 && entry.packages
-            && !entry.packages.some(p => matchesPatterns(p, filters.packagePatterns))) {
+        const pkgs = entryPackageNames(entry);
+        if (filters.packagePatterns.length > 0 && pkgs.length > 0
+            && !pkgs.some(p => matchesPatterns(p, filters.packagePatterns))) {
           return false;
         }
         return true;
@@ -926,18 +955,7 @@ export class App {
 
       // Variant-level re-filter so `mcu: STM32G474RBTx` (variant-specific)
       // works even though the index keyed by die.
-      const accepted: Mcu[] = [];
-      for (const mcu of result.mcus) {
-        if (filters.mcuPatterns.length > 0 && !matchesPatterns(mcu.refName, filters.mcuPatterns)) continue;
-        if (filters.packagePatterns.length > 0 && !matchesPatterns(mcu.package, filters.packagePatterns)) continue;
-        if (filters.minRamBytes > 0 && mcu.ram * 1024 < filters.minRamBytes) continue;
-        if (filters.maxRamBytes > 0 && mcu.ram * 1024 > filters.maxRamBytes) continue;
-        if (filters.minRomBytes > 0 && mcu.flash * 1024 < filters.minRomBytes) continue;
-        if (filters.maxRomBytes > 0 && mcu.flash * 1024 > filters.maxRomBytes) continue;
-        if (filters.minFreqMHz > 0 && mcu.frequency < filters.minFreqMHz) continue;
-        if (filters.maxFreqMHz > 0 && mcu.frequency > filters.maxFreqMHz) continue;
-        accepted.push(mcu);
-      }
+      const accepted = result.mcus.filter(mcu => this.mcuMatchesFilters(mcu, filters));
 
       if (result.errors.length > 0) {
         console.warn('Some remote MCUs failed to load:', result.errors);
@@ -1511,15 +1529,9 @@ export class App {
       return;
     }
 
-    // Try to load matching MCU from localStorage
+    // Load the referenced MCU: local storage → in-memory cache → remote source.
     if (!this.currentMcu || this.currentMcu.refName !== ioc.mcuName) {
-      const storedXml = await getKv().get(`mcu-xml:${ioc.mcuName}`);
-      if (storedXml) {
-        this.loadMcuXml(storedXml, `${ioc.mcuName} (from storage)`);
-      } else {
-        this.showStatus(`MCU ${ioc.mcuName} not found in storage. Import the MCU XML first, then re-import the .ioc file.`, 'error');
-        return;
-      }
+      await this.loadStoredMcu(ioc.mcuName);
     }
 
     if (ioc.assignments.length === 0) {
@@ -1527,15 +1539,17 @@ export class App {
       return;
     }
 
-    // Generate pin declaration lines
-    const pinLines = ioc.assignments.map(a => `pin ${a.pinName} = ${a.signalName}`);
+    // Build a fresh, self-contained constraints file: mcu/package + one pinned
+    // declaration per assignment, GPIO_Label carried through as a comment.
+    const lines: string[] = [`# Imported from ${fileName}`, `mcu: ${ioc.mcuName}`];
+    if (ioc.mcuPackage) lines.push(`package: ${ioc.mcuPackage}`);
+    lines.push('');
+    for (const a of ioc.assignments) {
+      lines.push(`pin ${a.pinName} = ${a.signalName}${a.label ? `  # ${a.label}` : ''}`);
+    }
+    this.constraintEditor.setText(lines.join('\n') + '\n');
 
-    // Append to existing constraint text
-    const existing = this.constraintEditor.getText().trimEnd();
-    const separator = existing ? '\n\n# Imported from ' + fileName + '\n' : '# Imported from ' + fileName + '\n';
-    this.constraintEditor.setText(existing + separator + pinLines.join('\n') + '\n');
-
-    this.showStatus(`Added ${ioc.assignments.length} pin assignments from ${fileName} (${ioc.mcuName})`, 'success');
+    this.showStatus(`Imported ${ioc.assignments.length} pins from ${fileName} (${ioc.mcuName})`, 'success');
   }
 
   // ---- Project management ----
@@ -2817,7 +2831,12 @@ export class App {
 
     const renderRows = (): string => {
       const q = filter.trim().toLowerCase();
-      const matches = q ? dies.filter(d => d.die.includes(q)) : dies;
+      // Match the query against the die name OR any full variant name, so users
+      // can search by full CPU name (e.g. "stm32h755iik").
+      const matches = q
+        ? dies.filter(d => d.die.includes(q)
+            || entryVariantNames(d.entry).some(v => v.toLowerCase().includes(q)))
+        : dies;
       const visible = matches.slice(0, 200);
       const overflow = matches.length - visible.length;
       if (visible.length === 0) {
@@ -2827,7 +2846,7 @@ export class App {
         const cores = (entry.cores ?? []).map(c => c.name).join(' + ');
         const flashKB = entry.flash_bytes ? `${(entry.flash_bytes / 1024).toFixed(0)}KB` : '';
         const ramKB = entry.ram_bytes ? `${(entry.ram_bytes / 1024).toFixed(0)}KB` : '';
-        const pkgs = (entry.packages ?? []).slice(0, 3).join(', ');
+        const pkgs = [...new Set(entryPackageNames(entry))].slice(0, 3).join(', ');
         return `
           <div class="dm-row" data-die="${escHtml(die)}">
             <span class="dm-name" style="font-family:monospace">${escHtml(die)}</span>
@@ -2850,7 +2869,7 @@ export class App {
         </div>
         <div class="settings-body">
           <div class="dm-row" style="margin-bottom:8px">
-            <input id="dm-mcu-filter" type="text" placeholder="Filter (e.g. stm32g4, stm32c011)" value="${escHtml(filter)}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
+            <input id="dm-mcu-filter" type="text" placeholder="Filter (e.g. stm32g4, stm32h755iik, STM32H755IIKx)" value="${escHtml(filter)}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
             <span class="dm-size" style="min-width:auto;color:var(--text-secondary)">${dies.length} dies</span>
           </div>
           <p class="settings-hint" id="dm-mcu-status">${escHtml(status)}</p>

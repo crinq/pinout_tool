@@ -150,6 +150,10 @@ function applyTemplate(port: PortDeclNode, template: PortDeclNode): PortDeclNode
     channels: mergedChannels,
     configs: mergedConfigs,
     color: port.color ?? template.color,
+    // A derived port's own placement clause overrides the template's
+    // (e.g. `enc1 from enc0: @ ~NW`); otherwise inherit it.
+    anchor: port.anchor ?? template.anchor,
+    anchorFixedPins: port.anchorFixedPins ?? template.anchorFixedPins,
   };
 }
 

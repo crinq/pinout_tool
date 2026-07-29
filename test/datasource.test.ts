@@ -4,7 +4,7 @@
 // ============================================================
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { DataSource, DEFAULT_DATA_URL } from '../src/datasource';
+import { DataSource, DEFAULT_DATA_URL, entryPackageNames, entryVariantNames } from '../src/datasource';
 
 // jsdom in this vitest setup doesn't ship a working localStorage, so we
 // install a tiny in-memory polyfill before the DataSource sees it.
@@ -350,8 +350,14 @@ describe('DataSource', () => {
   const H755_INDEX = {
     schema_version: 1, vendor: 'stm32',
     devices: {
-      stm32h755ii: { file: 'mcu/stm32h755ii.json', family: 'stm32h7', packages: ['LQFP176', 'UFBGA176'] },
-      stm32h755zi: { file: 'mcu/stm32h755zi.json', family: 'stm32h7', packages: ['LQFP144'] },
+      stm32h755ii: {
+        file: 'mcu/stm32h755ii.json', family: 'stm32h7',
+        packages: { STM32H755IITx: 'LQFP176', STM32H755IIKx: 'UFBGA176' },
+      },
+      stm32h755zi: {
+        file: 'mcu/stm32h755zi.json', family: 'stm32h7',
+        packages: { STM32H755ZITx: 'LQFP144' },
+      },
     },
   };
   function h755DieDoc() {
@@ -396,5 +402,46 @@ describe('DataSource', () => {
     const ds = new DataSource({ url: 'https://x.test/data', fetchImpl: h755Fetch() });
     expect(await ds.loadVariant('STM32H755IIZZ')).toBeNull(); // die matches, variant does not
     expect(await ds.loadVariant('STM32F407VGTx')).toBeNull(); // no prefix die at all
+  });
+
+  // --------------------------------------------------------------
+  // Current index format: `packages` is a {variant: package} map,
+  // not a bare package-name array.
+  // --------------------------------------------------------------
+
+  it('entryPackageNames/entryVariantNames read the packages map', () => {
+    const map = {
+      file: 'x.json', family: 'stm32h7',
+      packages: { STM32H755IIKx: 'UFBGA176', STM32H755IITx: 'LQFP176' },
+    };
+    expect(entryPackageNames(map)).toEqual(['UFBGA176', 'LQFP176']);
+    expect(entryVariantNames(map)).toEqual(['STM32H755IIKx', 'STM32H755IITx']);
+
+    expect(entryPackageNames({ file: 'x.json', family: 'f' })).toEqual([]);
+    expect(entryVariantNames({ file: 'x.json', family: 'f' })).toEqual([]);
+  });
+
+  it('loadVariant resolves a variant listed in a packages map, even off-prefix', async () => {
+    // Die key is NOT a prefix of the variant — only the map lists it, so the
+    // resolve must come from entryVariantNames, not the die-name prefix rule.
+    const MAP_INDEX = {
+      schema_version: 1, vendor: 'stm32',
+      devices: {
+        h755_dual: {
+          file: 'mcu/stm32h755ii.json', family: 'stm32h7',
+          packages: { STM32H755IIKx: 'UFBGA176', STM32H755IITx: 'LQFP176' },
+        },
+      },
+    };
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/index.json')) return jsonResponse(MAP_INDEX);
+      if (url.endsWith('/mcu/stm32h755ii.json')) return jsonResponse(h755DieDoc());
+      throw new Error(`Unexpected ${url}`);
+    });
+    const ds = new DataSource({ url: 'https://x.test/data', fetchImpl });
+    const mcu = await ds.loadVariant('STM32H755IIKx');
+    expect(mcu?.refName).toBe('STM32H755IIKx');
+    expect(mcu?.package).toBe('UFBGA176');
   });
 });

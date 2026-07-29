@@ -1,4 +1,4 @@
-import { solveConstraints, estimateComplexity } from './solver';
+import { solveConstraints, estimateComplexity, setActiveAnchorsFor } from './solver';
 import type { SolverConfig } from './solver';
 import { solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
@@ -195,6 +195,10 @@ function runSingleSolver(
 export function handle(e: MessageEvent<SolverWorkerRequest>): void {
   try {
     const { ast, mcu, config, solverType, solverTypes, twoPhaseConfig, randomizedConfig } = e.data;
+
+    // Placement anchors are read via a module global; set them once here so
+    // every solver (not just those using prepareSolverContext) sees them.
+    setActiveAnchorsFor(ast, mcu);
 
     const complexity = estimateComplexity(ast, mcu);
 

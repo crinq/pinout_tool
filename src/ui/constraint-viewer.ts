@@ -12,7 +12,16 @@ import type {
   RequireNode,
   ConstraintExprNode,
   SignalExprNode,
+  PinAnchor,
 } from '../parser/constraint-ast';
+
+/** Render a `@` clause (fixed pins and/or a soft anchor) as badge text, or '' if none. */
+export function anchorBadgeText(fixedPins?: string[], anchor?: PinAnchor): string {
+  const parts: string[] = [];
+  if (fixedPins && fixedPins.length > 0) parts.push(fixedPins.join(', '));
+  if (anchor) parts.push(`~${anchor.target}`);
+  return parts.length ? `@ ${parts.join(', ')}` : '';
+}
 import type { ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
@@ -159,6 +168,10 @@ export class ConstraintViewer implements Panel {
     if (port.template) {
       titleText += ` <span class="cv-port-template">: ${escapeHtml(port.template)}</span>`;
     }
+    const portBadge = anchorBadgeText(port.anchorFixedPins, port.anchor);
+    if (portBadge) {
+      titleText += ` <span class="cv-pin-badge">${escapeHtml(portBadge)}</span>`;
+    }
     header.innerHTML = titleText;
 
     header.addEventListener('click', () => this.jumpToLine(port.loc.line));
@@ -196,10 +209,11 @@ export class ConstraintViewer implements Panel {
     nameSpan.textContent = ch.name;
     el.appendChild(nameSpan);
 
-    if (ch.allowedPins && ch.allowedPins.length > 0) {
+    const badge = anchorBadgeText(ch.allowedPins, ch.anchor);
+    if (badge) {
       const pinBadge = document.createElement('span');
       pinBadge.className = 'cv-pin-badge';
-      pinBadge.textContent = `@ ${ch.allowedPins.join(', ')}`;
+      pinBadge.textContent = badge;
       el.appendChild(pinBadge);
     }
 

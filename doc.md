@@ -17,6 +17,7 @@
    - [Shared Peripherals](#shared-peripherals)
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
+   - [Pin Placement (@)](#pin-placement)
    - [Signal Patterns](#signal-patterns)
    - [Mappings](#mappings)
    - [Variable Assignment ($)](#variable-assignment)
@@ -183,7 +184,8 @@ Specify CPU frequency requirements in MHz. Use `<` for upper bounds or ranges.
 ### Temperature Filter
 
 ```
-temp: -40           # MCU must support down to -40°C
+temp: -40           # MCU must be rated for -40°C (range covers -40)
+temp: 130           # MCU must be rated for 130°C (range covers 130)
 temp: < 125         # MCU must support up to 125°C
 temp: -40 < 85      # MCU must cover -40°C to 85°C range
 ```
@@ -261,6 +263,13 @@ This is useful when multiple ports need channels on the same ADC or timer, such 
 
 A **port** groups related channels. A **channel** represents one logical signal that needs a physical pin.
 
+**Exclusivity rules** — the solver enforces these when assigning:
+
+- **Pins, peripheral instances, and signals are exclusive to a port.** No two ports may use the same physical pin, the same peripheral instance (e.g. `USART1`), or the same signal — unless the resource is declared [shared](#shared-peripherals).
+- **Pins are exclusive to a channel.** Within a port, two channels cannot land on the same pin.
+- **Configs within a port share the port's instances and signals.** The different [configs](#configurations) of one port are alternative wirings of the *same* peripherals, so they may reuse the same instances and signals.
+- **Only one config per port is active at a time.** All configs of a port are routed on the PCB, but exactly one is active at runtime — and **which one is active can change at runtime** (the CPU reconfigures the pins). This is why configs may overlap: they never conflict because they never run simultaneously.
+
 ```
 port CMD:
   channel TX
@@ -275,7 +284,9 @@ port MOTOR:
   channel ENCODER_B
 ```
 
-**Pin restriction** with `@` limits which physical pins a channel can use.
+**Pin restriction** with `@` limits which physical pins a channel can use. See
+[Pin Placement (`@`)](#pin-placement) below for the full syntax, including soft
+proximity anchors (`@ ~PA1`, `@ ~NW`) and port/config-level placement.
 
 **Port colors** add visual distinction in the package viewer:
 
@@ -305,15 +316,15 @@ port CMD:
     TX = USART*_TX
 ```
 
-Only one config per port is active in each solution. If a port has multiple configs, the solver evaluates all combinations.
+Only one config per port can be active at the same time. If a port has multiple configs, the solver evaluates all combinations.
 
 **Inline config shorthand**: For ports with only one config, you can write mappings directly on the channel line and requires/macro calls in the port body, omitting the `config` block. The parser creates an implicit config named after the port.
 
 ```
 port debug:
   color "green"
-  channel SWDIO = *_SWDIO $dbg
-  channel SWCLK = *_SWCLK $dbg
+  channel SWDIO = *_SWDIO
+  channel SWCLK = *_SWCLK
   require same_instance(SWDIO, SWCLK)
 ```
 
@@ -326,14 +337,67 @@ port debug:
   channel SWCLK
 
   config "debug":
-    SWDIO = *_SWDIO $dbg
-    SWCLK = *_SWCLK $dbg
+    SWDIO = *_SWDIO
+    SWCLK = *_SWCLK
     require same_instance(SWDIO, SWCLK)
 ```
 
 Pin restrictions work with inline mappings: `channel TX @ PA9, PA2 = USART*_TX`
 
 You cannot mix inline mappings with explicit `config` blocks in the same port.
+
+### Pin Placement (`@`)
+
+The `@` clause controls *where* a channel's pin ends up. It has a **hard** form
+(a fixed pin list, which filters the candidate pins) and **soft** forms (a `~`
+anchor, which only nudges the [cost ranking](#cost-functions) — it never removes
+a candidate).
+
+```
+channel TX @ PA1              # hard: TX must use PA1
+channel TX @ PA1, PB2         # hard: TX must use PA1 or PB2
+channel TX @ ~PA1             # soft: prefer pins near PA1
+channel TX @ ~1               # soft: prefer pins near package position 1 (or ~A1 on BGA)
+channel TX @ ~NW              # soft: prefer pins in the north-west of the package
+```
+
+**Soft anchor targets:**
+
+| Form | Meaning |
+|------|---------|
+| `~PA1` | proximity to a specific pin |
+| `~1` / `~A1` | proximity to a package position (LQFP number or BGA cell) |
+| `~NW` | proximity to a compass region of the package |
+
+**Compass regions** use the package as drawn (north = top, west = left, so the
+compass rotates with the package). Letters `N`, `S`, `E`, `W`, and `C` (center,
+useful on BGAs) combine: `NW` is the top-left corner, `NNW` leans north with a
+slight west bias, `NC` is halfway between the north edge and the center. The
+target is the point a ray from the center hits the package boundary in that
+direction; `C` pulls it back toward the center.
+
+**On ports and configs.** The same clause after the `:` applies to a whole port
+or config:
+
+```
+port CMD: @ PA1        # hard: some channel of the port must use PA1
+port CMD: @ ~NW        # soft: pull every channel of the port toward the NW
+config "UART": @ ~NW   # soft: applies only to channels mapped in this config
+```
+
+A hard `@ PA1` on a port/config requires *some* channel to land on that pin
+(each pin in a list must be covered); solutions that don't are discarded. A soft
+`@ ~...` applies to every affected channel.
+
+Ports from [templates](#port-templates) inherit the template's placement clause
+unless they declare their own, which overrides it:
+
+```
+port enc1 from enc0: @ ~NW    # overrides enc0's placement, keeps its channels
+```
+
+The soft-anchor pull is weighted by the **Pin Anchor** [cost function](#cost-functions);
+set its weight to 0 in Settings to ignore anchors entirely.
 
 ### Signal Patterns
 
@@ -514,7 +578,7 @@ port DEBUG:
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
 | `gpio_port(ch, "TYPE")` | 1 channel + type | string | GPIO port filtered by signal type |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
-| `dma(ch, "TYPE")` | 1 channel + type | boolean | DMA check filtered by peripheral type |
+| `dma(ch, "TYPE")` or `dma(ch, "TYPE_REQUEST")` | 1 channel + filter | boolean | DMA check filtered by peripheral type, or type + specific request (e.g. `"USART_TX"`) |
 | `pin_number(ch)` | 1 channel | number | Physical pin number (position) |
 | `pin_row(ch)` | 1 channel | number | BGA: row (A=1, B=2, ...). LQFP: y-component |
 | `pin_col(ch)` | 1 channel | number | BGA: column number. LQFP: x-component |
@@ -544,8 +608,16 @@ The `dma()` function checks that the signal assigned to a channel has a DMA stre
 
 ```
 require dma(TX)                  # TX signal must have a DMA stream
-require dma(RX, "USART")        # RX must have DMA, only considering USART signals
+require dma(RX, "USART")         # RX must have DMA, only considering USART signals
+require dma(TX, "USART_TX")      # ...and only the USART TX DMA request specifically
 ```
+
+**Filter string** — the optional second argument narrows which DMA request is considered:
+
+- `"TYPE"` (e.g. `"SPI"`, `"TIM"`, `"ADC"`) — restrict to the peripheral type; the DMA stream is resolved from the instance (e.g. `ADC1`), falling back to the channel's signal name.
+- `"TYPE_FUNCTION"` (e.g. `"USART_TX"`, `"SPI_RX"`) — restrict to a specific DMA request built as `<instance>_<FUNCTION>` (e.g. `USART1_TX`). The part before the first `_` is the peripheral type, the rest is the request/trigger name.
+
+Without a filter, `dma()` uses the channel's assigned signal name directly.
 
 **DMA stream exclusivity rules:**
 - A DMA stream is exclusive to one port (no two ports can share a stream)
@@ -989,6 +1061,7 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 | **debug_pin_penalty** | Penalize using debug pins (PA13/PA14/PA15/PB3/PB4) |
 | **pin_clustering** | Prefer numerically adjacent pins |
 | **pin_proximity** | Prefer pins that are physically close on the package |
+| **pin_anchor** | Pull each pin toward its `@ ~...` placement hint (see [Pin Placement](#pin-placement)) |
 | **optional_fulfillment** | Prefer solutions with more optional mappings (`?=`) and requires (`require?`) satisfied |
 
 Weights are configurable: `0` = disabled, `1` = normal, higher values = more impact.
@@ -1090,11 +1163,14 @@ solution to the project; **Discard** exits without keeping changes.
 
 - **New** -- clear the editor and start fresh
 - **Save** -- save to the current project name
-- **Save As** -- save with a new project name
+- **Save As** -- prompt for a name. A **new** name creates a new project; entering an
+  **existing** name (e.g. the current project's own name) appends a new **version** to
+  that project rather than overwriting it.
 - **Project dropdown** -- switch between saved projects
 
-Projects store the constraint text, the referenced MCU, and any saved solutions
-in localStorage. When you open a project whose MCU isn't in local storage, the
+Each project keeps a history of versions (constraint text + MCU + saved solutions per
+version), so re-saving under the same name never loses earlier work. Projects store the
+constraint text, the referenced MCU, and any saved solutions in localStorage. When you open a project whose MCU isn't in local storage, the
 tool automatically fetches it from the configured
 [remote data source](#loading-mcu-data-remote-catalogue-optional) (if one is set)
 so the project opens without a manual re-import.

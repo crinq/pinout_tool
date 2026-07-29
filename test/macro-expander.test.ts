@@ -366,4 +366,40 @@ port CMD:
       }
     });
   });
+
+  describe('port-template placement anchors', () => {
+    it('a derived port inherits the template channels and overrides its anchor', () => {
+      const ast = parseOk(`
+port enc0: @ ~NE
+  channel MOSI
+  config "spi":
+    MOSI = SPI*_MOSI
+
+port enc1 from enc0: @ ~NW
+`);
+      const { ast: expanded } = expandAllMacros(ast);
+      const enc1 = expanded.statements.find(
+        s => s.type === 'port_decl' && (s as PortDeclNode).name === 'enc1'
+      ) as PortDeclNode;
+      expect(enc1.channels.map(c => c.name)).toEqual(['MOSI']); // inherited
+      expect(enc1.anchor).toEqual({ kind: 'near_region', target: 'NW' }); // overridden
+    });
+
+    it('a derived port with no anchor inherits the template anchor', () => {
+      const ast = parseOk(`
+port enc0: @ ~NE
+  channel MOSI
+  config "spi":
+    MOSI = SPI*_MOSI
+
+port enc2 from enc0:
+  channel SCK
+`);
+      const { ast: expanded } = expandAllMacros(ast);
+      const enc2 = expanded.statements.find(
+        s => s.type === 'port_decl' && (s as PortDeclNode).name === 'enc2'
+      ) as PortDeclNode;
+      expect(enc2.anchor).toEqual({ kind: 'near_region', target: 'NE' });
+    });
+  });
 });

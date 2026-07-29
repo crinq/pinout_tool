@@ -11,6 +11,36 @@ export function registerCostFunction(fn: CostFunction): void {
   registry.set(fn.id, fn);
 }
 
+// ============================================================
+// Placement anchors (`@ ~...` soft hints). Built once per solve from the AST
+// + package geometry (see pin-anchors.ts) and stashed here so the pin_anchor
+// cost function and the hard-anchor filter can read them without threading an
+// extra argument through every solver's finalize path.
+// ponytail: module global, safe because a worker (or the editor's main thread)
+// runs one solve at a time and prepareSolverContext re-sets it before costing.
+// ============================================================
+
+export interface AnchorGeom {
+  /** Package position ("A1" / "42") → normalized (x,y) in [0,1], y=0 north, x=0 west. */
+  norm(position: string): { x: number; y: number } | null;
+  /** Multiply a normalized distance to get ~pin-spacing units (comparable to pin_proximity). */
+  scale: number;
+}
+
+export interface SolutionAnchors {
+  /** `portName\0channelName` → soft target points (normalized), applied as distance cost. */
+  byChannel: Map<string, { x: number; y: number }[]>;
+  geom: AnchorGeom;
+  /** Hard: some channel of the port must land on each listed pin. */
+  hardPortPins: { portName: string; pins: string[] }[];
+  /** Hard: some channel mapped in the config must land on each listed pin. */
+  hardConfigPins: { portName: string; configName: string; pins: string[] }[];
+}
+
+let activeAnchors: SolutionAnchors | null = null;
+export function setActiveAnchors(a: SolutionAnchors | null): void { activeAnchors = a; }
+export function getActiveAnchors(): SolutionAnchors | null { return activeAnchors; }
+
 export function getCostFunction(id: string): CostFunction | undefined {
   return registry.get(id);
 }
@@ -403,6 +433,39 @@ registerCostFunction({
       }
     }
 
+    return cost;
+  },
+});
+
+registerCostFunction({
+  id: 'pin_anchor',
+  name: 'Pin Anchor',
+  description: 'Distance of each pin from its `@ ~...` placement hint (lower means closer to the requested pin/position/region)',
+  compute(solution: Solution, mcu: Mcu): number {
+    const anchors = getActiveAnchors();
+    if (!anchors || anchors.byChannel.size === 0) return 0;
+    const { byChannel, geom } = anchors;
+
+    let cost = 0;
+    const seen = new Set<string>(); // dedup a channel's pin across configs
+    for (const ca of solution.configAssignments) {
+      for (const a of ca.assignments) {
+        if (a.portName === '<pinned>') continue;
+        const targets = byChannel.get(`${a.portName}\0${a.channelName}`);
+        if (!targets || targets.length === 0) continue;
+        const key = `${a.portName}\0${a.channelName}\0${a.pinName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const pin = mcu.logicalPinByName.get(a.pinName);
+        if (!pin) continue;
+        const p = geom.norm(pin.physical.position);
+        if (!p) continue;
+        for (const t of targets) {
+          const dx = p.x - t.x, dy = p.y - t.y;
+          cost += Math.sqrt(dx * dx + dy * dy) * geom.scale;
+        }
+      }
+    }
     return cost;
   },
 });

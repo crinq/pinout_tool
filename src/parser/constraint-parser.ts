@@ -20,6 +20,7 @@ import type {
   PortDeclNode,
   ChannelDeclNode,
   ConfigDeclNode,
+  PinAnchor,
   ConfigBodyNode,
   MappingNode,
   RequireNode,
@@ -68,6 +69,7 @@ type TokenType =
   | 'DASH'        // -
   | 'QUESTION'    // ?
   | 'UNDERSCORE'  // _
+  | 'TILDE'       // ~
   | 'COMMENT'     // # inline comment text
   | 'NEWLINE'
   | 'INDENT'
@@ -221,6 +223,7 @@ function tokenize(source: string): { tokens: Token[]; errors: ParseError[] } {
         '-': 'DASH',
         '?': 'QUESTION',
         '_': 'UNDERSCORE',
+        '~': 'TILDE',
       };
 
       if (singleCharMap[ch]) {
@@ -511,6 +514,8 @@ class Parser {
   }
 
   // temp: -40 < 85 | temp: 85 | temp: < 125
+  // A bare value (temp: 85) is a point the part must be rated for, so the MCU's
+  // operating range must cover it on both ends (min ≤ 85 ≤ max).
   private parseTempDecl(): TempDeclNode {
     const loc = this.loc();
     this.expectKeyword('temp');
@@ -530,6 +535,7 @@ class Parser {
         maxTemp = this.parseDecimalNumber();
       } else {
         minTemp = value;
+        maxTemp = value;
       }
     }
 
@@ -707,6 +713,8 @@ class Parser {
     const configs: ConfigDeclNode[] = [];
     let color: string | undefined;
     let comment: string | undefined;
+    let anchor: PinAnchor | undefined;
+    let anchorFixedPins: string[] | undefined;
 
     // Inline color (before colon): port NAME from TMPL color "red"
     if (this.check('KEYWORD') && this.peek().value === 'color') {
@@ -722,10 +730,23 @@ class Parser {
     }
 
     this.expect('COLON');
+
+    // Optional placement clause on the header: `port CMD: @ ~NW` / `@ PA1`
+    if (this.check('AT')) {
+      const at = this.parseAtClause();
+      anchor = at.anchor;
+      anchorFixedPins = at.fixedPins;
+    }
+
     comment = this.skipComment();
     this.expectNewline();
 
     if (!this.check('INDENT')) {
+      // A header-only port is valid when it derives from a template or only
+      // overrides placement (e.g. `enc1 from enc0: @ ~NW`).
+      if (template || anchor || anchorFixedPins) {
+        return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, loc };
+      }
       this.error('Expected indented block after port declaration', this.peek());
       return { type: 'port_decl', name, template, channels, configs, loc };
     }
@@ -788,10 +809,39 @@ class Parser {
       });
     }
 
-    return { type: 'port_decl', name, template, channels, configs, color, comment, loc };
+    return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, loc };
   }
 
-  // channel IDENT (@ pin_list)? (= signal_expr ($var)* )?
+  // Parse a `@` placement clause (AT already at current token).
+  //   @ PA1, PA2   fixed pin restriction        -> { fixedPins }
+  //   @ ~PA1       proximity to a pin           -> { anchor: near_pin }
+  //   @ ~1 / ~A1   proximity to a position      -> { anchor: near_pos }
+  //   @ ~NW        proximity to a compass region -> { anchor: near_region }
+  private parseAtClause(): { fixedPins?: string[]; anchor?: PinAnchor } {
+    this.expect('AT');
+    if (this.check('TILDE')) {
+      this.advance();
+      if (this.check('NUMBER')) {
+        const target = this.peek().value;
+        this.advance();
+        return { anchor: { kind: 'near_pos', target } };
+      }
+      const raw = this.parsePinName(); // IDENT + optional NUMBER
+      if (/^P[A-K]\d+$/i.test(raw)) return { anchor: { kind: 'near_pin', target: raw.toUpperCase() } };
+      if (/^[NSEWC]+$/i.test(raw)) return { anchor: { kind: 'near_region', target: raw.toUpperCase() } };
+      if (/^[A-Z]+\d+$/i.test(raw)) return { anchor: { kind: 'near_pos', target: raw.toUpperCase() } };
+      this.error(`Invalid anchor '~${raw}' (expected a pin like ~PA1, a position like ~1, or a region like ~NW)`, this.peek());
+      return {};
+    }
+    const fixedPins: string[] = [this.parsePinName()];
+    while (this.check('COMMA')) {
+      this.advance();
+      fixedPins.push(this.parsePinName());
+    }
+    return { fixedPins };
+  }
+
+  // channel IDENT (@ pin_list | @ ~target)? (= signal_expr ($var)* )?
   // Returns [channel, optionalInlineMapping]
   private parseChannelDecl(): [ChannelDeclNode, MappingNode | null] {
     const loc = this.loc();
@@ -799,14 +849,11 @@ class Parser {
     const name = this.parseCompoundIdent();
 
     let allowedPins: string[] | undefined;
+    let anchor: PinAnchor | undefined;
     if (this.check('AT')) {
-      this.advance();
-      allowedPins = [];
-      allowedPins.push(this.parsePinName());
-      while (this.check('COMMA')) {
-        this.advance();
-        allowedPins.push(this.parsePinName());
-      }
+      const at = this.parseAtClause();
+      allowedPins = at.fixedPins;
+      anchor = at.anchor;
     }
 
     // Inline mapping: channel X = SIGNAL $var
@@ -838,22 +885,32 @@ class Parser {
 
     const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return [{ type: 'channel_decl', name, allowedPins, comment, loc }, inlineMapping];
+    return [{ type: 'channel_decl', name, allowedPins, anchor, comment, loc }, inlineMapping];
   }
 
-  // config STRING: NEWLINE INDENT config_body DEDENT
+  // config STRING: (@ ...)? NEWLINE INDENT config_body DEDENT
   private parseConfigDecl(): ConfigDeclNode {
     const loc = this.loc();
     this.expectKeyword('config');
     const name = this.expectString();
     this.expect('COLON');
+
+    // Optional placement clause: `config "UART": @ ~NW` / `@ PA1`
+    let anchor: PinAnchor | undefined;
+    let anchorFixedPins: string[] | undefined;
+    if (this.check('AT')) {
+      const at = this.parseAtClause();
+      anchor = at.anchor;
+      anchorFixedPins = at.fixedPins;
+    }
+    this.skipComment();
     this.expectNewline();
 
     const body: ConfigBodyNode[] = [];
 
     if (!this.check('INDENT')) {
       this.error('Expected indented block after config declaration', this.peek());
-      return { type: 'config_decl', name, body, loc };
+      return { type: 'config_decl', name, body, anchor, anchorFixedPins, loc };
     }
     this.expect('INDENT');
 
@@ -871,7 +928,7 @@ class Parser {
       this.advance();
     }
 
-    return { type: 'config_decl', name, body, loc };
+    return { type: 'config_decl', name, body, anchor, anchorFixedPins, loc };
   }
 
   private parseConfigBodyItem(): ConfigBodyNode | null {

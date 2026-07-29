@@ -43,7 +43,7 @@ function highlightCodeLine(code: string): string {
       result += `<span class="ce-number">${escapeHtml(code.substring(start, i))}</span>`;
       continue;
     }
-    if ('=!&|^*@$?'.includes(code[i])) {
+    if ('=!&|^*@$?~'.includes(code[i])) {
       result += `<span class="ce-operator">${escapeHtml(code[i])}</span>`;
       i++; continue;
     }
@@ -638,6 +638,25 @@ port CMD:
           <p>For single-config ports, write mappings on the <code>channel</code> line with <code>=</code> (creates an implicit config named after the port).
           For multiple alternatives, use explicit <code>config</code> blocks &mdash; the solver tries all combinations.
           Inline <code>#</code> comments on port, channel, and pin lines are available in custom export functions.</p>
+        </section>
+
+        <section>
+          <h3>Pin Placement (<code>@</code>)</h3>
+          <pre class="ce-help-code"># Hard: restrict a channel to specific pins
+channel TX @ PA1, PB2
+
+# Soft: nudge toward a pin / position / compass region
+channel TX @ ~PA1        # near pin PA1
+channel TX @ ~1          # near package position 1 (or ~A1 on BGA)
+channel TX @ ~NW         # near the north-west of the package
+
+# Port / config placement (after the colon)
+port CMD: @ PA1          # some channel must use PA1 (hard)
+port CMD: @ ~NW          # pull every channel toward NW (soft)
+config "UART": @ ~NW     # only the channels in this config</pre>
+          <p>Bare pins (<code>@ PA1</code>) filter candidates. A <code>~</code> anchor is soft &mdash; it only
+          biases ranking via the <b>Pin Anchor</b> cost weight. Compass letters <code>N/S/E/W/C</code> combine
+          (<code>NW</code>, <code>NNW</code>, <code>NC</code>) and rotate with the package as drawn.</p>
         </section>
 
         <section>

@@ -10,6 +10,8 @@
 export interface IocPinAssignment {
   pinName: string;
   signalName: string;
+  /** CubeMX GPIO_Label, if any — emitted as a trailing `# comment` on the pin line. */
+  label?: string;
 }
 
 export interface IocData {
@@ -74,39 +76,46 @@ export function parseIocFile(text: string): IocData {
     }
   }
 
+  // P<port><num>, plus the STM32H7 dual-pad analog variant suffix (e.g. PA1_C).
+  const pinPattern = /^P[A-K]\d+(_C)?$/;
+
+  // Collect user pin labels (e.g. PA9.GPIO_Label=test) → trailing comments.
+  const labels = new Map<string, string>();
+  for (const [key, value] of props) {
+    if (!key.endsWith('.GPIO_Label')) continue;
+    const pinName = key.slice(0, -'.GPIO_Label'.length);
+    if (pinPattern.test(pinName) && value.trim()) labels.set(pinName, value.trim());
+  }
+
   // Extract pin assignments from Pxx.Signal entries
   const assignments: IocPinAssignment[] = [];
-  const pinPattern = /^P[A-K]\d+$/;
 
   for (const [key, value] of props) {
     if (!key.endsWith('.Signal')) continue;
-    const pinName = key.slice(0, -7); // remove ".Signal"
-    if (!pinPattern.test(pinName)) continue;
+    const rawPin = key.slice(0, -7); // remove ".Signal"
+    if (!pinPattern.test(rawPin)) continue;
+    // STM32H7 dual-pad analog pins (PA1_C) map to the plain pin name (PA1).
+    const pinName = rawPin.replace(/_C$/, '');
 
     let signalName = value;
 
-    // Remove S_ prefix (shared signal marker in CubeMX)
-    if (signalName.startsWith('S_')) {
-      signalName = signalName.substring(2);
+    // GPIO-only assignments become the constraint language's IN/OUT shorthand.
+    if (signalName === 'GPIO_Output') {
+      signalName = 'OUT';
+    } else if (signalName.startsWith('GPIO_')) {
+      // GPIO_Input / GPIO_Analog / GPIO_EXTI* are all input-direction pins.
+      signalName = 'IN';
+    } else {
+      // Peripheral signal: strip the S_ shared marker, resolve SH.* shared
+      // aliases (ADCx_IN4 → ADC1_IN4), and split hyphenated names to match the
+      // XML parser (SYS_JTMS-SWDIO → SYS_JTMS). A pin takes one signal.
+      if (signalName.startsWith('S_')) signalName = signalName.substring(2);
+      const resolved = sharedSignalMap.get(value) ?? sharedSignalMap.get(signalName);
+      if (resolved) signalName = resolved;
+      signalName = splitHyphenatedSignal(signalName)[0];
     }
 
-    // Resolve shared signals via SH map (e.g. ADCx_IN4 → ADC1_IN4)
-    const resolved = sharedSignalMap.get(value) ?? sharedSignalMap.get(signalName);
-    if (resolved) {
-      signalName = resolved;
-    }
-
-    // Skip GPIO-only assignments
-    if (signalName === 'GPIO_Input' || signalName === 'GPIO_Output' ||
-        signalName === 'GPIO_Analog' || signalName.startsWith('GPIO_EXTI')) {
-      continue;
-    }
-
-    // Split hyphenated signals (e.g. SYS_JTMS-SWDIO → SYS_JTMS + SYS_SWDIO)
-    // to match the XML parser's signal names. Use first part for the pin declaration
-    // since a pin can only have one assignment.
-    const expanded = splitHyphenatedSignal(signalName);
-    assignments.push({ pinName, signalName: expanded[0] });
+    assignments.push({ pinName, signalName, label: labels.get(rawPin) });
   }
 
   // Sort by pin name for consistent ordering

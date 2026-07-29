@@ -357,7 +357,7 @@ export async function filterStoredMcus(ast: ProgramNode): Promise<string[]> {
       }
 
       // Temperature filter: MCU range must cover the required operating point(s)
-      // temp: -40 → MCU must support -40°C (mcu.tempMin ≤ -40)
+      // temp: 130 → MCU must be rated for 130°C (mcu.tempMin ≤ 130 ≤ mcu.tempMax)
       // temp: < 85 → MCU must support up to 85°C (mcu.tempMax ≥ 85)
       // temp: -40 < 85 → MCU must cover [-40, 85] range
       if (filters.reqTempMin !== undefined && m.tempMin > filters.reqTempMin) {

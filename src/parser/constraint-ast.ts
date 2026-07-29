@@ -114,6 +114,17 @@ export interface PinDeclNode {
   loc: SourceLocation;
 }
 
+// Soft placement hint from the `@ ~...` syntax. A bare `@ PA1` (fixed pin
+// restriction) is NOT an anchor — it stays in `allowedPins` (channel) or
+// `anchorFixedPins` (port/config). Anchors only nudge cost, they never filter.
+//   @ ~PA1  -> { kind: 'near_pin', target: 'PA1' }
+//   @ ~1    -> { kind: 'near_pos', target: '1' }   (package position)
+//   @ ~NW   -> { kind: 'near_region', target: 'NW' } (compass region)
+export type PinAnchor =
+  | { kind: 'near_pin'; target: string }
+  | { kind: 'near_pos'; target: string }
+  | { kind: 'near_region'; target: string };
+
 // port CMD: ...
 // port ENC0 from encoder_port:
 export interface PortDeclNode {
@@ -124,23 +135,32 @@ export interface PortDeclNode {
   comment?: string;
   channels: ChannelDeclNode[];
   configs: ConfigDeclNode[];
+  // `port CMD: @ ~NW`  — soft, applies to every channel of the port.
+  anchor?: PinAnchor;
+  // `port CMD: @ PA1`  — hard: some channel of the port must use each listed pin.
+  anchorFixedPins?: string[];
   loc: SourceLocation;
 }
 
-// channel TX @ PA1, PA2
+// channel TX @ PA1, PA2   (fixed → allowedPins)
+// channel TX @ ~PA1       (soft → anchor)
 export interface ChannelDeclNode {
   type: 'channel_decl';
   name: string;
   allowedPins?: string[];
+  anchor?: PinAnchor;
   comment?: string;
   loc: SourceLocation;
 }
 
 // config "UART full duplex": ...
+// config "UART": @ ~NW    (soft, applies to channels mapped in this config)
 export interface ConfigDeclNode {
   type: 'config_decl';
   name: string;
   body: ConfigBodyNode[];
+  anchor?: PinAnchor;
+  anchorFixedPins?: string[];
   loc: SourceLocation;
 }
 
