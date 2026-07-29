@@ -349,6 +349,12 @@ export class App {
 
     // Constraint editor changes -> enable/disable solve button + persist state + pin preview
     this.constraintEditor.onChange((_text, result) => {
+      // Keep saved-solution validity badges in sync with the freshly-parsed
+      // constraints. This must run even during a project load: setText() there
+      // triggers this debounced parse, and it's the moment the AST first
+      // becomes available — the MCU-load path handles the MCU-ready signal, but
+      // nothing else covers "parse ready" while loadingProject is set.
+      this.updateProjectSolutionValidity();
       if (this.loadingProject) return;
       this.saveStateDebounced();
       this.hasSolverResult = false;
@@ -366,9 +372,7 @@ export class App {
 
       // Show pin declarations on viewer immediately (before solving)
       this.showPinPreview(result.ast);
-
-      // Re-flag which saved solutions still fit the edited constraints.
-      this.updateProjectSolutionValidity();
+      // (validity badges already refreshed above, before the loading guard)
     });
 
     // Pin assignment popup -> constraint editor

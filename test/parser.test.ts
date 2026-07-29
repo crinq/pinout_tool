@@ -354,6 +354,17 @@ describe('Constraint parser', () => {
       expect(port.color).toBe('red');
     });
 
+    it('should parse color as a standalone body line (P5)', () => {
+      const src = `port P:
+  channel TX
+  color "green"
+
+  config "c":
+    TX = USART*_TX`;
+      const ast = parseOk(src);
+      expect((ast.statements[0] as PortDeclNode).color).toBe('green');
+    });
+
     it('should parse port with underscore name', () => {
       const src = `port FB_0:
   channel A
@@ -910,6 +921,35 @@ reserve: PA0`;
       // Should still parse the valid statements
       expect(result.ast).not.toBeNull();
     });
+
+    // P4: negative cases for individual declarations / clauses.
+    it('rejects a non-numeric memory value', () => {
+      parseErr('ram: abc');
+    });
+
+    it('rejects `?` in an mcu glob (not a supported glob char at parse level)', () => {
+      parseErr('mcu: STM32F40?');
+    });
+
+    it('rejects an empty reserve list', () => {
+      parseErr('reserve:');
+    });
+
+    it('rejects a malformed require expression', () => {
+      parseErr('port P:\n  channel TX = USART*_TX\n  require ==');
+    });
+
+    it('rejects a bare `@ ~` anchor with no target', () => {
+      parseErr('port P:\n  channel TX @ ~\n\n  config "c":\n    TX = USART*_TX');
+    });
+
+    it('rejects a `@ ~<junk>` anchor that is neither pin, position, nor compass', () => {
+      parseErr('port P:\n  channel TX @ ~ZZ\n\n  config "c":\n    TX = USART*_TX');
+    });
+
+    it('rejects lowercase in/out (not the IN/OUT shorthand, no `_`)', () => {
+      parseErr('port P:\n  channel TX = in');
+    });
   });
 
   // ========== Port Templates ==========
@@ -1283,6 +1323,56 @@ port P:
 
     it('should return null for empty input', () => {
       expect(parseExpressionString('')).toBeNull();
+    });
+
+    // P2: comparison/boolean operators inside require expressions.
+    it('parses all comparison + boolean operators', () => {
+      const op = (src: string) => {
+        const e = parseExpressionString(src);
+        expect(e!.type).toBe('binary_expr');
+        return e!.type === 'binary_expr' ? e!.operator : '';
+      };
+      expect(op('pin_number(A) > pin_number(B)')).toBe('>');
+      expect(op('pin_number(A) >= pin_number(B)')).toBe('>=');
+      expect(op('pin_number(A) < pin_number(B)')).toBe('<');
+      expect(op('pin_number(A) <= pin_number(B)')).toBe('<=');
+      expect(op('type(A) == "TIM"')).toBe('==');
+      expect(op('instance(A) != instance(B)')).toBe('!=');
+      expect(op('dma(A) & dma(B)')).toBe('&');
+      expect(op('dma(A) | dma(B)')).toBe('|');
+      expect(op('dma(A) ^ dma(B)')).toBe('^');
+    });
+
+    // P2: every numeric/string built-in function parses as a function_call.
+    it('parses each built-in require function', () => {
+      const fn = (src: string, name: string, argc: number) => {
+        const e = parseExpressionString(src);
+        expect(e!.type).toBe('function_call');
+        if (e!.type === 'function_call') {
+          expect(e!.name).toBe(name);
+          expect(e!.args).toHaveLength(argc);
+        }
+      };
+      fn('pin_number(A)', 'pin_number', 1);
+      fn('pin_row(A)', 'pin_row', 1);
+      fn('pin_col(A)', 'pin_col', 1);
+      fn('pin_distance(A, B)', 'pin_distance', 2);
+      fn('channel_number(A)', 'channel_number', 1);
+      fn('instance_number(A)', 'instance_number', 1);
+      fn('channel_signal(A)', 'channel_signal', 1);
+      fn('gpio_port(A)', 'gpio_port', 1);
+    });
+
+    // P5: dma() filter-string forms carry the literal through to the AST.
+    it('parses dma() filter-string arguments', () => {
+      const type = parseExpressionString('dma(TX, "USART")');
+      expect(type!.type === 'function_call' && type!.args).toHaveLength(2);
+      const typeFn = parseExpressionString('dma(TX, "USART_TX")');
+      if (typeFn!.type === 'function_call') {
+        expect(typeFn!.name).toBe('dma');
+        const arg1 = typeFn!.args[1];
+        expect(arg1.type === 'string_literal' && arg1.value).toBe('USART_TX');
+      }
     });
   });
 

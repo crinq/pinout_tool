@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { regionTargetXY, buildGeom, filterByHardAnchors } from '../src/solver/pin-anchors';
+import { getCostFunction, setActiveAnchors } from '../src/solver/cost-functions';
 import type { Mcu, Solution } from '../src/types';
 import type { SolutionAnchors } from '../src/solver/cost-functions';
 
@@ -85,5 +86,48 @@ describe('filterByHardAnchors', () => {
   it('passes everything through when there are no hard anchors', () => {
     const a = sol([['CMD', 'c', 'PA1']]);
     expect(filterByHardAnchors([a], anchors({}))).toEqual([a]);
+  });
+});
+
+// P3: a soft `~` anchor must bias ranking — the pin_anchor cost is lower for a
+// pin near the anchor target than for one far from it.
+describe('pin_anchor soft cost biases ranking', () => {
+  const mcu = {
+    package: 'LQFP100',
+    logicalPinByName: new Map([
+      ['PIN_NEAR', { physical: { position: '1' } }],   // top-left corner
+      ['PIN_FAR', { physical: { position: '50' } }],   // opposite side
+    ]),
+  } as unknown as Mcu;
+
+  const solOn = (pinName: string): Solution => ({
+    configAssignments: [{
+      combination: new Map(),
+      assignments: [{ portName: 'P', channelName: 'A', pinName, signalName: 'SIG', configurationName: 'c' }],
+    }],
+  } as unknown as Solution);
+
+  it('near pin costs less than far pin for the same channel anchor', () => {
+    const geom = buildGeom(mcu);
+    const target = geom.norm('1')!; // anchor a channel toward package position 1
+    const anchors: SolutionAnchors = {
+      byChannel: new Map([['P\0A', [target]]]),
+      geom, hardPortPins: [], hardConfigPins: [],
+    };
+    setActiveAnchors(anchors);
+    try {
+      const pinAnchor = getCostFunction('pin_anchor')!;
+      const near = pinAnchor.compute(solOn('PIN_NEAR'), mcu);
+      const far = pinAnchor.compute(solOn('PIN_FAR'), mcu);
+      expect(near).toBeCloseTo(0, 5);       // sits on the target
+      expect(far).toBeGreaterThan(near);    // penalized for distance
+    } finally {
+      setActiveAnchors(null);
+    }
+  });
+
+  it('is zero when no anchors are active', () => {
+    setActiveAnchors(null);
+    expect(getCostFunction('pin_anchor')!.compute(solOn('PIN_FAR'), mcu)).toBe(0);
   });
 });

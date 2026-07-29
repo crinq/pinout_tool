@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseConstraints } from '../src/parser/constraint-parser';
-import { extractMcuFilters, matchesMcuFilters, type McuMetadata } from '../src/mcu-matcher';
+import { extractMcuFilters, matchesMcuFilters, matchesPatterns, globToRegex, type McuMetadata } from '../src/mcu-matcher';
 
 const filtersFor = (src: string) => extractMcuFilters(parseConstraints(src).ast!)!;
 
@@ -128,6 +128,77 @@ describe('voltage filter', () => {
     expect(passes('voltage: 1.8 < 3.6', { voltageMin: 1.62, voltageMax: 5.0 })).toBe(true); // wider MCU
     expect(passes('voltage: 1.8 < 3.6', { voltageMin: 2.0, voltageMax: 3.6 })).toBe(false); // lo below MCU min
     expect(passes('voltage: 1.8 < 3.6', { voltageMin: 1.8, voltageMax: 3.3 })).toBe(false); // hi above MCU max
+  });
+});
+
+// ============================================================
+// P1: glob engine (globToRegex / matchesPatterns) — mcu/package pattern core.
+// ============================================================
+
+describe('glob engine', () => {
+  it('* wildcard, pass and fail', () => {
+    expect(matchesPatterns('STM32F405VGTx', ['STM32F4*'])).toBe(true);
+    expect(matchesPatterns('STM32G474', ['STM32F4*'])).toBe(false);
+  });
+  it('implicit trailing * and case-insensitive', () => {
+    expect(matchesPatterns('STM32F405VGTx', ['stm32f4'])).toBe(true);   // no explicit *, lowercase
+    expect(matchesPatterns('STM32G4', ['stm32f4'])).toBe(false);
+  });
+  it('leading *', () => {
+    expect(matchesPatterns('LQFP176', ['*176'])).toBe(true);
+    expect(matchesPatterns('LQFP100', ['*176'])).toBe(false);
+  });
+  it('[a,b] alternatives (comma-separated)', () => {
+    expect(matchesPatterns('STM32F407VGTx', ['STM32F[405,407]'])).toBe(true);
+    expect(matchesPatterns('STM32F405VGTx', ['STM32F[405,407]'])).toBe(true);
+    expect(matchesPatterns('STM32F401CC', ['STM32F[405,407]'])).toBe(false);
+  });
+  it('matches if ANY pattern in the list matches', () => {
+    expect(matchesPatterns('STM32G474', ['STM32F4*', 'STM32G4*'])).toBe(true);
+    expect(matchesPatterns('STM32L0', ['STM32F4*', 'STM32G4*'])).toBe(false);
+  });
+  it('? matches a single char at the engine level', () => {
+    expect(globToRegex('STM32F40?').test('STM32F401')).toBe(true);
+    expect(globToRegex('STM32F40?').test('STM32F4')).toBe(false); // nothing for the ?
+  });
+  it('[a-b] is a literal, NOT a numeric range', () => {
+    // `-` inside brackets is escaped, so [405-407] matches the literal "405-407".
+    expect(matchesPatterns('STM32F406', ['STM32F[405-407]'])).toBe(false);
+    expect(matchesPatterns('STM32F405-407X', ['STM32F[405-407]*'])).toBe(true);
+  });
+});
+
+// ============================================================
+// P1: mcu / package filters through the full matcher.
+// ============================================================
+
+describe('mcu filter', () => {
+  it('wildcard name pattern, pass and fail', () => {
+    expect(passes('mcu: STM32F4*', { refName: 'STM32F405VGTx' })).toBe(true);
+    expect(passes('mcu: STM32F4*', { refName: 'STM32G474RETx' })).toBe(false);
+  });
+  it('multiple patterns via |', () => {
+    expect(passes('mcu: STM32F4* | STM32G4*', { refName: 'STM32G474RETx' })).toBe(true);
+    expect(passes('mcu: STM32F4* | STM32G4*', { refName: 'STM32L071' })).toBe(false);
+  });
+  it('bracket alternatives', () => {
+    expect(passes('mcu: STM32F[405,407]', { refName: 'STM32F407VGTx' })).toBe(true);
+    expect(passes('mcu: STM32F[405,407]', { refName: 'STM32F401CCUx' })).toBe(false);
+  });
+});
+
+describe('package filter', () => {
+  it('wildcard, pass and fail', () => {
+    expect(passes('package: LQFP*', { package: 'LQFP48' })).toBe(true);
+    expect(passes('package: LQFP*', { package: 'UFBGA100' })).toBe(false);
+  });
+  it('leading *', () => {
+    expect(passes('package: *176', { package: 'LQFP176' })).toBe(true);
+    expect(passes('package: *176', { package: 'LQFP100' })).toBe(false);
+  });
+  it('bracket alternatives', () => {
+    expect(passes('package: LQFP[48,100]', { package: 'LQFP100' })).toBe(true);
+    expect(passes('package: LQFP[48,100]', { package: 'LQFP144' })).toBe(false);
   });
 });
 
