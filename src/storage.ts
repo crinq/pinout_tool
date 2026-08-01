@@ -257,6 +257,20 @@ export async function saveCommonErrorsLibrary(source: string): Promise<void> {
 }
 
 // ============================================================
+// Peripheral snippet library (double-click helper in the editor)
+// ============================================================
+
+const PERIPHERAL_LIB_KEY = 'peripheral-library';
+
+export async function loadPeripheralLibrary(): Promise<string | null> {
+  try { return await getKv().get(PERIPHERAL_LIB_KEY); } catch { return null; }
+}
+
+export async function savePeripheralLibrary(source: string): Promise<void> {
+  try { await getKv().set(PERIPHERAL_LIB_KEY, source); } catch { /* storage unavailable */ }
+}
+
+// ============================================================
 // Project Data Migration
 // ============================================================
 

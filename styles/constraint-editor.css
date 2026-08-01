@@ -354,3 +354,30 @@
   padding: 1px 4px;
   border-radius: 2px;
 }
+
+/* Keyword doc tooltip (hover over a highlighted keyword / built-in). */
+.ce-hovertip {
+  position: fixed;
+  z-index: 1200;
+  max-width: 340px;
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  white-space: normal;
+}
+
+.ce-hovertip-kw {
+  color: #2563eb;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+[data-theme="dark"] .ce-hovertip-kw {
+  color: #60a5fa;
+}

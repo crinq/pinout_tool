@@ -5,6 +5,7 @@ import { lookupDmaStream } from '../solver/solver';
 export class PeripheralSummary implements Panel {
   readonly id = 'peripheral-summary';
   readonly title = 'Peripherals';
+  readonly headerTooltip = 'Peripheral instances used by the selected solution, grouped by port. Click one to edit its routing in Modify mode.';
 
   private container!: HTMLElement;
   private listEl!: HTMLElement;

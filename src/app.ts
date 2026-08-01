@@ -19,7 +19,7 @@ import { classifyProjectSolutions } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
 import { DEFAULT_COMMON_ERRORS_LIBRARY } from './parser/lint-common-errors';
 import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
@@ -36,6 +36,7 @@ import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
 import type { TutorialStep } from '../ts_lib/src/tutorial';
 import { seedMacroLibrary, getStdlibSource, primeStdlibSource, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
+import { seedPeripheralLibrary, getPeripheralSource, primePeripheralSource, DEFAULT_PERIPHERAL_LIBRARY } from './parser/peripheral-lib';
 
 // ============================================================
 // Simple JS syntax highlighter for the export function editor
@@ -275,6 +276,7 @@ export class App {
       void this.restoreState();
       void seedDefaultExports();
       void seedMacroLibrary();
+      void seedPeripheralLibrary();
       // Seed + prime the common-error lint library.
       const existing = await loadCommonErrorsLibrary();
       if (existing == null) await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
@@ -1054,11 +1056,11 @@ export class App {
         <button class="btn btn-small" id="btn-project-save-as" title="Save as new project">Save As</button>
       </div>
       <div class="header-right">
-        <button class="btn btn-small" id="btn-import-xml">Import</button>
-        <button class="btn btn-small" id="btn-tutorial">Tutorial</button>
+        <button class="btn btn-small" id="btn-import-xml" title="Import an MCU (.xml), DMA modes (.xml), or a CubeMX project (.ioc)">Import</button>
+        <button class="btn btn-small" id="btn-tutorial" title="Guided walkthrough of the tool">Tutorial</button>
         <button class="btn btn-small" id="btn-docs" title="Full documentation">Docs</button>
-        <button class="btn btn-small" id="btn-data-manager">Data</button>
-        <button class="btn btn-small" id="btn-settings">Settings</button>
+        <button class="btn btn-small" id="btn-data-manager" title="Manage stored MCUs, projects, exports, and the remote data source">Data</button>
+        <button class="btn btn-small" id="btn-settings" title="Solver options and cost-function weights">Settings</button>
         <button class="btn btn-small" id="btn-theme-toggle" title="Toggle dark mode">Light</button>
       </div>
     `;
@@ -2581,7 +2583,7 @@ export class App {
               <input id="dm-data-url" type="text" placeholder="https://example.com/path/to/data" value="${(getDataSource().baseUrl() ?? '').replace(/"/g, '&quot;')}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
               <button class="btn btn-small" data-action="save-data-url">Save</button>
               <button class="btn btn-small" data-action="clear-data-url">Clear</button>
-              <button class="btn btn-small" data-action="browse-mcu" ${getDataSource().baseUrl() ? '' : 'disabled'}>Browse&hellip;</button>
+              <button class="btn btn-small" data-action="browse-mcu" title="Search the remote catalogue and load an MCU by name" ${getDataSource().baseUrl() ? '' : 'disabled'}>Browse&hellip;</button>
             </div>
             <p class="settings-hint" style="margin-top:6px">${(() => {
               const s = getDataSource().stats();
@@ -2698,6 +2700,15 @@ export class App {
               <button class="btn btn-small" data-action="reset-lint-lib">Reset to Default</button>
             </div>
           </section>
+
+          <section class="settings-section">
+            <h3>Peripheral Library</h3>
+            <p class="settings-hint">Snippets offered by the editor's double-click helper. Each <code>#Name</code> block lists channel mappings and <code>require</code> lines for a peripheral.</p>
+            <div style="margin-top:6px">
+              <button class="btn btn-small" data-action="edit-peripheral-lib">Edit</button>
+              <button class="btn btn-small" data-action="reset-peripheral-lib">Reset to Default</button>
+            </div>
+          </section>
         </div>
       `;
 
@@ -2795,6 +2806,14 @@ export class App {
               await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
               primeCommonErrorsLib(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
               this.showStatus('Lint library reset to default', 'success');
+              break;
+            case 'edit-peripheral-lib':
+              this.showPeripheralLibEditor();
+              break;
+            case 'reset-peripheral-lib':
+              await savePeripheralLibrary(DEFAULT_PERIPHERAL_LIBRARY.trim());
+              await primePeripheralSource();
+              this.showStatus('Peripheral library reset to default', 'success');
               break;
             case 'save-data-url': {
               const input = modal.querySelector('#dm-data-url') as HTMLInputElement | null;
@@ -3285,6 +3304,41 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       await saveCommonErrorsLibrary(source);
       primeCommonErrorsLib(source);
       this.showStatus('Lint library saved', 'success');
+      close();
+    });
+  }
+
+  private async showPeripheralLibEditor(): Promise<void> {
+    // Plain textarea — the #Name/body format needs no constraint tooling.
+    const r = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
+    if (!r) return;
+    const { modal, close } = r;
+    const current = getPeripheralSource();
+    modal.innerHTML = `
+      <div class="settings-header">
+        <strong>Peripheral Library</strong>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-small" id="peri-lib-reset">Reset</button>
+          <button class="btn btn-small settings-close">Close</button>
+        </div>
+      </div>
+      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
+        <p class="settings-hint" style="margin:0">One block per peripheral: a <code>#Name</code> header, then channel mappings (<code>TX = USART*_TX $u</code>) and <code>require</code> lines.</p>
+        <textarea id="peri-lib-code" spellcheck="false" style="flex:1;min-height:200px;font-family:monospace;font-size:12px;padding:6px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px">${current.replace(/</g, '&lt;')}</textarea>
+        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
+          <button class="btn btn-small btn-primary" id="peri-lib-save">Save</button>
+        </div>
+      </div>
+    `;
+    const codeEl = modal.querySelector('#peri-lib-code') as HTMLTextAreaElement;
+    modal.querySelector('.settings-close')!.addEventListener('click', close);
+    modal.querySelector('#peri-lib-reset')!.addEventListener('click', () => {
+      codeEl.value = DEFAULT_PERIPHERAL_LIBRARY.trim();
+    });
+    modal.querySelector('#peri-lib-save')!.addEventListener('click', async () => {
+      await savePeripheralLibrary(codeEl.value);
+      await primePeripheralSource();
+      this.showStatus('Peripheral library saved', 'success');
       close();
     });
   }

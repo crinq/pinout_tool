@@ -52,6 +52,7 @@ function physicalAssignments(
 export class PackageViewer implements Panel {
   readonly id = 'package-viewer';
   readonly title = 'Package Viewer';
+  readonly headerTooltip = 'The MCU package with pin assignments. Hover a pin for its signals; use ✎ Modify to hand-tune a solution.';
 
   private container!: HTMLElement;
   private canvas!: HTMLCanvasElement;

@@ -36,6 +36,7 @@ const DEFAULT_PORT_COLORS = [
 export class ConstraintViewer implements Panel {
   readonly id = 'constraint-viewer';
   readonly title = 'Constraints Viewer';
+  readonly headerTooltip = 'Read-only topology of the parsed constraints: ports, channels, configs, and their signal mappings.';
 
   private container!: HTMLElement;
   private content!: HTMLElement;

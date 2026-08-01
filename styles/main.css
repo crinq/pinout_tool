@@ -1498,3 +1498,62 @@
 .sv-valid { color: #22c55e; }
 .sv-extra { color: #3b82f6; }
 .sv-invalid { color: #ef4444; }
+
+/* Nested context menu (editor double-click helper). */
+.context-menu {
+  position: fixed;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 160px;
+  z-index: 1300;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.context-menu-item {
+  position: relative;
+  padding: 5px 22px 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.context-menu-item:hover {
+  background: var(--border);
+}
+
+.context-menu-disabled {
+  color: var(--text-secondary);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.context-menu-disabled:hover {
+  background: transparent;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.context-menu-arrow {
+  position: absolute;
+  right: 8px;
+  color: var(--text-secondary);
+}
+
+.context-menu-submenu {
+  position: absolute;
+  left: 100%;
+  top: -5px;
+  margin-left: 1px;
+  display: none;
+}
+
+.context-menu-has-submenu:hover > .context-menu-submenu {
+  display: block;
+}

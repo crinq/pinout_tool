@@ -9,6 +9,7 @@ type SortDir = 'asc' | 'desc';
 export class ProjectSolutions implements Panel {
   readonly id = 'project-solutions';
   readonly title = 'Project Solutions';
+  readonly headerTooltip = 'Solutions saved to the project. The ✓/●/✕ badge shows whether each still satisfies the current constraints.';
 
   private container!: HTMLElement;
   private tableWrapper!: HTMLElement;

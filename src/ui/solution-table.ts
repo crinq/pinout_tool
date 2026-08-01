@@ -18,6 +18,7 @@ type FlatItem =
 export class SolverSolutions implements Panel {
   readonly id = 'solver-solutions';
   readonly title = 'Solver Solutions';
+  readonly headerTooltip = 'Solutions found by the last solve, ranked by cost. Press Enter on one to save it to Project Solutions.';
 
   private container!: HTMLElement;
   private tableWrapper!: HTMLElement;
