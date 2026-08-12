@@ -373,9 +373,34 @@ export class ConstraintEditor implements Panel {
     this.container.appendChild(this.errorPanel);
 
     // Solver status bar (solver errors/warnings shown here)
+    // Solver output can run to many lines, so it lives in a collapsible bar:
+    // the wrapper holds the toggle, the inner element is what callers write to.
+    const statusWrap = document.createElement('div');
+    statusWrap.className = 'ce-solver-status is-empty';
+
+    const statusToggle = document.createElement('button');
+    statusToggle.className = 'ce-status-toggle';
+    statusToggle.type = 'button';
+    statusToggle.title = 'Collapse solver output';
+    statusToggle.textContent = '\u25BE'; // ▾
+
     this.solverStatusBar = document.createElement('div');
-    this.solverStatusBar.className = 'ce-solver-status';
-    this.container.appendChild(this.solverStatusBar);
+    this.solverStatusBar.className = 'ce-status-content';
+
+    statusToggle.addEventListener('click', () => {
+      const collapsed = statusWrap.classList.toggle('collapsed');
+      statusToggle.textContent = collapsed ? '\u25B8' : '\u25BE'; // ▸ / ▾
+      statusToggle.title = collapsed ? 'Expand solver output' : 'Collapse solver output';
+    });
+
+    statusWrap.appendChild(statusToggle);
+    statusWrap.appendChild(this.solverStatusBar);
+    this.container.appendChild(statusWrap);
+
+    // Hide the whole bar (toggle included) while there is nothing to show.
+    new MutationObserver(() => {
+      statusWrap.classList.toggle('is-empty', this.solverStatusBar.textContent?.trim() === '');
+    }).observe(this.solverStatusBar, { childList: true, subtree: true, characterData: true });
 
     // Event listeners
     this.textarea.addEventListener('input', () => this.onInput());
