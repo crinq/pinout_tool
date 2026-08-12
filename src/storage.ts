@@ -274,6 +274,28 @@ export async function savePeripheralLibrary(source: string): Promise<void> {
 // Project Data Migration
 // ============================================================
 
+/**
+ * Whether a parsed JSON blob looks like a project exported from the Data
+ * Manager. Checked before `migrateProjectData`, which happily fabricates a
+ * version for any object (so an MCU JSON would otherwise import as a project).
+ */
+export function isExportedProject(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const obj = raw as Record<string, unknown>;
+  return Array.isArray(obj.versions) || typeof obj.constraintText === 'string';
+}
+
+/**
+ * Append `imported`'s versions to `target` and renumber every id, so importing
+ * over an existing project adds versions instead of replacing it (same
+ * behaviour as "Save As" under an existing name). Mutates and returns `target`.
+ */
+export function mergeImportedVersions(target: ProjectData, imported: ProjectData): ProjectData {
+  target.versions.push(...imported.versions.map(v => ({ ...v })));
+  target.versions.forEach((v, i) => { v.id = i; });
+  return target;
+}
+
 export function migrateProjectData(raw: unknown): ProjectData {
   const obj = raw as Record<string, unknown>;
 

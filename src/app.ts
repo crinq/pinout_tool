@@ -20,7 +20,7 @@ import { classifyProjectSolutions } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, isExportedProject, mergeImportedVersions, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
 import { DEFAULT_COMMON_ERRORS_LIBRARY } from './parser/lint-common-errors';
 import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
@@ -1027,7 +1027,7 @@ export class App {
         <button class="btn btn-small" id="btn-project-save-as" title="Save as new project">Save As</button>
       </div>
       <div class="header-right">
-        <button class="btn btn-small" id="btn-import-xml" title="Import an MCU (.xml), DMA modes (.xml), or a CubeMX project (.ioc)">Import</button>
+        <button class="btn btn-small" id="btn-import-xml" title="Import an MCU (.xml), DMA modes (.xml), a CubeMX project (.ioc), or an exported project (.json)">Import</button>
         <button class="btn btn-small" id="btn-tutorial" title="Guided walkthrough of the tool">Tutorial</button>
         <button class="btn btn-small" id="btn-docs" title="Full documentation">Docs</button>
         <button class="btn btn-small" id="btn-data-manager" title="Manage stored MCUs, projects, exports, and the remote data source">Data</button>
@@ -1040,7 +1040,7 @@ export class App {
     const importBtn = header.querySelector('#btn-import-xml')!;
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
-    fileInput.accept = '.xml,.ioc';
+    fileInput.accept = '.xml,.ioc,.json';
     fileInput.multiple = true;
     fileInput.style.display = 'none';
     header.appendChild(fileInput);
@@ -1051,6 +1051,8 @@ export class App {
         for (const file of fileInput.files) {
           if (file.name.endsWith('.ioc')) {
             this.loadIocFile(file);
+          } else if (file.name.endsWith('.json')) {
+            this.loadProjectFile(file);
           } else {
             this.loadXmlFile(file);
           }
@@ -1157,7 +1159,7 @@ export class App {
     const footer = this.layout.getFooter();
     footer.innerHTML = `
       <div class="footer-content">
-        <span class="footer-hint">Drop STM32CubeMX XML or .ioc files anywhere to load MCU data or import pin assignments</span>
+        <span class="footer-hint">Drop .xml / .ioc files anywhere to load MCU data or pin assignments, or an exported project .json to import it</span>
       </div>
     `;
   }
@@ -1186,6 +1188,8 @@ export class App {
             this.loadXmlFile(file);
           } else if (file.name.endsWith('.ioc')) {
             this.loadIocFile(file);
+          } else if (file.name.endsWith('.json')) {
+            this.loadProjectFile(file);
           }
         }
       }
@@ -3533,6 +3537,56 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     if (dmaXml) exportData.dmaXml = dmaXml;
 
     this.downloadJson(exportData, `${refName}.json`);
+  }
+
+  /**
+   * Import a project exported from Data Manager → Projects → Export.
+   * Asks for a name (defaulting to the one in the file); importing under an
+   * existing name appends the versions, exactly like "Save As" with that name.
+   */
+  private async loadProjectFile(file: File): Promise<void> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      this.showStatus(`${file.name} is not valid JSON`, 'error');
+      return;
+    }
+    if (!isExportedProject(parsed)) {
+      this.showStatus(`${file.name} is not an exported project`, 'error');
+      return;
+    }
+    const imported = migrateProjectData(parsed);
+    if (imported.versions.length === 0) {
+      this.showStatus(`${file.name} contains no project versions`, 'error');
+      return;
+    }
+
+    const name = prompt('Import project as:', imported.name || file.name.replace(/\.json$/i, ''));
+    if (!name?.trim()) return;
+    const trimmed = name.trim();
+
+    // Merge into an existing project when the name is taken, so importing
+    // twice builds up versions instead of overwriting.
+    let target: ProjectData = { name: trimmed, versions: [] };
+    try {
+      const existing = await getKv().get(`project:${trimmed}`);
+      if (existing) {
+        target = migrateProjectData(JSON.parse(existing));
+        target.name = trimmed;
+      }
+    } catch { /* treat as new */ }
+
+    const addedCount = imported.versions.length;
+    mergeImportedVersions(target, imported);
+
+    const latest = target.versions[target.versions.length - 1];
+    await this.persistProject(trimmed, target, latest);
+    await this.applyProjectVersion(trimmed, latest);
+    this.showStatus(
+      `Imported "${file.name}" as "${trimmed}" (${addedCount} version(s), now v${latest.id})`,
+      'success',
+    );
   }
 
   private async exportProjectData(projectName: string): Promise<void> {

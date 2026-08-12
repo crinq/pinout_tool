@@ -1246,6 +1246,7 @@ solution to the project; **Discard** exits without keeping changes.
   **existing** name (e.g. the current project's own name) appends a new **version** to
   that project rather than overwriting it.
 - **Project dropdown** -- switch between saved projects
+- **Import a project** -- drag & drop a project `.json` (from Data Manager → Projects → **Export**) anywhere, or pick it with the **Import** button. You are asked for a name, defaulting to the one stored in the file; importing under an existing project's name appends its versions instead of overwriting, exactly like **Save As** with that name
 
 Each project keeps a history of versions (constraint text + MCU + saved solutions per
 version), so re-saving under the same name never loses earlier work. Projects store the
