@@ -11,6 +11,7 @@ import { getDataSource, entryPackageNames, entryVariantNames, type IndexDeviceEn
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions, setSquaredCosts } from './solver/cost-functions';
+import { type AppSettings, DEFAULT_SETTINGS, applySettingsOverrides, formatSettingsBlock, upsertSettingsBlock } from './settings';
 import { getSolvers } from './solver/solver-registry';
 import { SolutionEditor, type EditCandidate } from './solver/solution-editor';
 import { renderMarkdown } from './ui/markdown';
@@ -128,55 +129,6 @@ function highlightJs(code: string): string {
   return out.join('');
 }
 
-export interface AppSettings {
-  maxSolutions: number;
-  solverTimeoutMs: number;
-  solverTypes: string[];
-  maxGroups: number;
-  maxSolutionsPerGroup: number;
-  numRestarts: number;
-  costWeights: Record<string, number>;
-  minZoom: number;
-  maxZoom: number;
-  mouseZoomGain: number;
-  skipGpioMapping: boolean;
-  postOptimize: boolean;
-  squaredCosts: boolean;
-  dataInspector: boolean;
-  dynamicTimeoutMultiplier: number;
-  solverDebugOverlay: boolean;
-  urlEncoding: 'none' | 'constraints' | 'constraints-mcu' | 'full';
-}
-
-const DEFAULT_SETTINGS: AppSettings = {
-  maxSolutions: 2600,
-  solverTimeoutMs: 2500,
-  dynamicTimeoutMultiplier: 3,
-  solverTypes: ['two-phase', 'cost-guided', 'priority-backtracking', 'mrv-group', 'ratio-mrv-group', 'hybrid', 'dynamic-mrv', 'adaptive'],
-  maxGroups: 500,
-  maxSolutionsPerGroup: 100,
-  numRestarts: 150,
-  costWeights: {
-    pin_count: 1,
-    port_spread: 0.2,
-    peripheral_count: 0.5,
-    debug_pin_penalty: 0.0,
-    pin_clustering: 0.0,
-    pin_proximity: 1,
-    pin_anchor: 1,
-    optional_fulfillment: 5,
-  },
-  minZoom: 0.5,
-  maxZoom: 2,
-  mouseZoomGain: 0.025,
-  skipGpioMapping: true,
-  postOptimize: false,
-  squaredCosts: false,
-  dataInspector: false,
-  solverDebugOverlay: false,
-  urlEncoding: 'none',
-};
-
 interface UrlState {
   v: 1;
   c: string;
@@ -193,6 +145,11 @@ export class App {
   private peripheralSummary!: PeripheralSummary;
   currentMcu: Mcu | null = null;
   settings: AppSettings = this.loadSettings();
+  /**
+   * Settings for the run in progress: `this.settings` with any `settings:`
+   * block from the constraints folded in. Reset at the start of every solve.
+   */
+  private solveSettings: AppSettings = this.settings;
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
@@ -441,6 +398,17 @@ export class App {
       return;
     }
 
+    // A `settings:` block in the constraints overrides solver settings for
+    // this run only (the user's saved settings are untouched).
+    const overrides = applySettingsOverrides(
+      parseResult.ast, this.settings, new Set(getAllCostFunctions().map(f => f.id)),
+    );
+    this.solveSettings = overrides.settings;
+    for (const msg of overrides.errors) {
+      console.warn('[settings]', msg);
+      this.showStatus(msg, 'error');
+    }
+
     // Determine MCU list: multi-MCU from filters or single current MCU
     const filters = extractMcuFilters(parseResult.ast);
     let mcuList: Mcu[];
@@ -529,7 +497,7 @@ export class App {
     // (renamed or removed solvers) would otherwise send an unknown name
     // to the worker's switch-default and eat resources on backtracking.
     const knownIds = new Set(getSolvers().map(s => s.id));
-    const solverTypes = this.settings.solverTypes.filter(s => {
+    const solverTypes = this.solveSettings.solverTypes.filter(s => {
       if (knownIds.has(s)) return true;
       console.warn(`[settings] ignoring unknown solver "${s}"`);
       return false;
@@ -615,7 +583,7 @@ export class App {
       console.log('[solver]', headDiag.summary.join(' '));
     }
 
-    if (this.settings.solverDebugOverlay) {
+    if (this.solveSettings.solverDebugOverlay) {
       this.debugOverlay.setDiagnostics(headDiag ?? null);
       this.debugOverlay.startRun(solverTypes);
     }
@@ -682,16 +650,16 @@ export class App {
     // Scale per-worker solution cap so total across all workers stays bounded.
     // Each worker gets at most 2× its fair share to allow headroom for dedup.
     const perWorkerMax = totalCount > 1
-      ? Math.ceil(this.settings.maxSolutions / totalCount * 2)
-      : this.settings.maxSolutions;
+      ? Math.ceil(this.solveSettings.maxSolutions / totalCount * 2)
+      : this.solveSettings.maxSolutions;
 
     const baseConfig = {
       maxSolutions: perWorkerMax,
-      timeoutMs: this.settings.solverTimeoutMs,
-      costWeights: new Map(Object.entries(this.settings.costWeights)),
-      skipGpioMapping: this.settings.skipGpioMapping,
-      postOptimize: this.settings.postOptimize,
-      squaredCosts: this.settings.squaredCosts,
+      timeoutMs: this.solveSettings.solverTimeoutMs,
+      costWeights: new Map(Object.entries(this.solveSettings.costWeights)),
+      skipGpioMapping: this.solveSettings.skipGpioMapping,
+      postOptimize: this.solveSettings.postOptimize,
+      squaredCosts: this.solveSettings.squaredCosts,
     };
 
     for (const job of workerJobs) {
@@ -769,10 +737,10 @@ export class App {
           config: baseConfig,
           solverTypes: job.types,
           twoPhaseConfig: {
-            maxGroups: this.settings.maxGroups,
-            maxSolutionsPerGroup: this.settings.maxSolutionsPerGroup,
+            maxGroups: this.solveSettings.maxGroups,
+            maxSolutionsPerGroup: this.solveSettings.maxSolutionsPerGroup,
           },
-          randomizedConfig: { numRestarts: this.settings.numRestarts },
+          randomizedConfig: { numRestarts: this.solveSettings.numRestarts },
         });
       } else {
         const solverType = job.types[0];
@@ -782,10 +750,10 @@ export class App {
           config: baseConfig,
           solverType,
           twoPhaseConfig: {
-            maxGroups: this.settings.maxGroups,
-            maxSolutionsPerGroup: this.settings.maxSolutionsPerGroup,
+            maxGroups: this.solveSettings.maxGroups,
+            maxSolutionsPerGroup: this.solveSettings.maxSolutionsPerGroup,
           },
-          randomizedConfig: { numRestarts: this.settings.numRestarts },
+          randomizedConfig: { numRestarts: this.solveSettings.numRestarts },
         });
       }
     }
@@ -802,24 +770,24 @@ export class App {
     this.terminateWorkers();
 
     const t0 = performance.now();
-    const result = mergeResults(results, this.settings.maxSolutions);
+    const result = mergeResults(results, this.solveSettings.maxSolutions);
     const mergeMs = performance.now() - t0;
     if (mergeMs > 50) console.log(`[perf] mergeResults: ${mergeMs.toFixed(0)}ms (${result.solutions.length} solutions)`);
 
     // Dynamic timeout retry: if 0 solutions and multiplier > 1 and not already a retry
-    const mult = this.settings.dynamicTimeoutMultiplier;
+    const mult = this.solveSettings.dynamicTimeoutMultiplier;
     if (result.solutions.length === 0 && mult > 1 && !this.isDynamicTimeoutRetry) {
-      const originalTimeout = this.settings.solverTimeoutMs;
+      const originalTimeout = this.solveSettings.solverTimeoutMs;
       const boostedTimeout = originalTimeout * mult;
       this.showStatus(`No solutions found — retrying with ${boostedTimeout}ms timeout (×${mult})...`, 'info');
       this.isDynamicTimeoutRetry = true;
-      const savedTimeout = this.settings.solverTimeoutMs;
-      this.settings.solverTimeoutMs = boostedTimeout;
+      const savedTimeout = this.solveSettings.solverTimeoutMs;
+      this.solveSettings.solverTimeoutMs = boostedTimeout;
 
       const parseResult = this.constraintEditor.getParseResult();
       if (parseResult?.ast) {
-        if (this.settings.solverDebugOverlay) {
-          this.debugOverlay.startRun(this.settings.solverTypes);
+        if (this.solveSettings.solverDebugOverlay) {
+          this.debugOverlay.startRun(this.solveSettings.solverTypes);
         }
 
         // Re-run solver with boosted timeout
@@ -833,7 +801,7 @@ export class App {
 
           const solveNextMcu = () => {
             if (mcuIdx >= mcuList.length) {
-              this.settings.solverTimeoutMs = savedTimeout;
+              this.solveSettings.solverTimeoutMs = savedTimeout;
               // Keep isDynamicTimeoutRetry = true so the recursive call won't retry again
               this.onAllSolversComplete(allRetryResults);
               this.isDynamicTimeoutRetry = false;
@@ -841,7 +809,7 @@ export class App {
             }
             const mcu = mcuList[mcuIdx];
             const mcuLabel = mcuList.length > 1 ? `[${mcuIdx + 1}/${mcuList.length} ${mcu.refName}] ` : '';
-            this.solveForMcu(mcu, parseResult.ast!, this.settings.solverTypes, mcuLabel, (res) => {
+            this.solveForMcu(mcu, parseResult.ast!, this.solveSettings.solverTypes, mcuLabel, (res) => {
               allRetryResults.push(...res);
               mcuIdx++;
               solveNextMcu();
@@ -850,7 +818,7 @@ export class App {
           solveNextMcu();
           return;
         }
-        this.settings.solverTimeoutMs = savedTimeout;
+        this.solveSettings.solverTimeoutMs = savedTimeout;
       }
       this.isDynamicTimeoutRetry = false;
     }
@@ -2399,6 +2367,7 @@ export class App {
         </section>
 
         <div class="settings-actions">
+          <button class="btn btn-small" id="set-export" title="Write these solver settings into the constraints as a settings: block">Export to Constraints</button>
           <button class="btn btn-small" id="set-reset-defaults">Reset Defaults</button>
           <button class="btn btn-primary btn-small" id="set-apply">Apply</button>
         </div>
@@ -2414,7 +2383,8 @@ export class App {
       modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]').forEach(cb => cb.checked = false);
     });
 
-    modal.querySelector('#set-apply')!.addEventListener('click', () => {
+    // Pull every control into this.settings — shared by Apply and Export.
+    const readForm = (): void => {
       const checkedSolvers = [...modal.querySelectorAll<HTMLInputElement>('#set-solver-types input[type=checkbox]:checked')]
         .map(cb => cb.value);
       this.settings.solverTypes = checkedSolvers.length > 0 ? checkedSolvers : [...DEFAULT_SETTINGS.solverTypes];
@@ -2439,12 +2409,26 @@ export class App {
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
       this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;
       this.settings.urlEncoding = (modal.querySelector('#set-url-encoding') as HTMLSelectElement).value as AppSettings['urlEncoding'];
+    };
 
+    modal.querySelector('#set-apply')!.addEventListener('click', () => {
+      readForm();
       this.saveSettings();
       this.updateUrlHash();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
       close();
       this.showStatus('Settings saved', 'success');
+    });
+
+    modal.querySelector('#set-export')!.addEventListener('click', () => {
+      // Snapshot the *current* form values first, so Export reflects what the
+      // user sees rather than the last-applied settings.
+      readForm();
+      const text = upsertSettingsBlock(this.constraintEditor.getText(), formatSettingsBlock(this.settings));
+      this.constraintEditor.setText(text);
+      this.saveSettings();
+      close();
+      this.showStatus('Solver settings written to the constraints', 'success');
     });
 
     modal.querySelector('#set-reset-defaults')!.addEventListener('click', () => {

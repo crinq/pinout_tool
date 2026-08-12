@@ -18,6 +18,7 @@
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
    - [Pin Placement (@)](#pin-placement)
+   - [Solver Settings](#solver-settings-settings)
    - [Signal Patterns](#signal-patterns)
    - [Mappings](#mappings)
    - [Variable Assignment ($)](#variable-assignment)
@@ -418,6 +419,51 @@ port enc1 from enc0: @ ~NW    # overrides enc0's placement, keeps its channels
 
 The soft-anchor pull is weighted by the **Pin Anchor** [cost function](#cost-functions);
 set its weight to 0 in Settings to ignore anchors entirely.
+
+### Solver Settings (`settings:`)
+
+A `settings:` block overrides solver settings **for that solve only** — your
+saved Settings are left untouched. Handy for committing a hard board's tuning
+alongside its constraints.
+
+```
+settings:
+  timeout: 3s                     # or 3000ms
+  solvers: "mrv-group", "hybrid"
+  skip_gpio_mapping: 0            # 0/1 or true/false
+  pin_proximity: 5                # any cost-function weight
+```
+
+**Keys**
+
+| Key | Meaning |
+|-----|---------|
+| `timeout` / `solver_timeout` | Solver timeout. Accepts `ms` / `s` units (`3s` = `3000ms`) |
+| `dynamic_timeout` | Retry multiplier when a run finds nothing (≤1 disables) |
+| `solvers` | Which solvers to run, as quoted names |
+| `max_solutions` | Stop after this many solutions |
+| `max_groups`, `max_solutions_per_group` | Two-phase search limits |
+| `num_restarts` | Restarts for the randomized solvers |
+| `skip_gpio_mapping`, `post_optimize`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
+| *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
+
+**Presets.** `settings from "<name>":` restarts from a named preset instead of
+your current settings, then applies the block on top:
+
+```
+settings from "default":     # factory defaults, then override
+  timeout: 5s
+
+settings from "complex":     # tuned for hard problems; body is optional
+```
+
+Available presets are `"default"` (the factory configuration) and `"complex"`
+(longer timeout, the heavier solver set, larger group limits). Edit them in
+`src/settings.ts` → `SETTINGS_PRESETS`.
+
+Several blocks may appear; later ones fold onto earlier ones. Unknown keys,
+unknown presets and wrong value types are reported in the status bar and
+otherwise ignored.
 
 ### Signal Patterns
 

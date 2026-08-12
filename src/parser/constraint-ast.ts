@@ -20,6 +20,7 @@ export type StatementNode =
   | RamDeclNode
   | RomDeclNode
   | FreqDeclNode
+  | SettingsDeclNode
   | TempDeclNode
   | VoltageDeclNode
   | CoreDeclNode
@@ -64,6 +65,26 @@ export interface FreqDeclNode {
   type: 'freq_decl';
   minMHz: number;
   maxMHz?: number;
+  loc: SourceLocation;
+}
+
+// settings:                      — override solver settings for this run
+//   timeout: 3s
+//   solvers: "mrv-group", "hybrid"
+// settings from "default":        — start from a named preset, then override
+export type SettingValue = number | boolean | string[];
+
+export interface SettingsEntryNode {
+  key: string;
+  value: SettingValue;
+  loc: SourceLocation;
+}
+
+export interface SettingsDeclNode {
+  type: 'settings_decl';
+  /** Named preset to start from ("default", "complex"); omitted = current settings. */
+  preset?: string;
+  entries: SettingsEntryNode[];
   loc: SourceLocation;
 }
 

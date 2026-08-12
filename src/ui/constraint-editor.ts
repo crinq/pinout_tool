@@ -10,7 +10,7 @@ import { showContextMenu, type ContextMenuItem } from '../../ts_lib/src/context-
 import { getPeripherals, type Peripheral } from '../parser/peripheral-lib';
 import { ConstraintMinimap } from './constraint-minimap';
 
-const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from']);
+const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from', 'settings']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
@@ -34,6 +34,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   macro: 'A reusable block of mappings/requires. Declare with params, then call by name.',
   color: 'Port colour in the package viewer. e.g. color "#2563eb"',
   from: 'Derive this port from a template port, inheriting its channels and configs.',
+  settings: 'Override solver settings for this run. `settings from "complex":` starts from a preset.',
   // Placement anchor targets
   IN: 'GPIO input shorthand — maps to any free input-capable pin.',
   OUT: 'GPIO output shorthand — maps to any free output-capable pin.',
@@ -984,6 +985,25 @@ port CMD:
           <p>For single-config ports, write mappings on the <code>channel</code> line with <code>=</code> (creates an implicit config named after the port).
           For multiple alternatives, use explicit <code>config</code> blocks &mdash; the solver tries all combinations.
           Inline <code>#</code> comments on port, channel, and pin lines are available in custom export functions.</p>
+        </section>
+
+        <section>
+          <h3>Solver Settings</h3>
+          <pre class="ce-help-code">settings:
+  timeout: 3s              # or 3000ms
+  solvers: "mrv-group", "hybrid"
+  skip_gpio_mapping: 0     # 0/1 or true/false
+  pin_proximity: 5         # any cost-function weight
+
+# start from a preset, then override
+settings from "complex":
+  timeout: 30s</pre>
+          <p>Overrides solver settings for this run only &mdash; your saved Settings are untouched.
+          Keys: <code>timeout</code>, <code>dynamic_timeout</code>, <code>solvers</code>, <code>max_solutions</code>,
+          <code>max_groups</code>, <code>max_solutions_per_group</code>, <code>num_restarts</code>,
+          <code>skip_gpio_mapping</code>, <code>post_optimize</code>, <code>squared_costs</code>,
+          plus any cost-function id (<code>pin_count</code>, <code>pin_proximity</code>, <code>pin_anchor</code>, &hellip;).
+          Presets: <code>"default"</code>, <code>"complex"</code>.</p>
         </section>
 
         <section>

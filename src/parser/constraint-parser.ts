@@ -20,6 +20,9 @@ import type {
   PortDeclNode,
   ChannelDeclNode,
   ConfigDeclNode,
+  SettingsDeclNode,
+  SettingsEntryNode,
+  SettingValue,
   PinAnchor,
   ConfigBodyNode,
   MappingNode,
@@ -84,7 +87,7 @@ interface Token {
 }
 
 const KEYWORDS = new Set([
-  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from',
+  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings',
 ]);
 
 // ============================================================
@@ -347,6 +350,7 @@ class Parser {
         case 'ram': return this.parseMemoryDecl('ram');
         case 'rom': return this.parseMemoryDecl('rom');
         case 'freq': return this.parseFreqDecl();
+        case 'settings': return this.parseSettingsDecl();
         case 'temp': return this.parseTempDecl();
         case 'voltage': return this.parseVoltageDecl();
         case 'core': return this.parseCoreDecl();
@@ -511,6 +515,82 @@ class Parser {
       }
     }
     return neg ? -value : value;
+  }
+
+  // settings:                      NEWLINE INDENT (key: value)* DEDENT
+  // settings from "default":       — start from a named preset, then override
+  //
+  // Values: a number (with optional `ms`/`s` unit, normalised to ms),
+  // 0/1 or true/false, or a comma-separated list of strings.
+  private parseSettingsDecl(): SettingsDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('settings');
+
+    let preset: string | undefined;
+    if (this.check('KEYWORD') && this.peek().value === 'from') {
+      this.advance();
+      preset = this.expectString();
+    }
+
+    this.expect('COLON');
+    this.skipComment();
+    this.expectNewlineOrEnd();
+
+    const entries: SettingsEntryNode[] = [];
+    if (!this.check('INDENT')) {
+      // `settings from "complex":` with no body is a plain preset load.
+      if (!preset) this.error('Expected indented block after settings declaration', this.peek());
+      return { type: 'settings_decl', preset, entries, loc };
+    }
+    this.expect('INDENT');
+
+    while (!this.check('DEDENT') && !this.isAtEnd()) {
+      this.skipNewlines();
+      if (this.check('DEDENT') || this.isAtEnd()) break;
+
+      const entryLoc = this.loc();
+      const key = this.parseCompoundIdent();
+      this.expect('COLON');
+      const value = this.parseSettingValue();
+      this.skipComment();
+      this.expectNewlineOrEnd();
+      if (value !== null) entries.push({ key, value, loc: entryLoc });
+    }
+
+    if (this.check('DEDENT')) this.advance();
+    return { type: 'settings_decl', preset, entries, loc };
+  }
+
+  /** One settings value: string list, boolean, or number with optional time unit. */
+  private parseSettingValue(): SettingValue | null {
+    if (this.check('STRING')) {
+      const list = [this.expectString()];
+      while (this.check('COMMA')) {
+        this.advance();
+        list.push(this.expectString());
+      }
+      return list;
+    }
+    if (this.check('IDENT')) {
+      const word = this.peek().value.toLowerCase();
+      if (word === 'true' || word === 'false') {
+        this.advance();
+        return word === 'true';
+      }
+    }
+    if (this.check('NUMBER') || this.check('DASH')) {
+      const n = this.parseDecimalNumber();
+      // Optional time unit — `3s` and `3000ms` both mean 3000.
+      if (this.check('IDENT')) {
+        const unit = this.peek().value.toLowerCase();
+        if (unit === 'ms') { this.advance(); return n; }
+        if (unit === 's') { this.advance(); return n * 1000; }
+      }
+      return n;
+    }
+    this.error(`Expected a settings value (number, "string", or true/false), got '${this.peek().value || this.peek().type}'`, this.peek());
+    this.skipToNextLine();
+    return null;
   }
 
   // temp: -40 < 85 | temp: 85 | temp: < 125
