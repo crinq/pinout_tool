@@ -38,8 +38,8 @@ miso mosi
 tx rx
 cts rts
 
-# I2C — sda/scl aren't confusable (different letter counts) but keep
-# them here as documentation of the group concept.
+# I2C
+sda scl
 
 # Timer channels (positive vs complementary output)
 ch1 ch2 ch3 ch4

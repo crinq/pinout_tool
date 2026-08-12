@@ -258,7 +258,9 @@ export class ConstraintEditor implements Panel {
   private container!: HTMLElement;
   private textarea!: HTMLTextAreaElement;
   private highlight!: HTMLPreElement;
+  private highlightInner!: HTMLElement;
   private lineNumbers!: HTMLDivElement;
+  private lineNumbersInner!: HTMLElement;
   private errorPanel!: HTMLDivElement;
   private solverStatusBar!: HTMLDivElement;
   private parseResult: ParseResult | null = null;
@@ -318,7 +320,10 @@ export class ConstraintEditor implements Panel {
     // Line numbers
     this.lineNumbers = document.createElement('div');
     this.lineNumbers.className = 'ce-line-numbers';
-    this.lineNumbers.textContent = '1';
+    this.lineNumbersInner = document.createElement('div');
+    this.lineNumbersInner.className = 'ce-line-nums-inner';
+    this.lineNumbersInner.innerHTML = '<div class="ce-line-num">1</div>';
+    this.lineNumbers.appendChild(this.lineNumbersInner);
     editorWrapper.appendChild(this.lineNumbers);
 
     // Code area (highlight + textarea overlay)
@@ -335,6 +340,9 @@ export class ConstraintEditor implements Panel {
 
     this.highlight = document.createElement('pre');
     this.highlight.className = 'ce-highlight';
+    this.highlightInner = document.createElement('span');
+    this.highlightInner.className = 'ce-highlight-inner';
+    this.highlight.appendChild(this.highlightInner);
     codeArea.appendChild(this.highlight);
 
     this.setupKeywordTooltips(codeArea);
@@ -378,7 +386,7 @@ export class ConstraintEditor implements Panel {
     const resizeObserver = new ResizeObserver(() => {
       this.minimap.resize(editorWrapper.clientHeight);
       this.syncMinimapViewport();
-      this.syncLineNumbersHeight();
+      this.syncScroll(); // width change moves the textarea's scroll offsets
     });
     resizeObserver.observe(editorWrapper);
 
@@ -797,7 +805,7 @@ export class ConstraintEditor implements Panel {
   private updateHighlight(): void {
     const text = this.textarea.value;
     if (!text) {
-      this.highlight.innerHTML = '';
+      this.highlightInner.innerHTML = '';
       return;
     }
 
@@ -820,7 +828,7 @@ export class ConstraintEditor implements Panel {
       return html;
     });
 
-    this.highlight.innerHTML = highlighted.join('\n');
+    this.highlightInner.innerHTML = highlighted.join('\n');
     // Re-sync scroll after innerHTML replacement (which resets scrollTop)
     this.syncScroll();
   }
@@ -839,22 +847,12 @@ export class ConstraintEditor implements Panel {
 
   private updateLineNumbers(): void {
     const lines = this.textarea.value.split('\n');
-    this.lineNumbers.innerHTML = lines
+    this.lineNumbersInner.innerHTML = lines
       .map((_, i) => `<div class="ce-line-num">${i + 1}</div>`)
-      .join('') + '<div class="ce-line-spacer"></div>';
-    this.syncLineNumbersHeight();
+      .join('');
   }
 
   /** Ensure line numbers scrollHeight matches textarea scrollHeight so they scroll in sync */
-  private syncLineNumbersHeight(): void {
-    const spacer = this.lineNumbers.querySelector('.ce-line-spacer') as HTMLElement | null;
-    if (!spacer) return;
-    spacer.style.height = '0';
-    const diff = this.textarea.scrollHeight - this.lineNumbers.scrollHeight;
-    if (diff > 0) {
-      spacer.style.height = diff + 'px';
-    }
-  }
 
   private updateErrors(errors: ParseError[], warnings: LintWarning[] = []): void {
     if (errors.length === 0 && warnings.length === 0) {
@@ -898,9 +896,14 @@ export class ConstraintEditor implements Panel {
   }
 
   private syncScroll(): void {
-    this.highlight.scrollTop = this.textarea.scrollTop;
-    this.highlight.scrollLeft = this.textarea.scrollLeft;
-    this.lineNumbers.scrollTop = this.textarea.scrollTop;
+    // Translate rather than scroll: the textarea's scroll range differs from
+    // the overlay layers' (its horizontal scrollbar shrinks its client height,
+    // and its huge bottom padding is not mirrored), so assigning scrollTop got
+    // clamped and drifted a line out near the bottom. A transform has no
+    // clamping, so the layers track the caret exactly at any scroll position.
+    const x = this.textarea.scrollLeft, y = this.textarea.scrollTop;
+    this.highlightInner.style.transform = `translate(${-x}px, ${-y}px)`;
+    this.lineNumbersInner.style.transform = `translateY(${-y}px)`;
     this.syncMinimapViewport();
   }
 
