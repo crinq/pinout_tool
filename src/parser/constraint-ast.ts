@@ -139,15 +139,20 @@ export interface PortDeclNode {
   anchor?: PinAnchor;
   // `port CMD: @ PA1`  — hard: some channel of the port must use each listed pin.
   anchorFixedPins?: string[];
+  // `port CMD: @ !PB1` — hard: no channel of the port may use these pins.
+  anchorExcludedPins?: string[];
   loc: SourceLocation;
 }
 
 // channel TX @ PA1, PA2   (fixed → allowedPins)
+// channel TX @ !PA1       (excluded → excludedPins)
 // channel TX @ ~PA1       (soft → anchor)
 export interface ChannelDeclNode {
   type: 'channel_decl';
   name: string;
   allowedPins?: string[];
+  /** `@ !PA1` — this channel may not use these pins. */
+  excludedPins?: string[];
   anchor?: PinAnchor;
   comment?: string;
   loc: SourceLocation;
@@ -161,6 +166,8 @@ export interface ConfigDeclNode {
   body: ConfigBodyNode[];
   anchor?: PinAnchor;
   anchorFixedPins?: string[];
+  /** `config "x": @ !PB1` — no channel mapped in this config may use these pins. */
+  anchorExcludedPins?: string[];
   loc: SourceLocation;
 }
 

@@ -1,6 +1,6 @@
 import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
 import type { DivergentPin } from '../solution-compare';
-import { escapeHtml } from '../utils';
+import { escapeHtml, isGeneralPurposePin } from '../utils';
 import type { Panel, StateChange } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
@@ -873,7 +873,7 @@ export class PackageViewer implements Panel {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
         fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
-      } else if (!phys.logicals.some(l => l.isAssignable)) {
+      } else if (!phys.logicals.some(isGeneralPurposePin)) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
       } else {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
@@ -1060,7 +1060,7 @@ export class PackageViewer implements Panel {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
         fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
-      } else if (!phys.logicals.some(l => l.isAssignable)) {
+      } else if (!phys.logicals.some(isGeneralPurposePin)) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
       } else {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
@@ -1292,7 +1292,7 @@ export class PackageViewer implements Panel {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
         fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
-      } else if (!phys.logicals.some(l => l.isAssignable)) {
+      } else if (!phys.logicals.some(isGeneralPurposePin)) {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
       } else {
         fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';

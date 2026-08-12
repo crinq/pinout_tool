@@ -10,6 +10,7 @@ import type {
 } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
+import { channelExcludedPins } from './constraint-viewer';
 
 const DEFAULT_PORT_COLORS = [
   '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
@@ -486,10 +487,11 @@ export class ConstraintMinimap {
     if (!this.mcu) return;
     const ch = port.channels.find(c => c.name === mapping.channelName);
     const allowedPins = ch?.allowedPins ? new Set(ch.allowedPins) : undefined;
+    const excludedPins = channelExcludedPins(port, ch);
 
     for (const expr of mapping.signalExprs) {
       for (const pattern of expr.alternatives) {
-        const candidates = expandPatternToCandidates(pattern, this.mcu, allowedPins);
+        const candidates = expandPatternToCandidates(pattern, this.mcu, allowedPins, excludedPins);
         for (const c of candidates) {
           pins.add(c.pin.name);
         }

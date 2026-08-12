@@ -53,7 +53,7 @@ export function solveCostGuided(
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
-  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }
 
 function estimateCost(

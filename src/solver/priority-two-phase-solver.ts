@@ -70,7 +70,7 @@ export function solvePriorityTwoPhase(
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
-  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
 
   if (solveVars.length === 0 && gpioVars.length === 0) {
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
@@ -213,5 +213,5 @@ export function solvePriorityTwoPhase(
 
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
 }

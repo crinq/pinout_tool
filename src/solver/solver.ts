@@ -24,6 +24,7 @@ import type {
 import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import { expandPatternToCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
+import { hasPerfectMatching } from './bipartite';
 import {
   computeTotalCost, type IncrementalCostTracker,
   incrementCost, decrementCost, updateCostThreshold,
@@ -51,6 +52,8 @@ export interface SolverConfig {
   skipGpioMapping?: boolean;
   /** Run the greedy single-pin post-optimization pass after solving. */
   postOptimize?: boolean;
+  /** Square each distance term in the pin_clustering/proximity/anchor costs. */
+  squaredCosts?: boolean;
 }
 
 export const DEFAULT_SOLVER_CONFIG: SolverConfig = {
@@ -120,7 +123,7 @@ export function finalizeSolutions(
   errors: SolverError[],
   stats: SolverStats,
   startTime: number,
-  gpioCountPerConfig: Map<string, number>,
+  gpioVarsPerConfig: Map<string, SolverVariable[]>,
   reservedPins: string[],
   pinnedAssignments: PinnedAssignment[],
 ): SolverResult {
@@ -138,7 +141,7 @@ export function finalizeSolutions(
   stats.solveTimeMs = performance.now() - startTime;
 
   const deduped = deduplicateSolutions(solutions);
-  const filtered = validateGpioAvailability(deduped, gpioCountPerConfig, mcu, reservedPins, pinnedAssignments);
+  const filtered = validateGpioAvailability(deduped, gpioVarsPerConfig, mcu, reservedPins, pinnedAssignments);
   return { mcuRef: mcu.refName, solutions: filtered, errors, statistics: stats };
 }
 
@@ -160,17 +163,23 @@ export interface PortSpec {
   name: string;
   channels: Map<string, ChannelSpec>;
   configs: ConfigSpec[];
+  /** `port P: @ !PB1` — no channel of this port may use these pins. */
+  excludedPins?: Set<string>;
 }
 
 export interface ChannelSpec {
   name: string;
   allowedPins?: Set<string>;
+  /** `@ !PA1` on the channel — pins this channel may not use. */
+  excludedPins?: Set<string>;
 }
 
 export interface ConfigSpec {
   name: string;
   mappings: MappingSpec[];
   requires: RequireNode[];
+  /** `config "x": @ !PB1` — no channel mapped in this config may use these pins. */
+  excludedPins?: Set<string>;
 }
 
 export interface MappingSpec {
@@ -673,6 +682,13 @@ export function unassignPin(
 // AST Extraction
 // ============================================================
 
+/** Union two optional pin sets; returns undefined when both are empty. */
+export function unionPinSets(a?: Set<string>, b?: Set<string>): Set<string> | undefined {
+  if (!a || a.size === 0) return b && b.size > 0 ? b : undefined;
+  if (!b || b.size === 0) return a;
+  return new Set([...a, ...b]);
+}
+
 export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
   const ports = new Map<string, PortSpec>();
 
@@ -684,6 +700,7 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
       channels.set(ch.name, {
         name: ch.name,
         allowedPins: ch.allowedPins ? new Set(ch.allowedPins) : undefined,
+        excludedPins: ch.excludedPins ? new Set(ch.excludedPins) : undefined,
       });
     }
 
@@ -708,10 +725,16 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
         }
       }
 
-      configs.push({ name: cfg.name, mappings, requires });
+      configs.push({
+        name: cfg.name, mappings, requires,
+        excludedPins: cfg.anchorExcludedPins ? new Set(cfg.anchorExcludedPins) : undefined,
+      });
     }
 
-    ports.set(stmt.name, { name: stmt.name, channels, configs });
+    ports.set(stmt.name, {
+      name: stmt.name, channels, configs,
+      excludedPins: stmt.anchorExcludedPins ? new Set(stmt.anchorExcludedPins) : undefined,
+    });
   }
 
   return ports;
@@ -885,8 +908,13 @@ export function resolveAllVariables(
 
   for (const [portName, port] of ports) {
     for (const config of port.configs) {
+      // `@ !pin` exclusions compose: a channel is barred from the union of its
+      // own, its port's, and its config's excluded pins.
+      const excluded = unionPinSets(port.excludedPins, config.excludedPins);
+
       for (const mapping of config.mappings) {
         const channel = port.channels.get(mapping.channelName);
+        const excludedForChannel = unionPinSets(excluded, channel?.excludedPins);
 
         // Each +-separated signal expr creates a separate solver variable (multi-pin)
         for (let exprIdx = 0; exprIdx < mapping.signalExprs.length; exprIdx++) {
@@ -894,7 +922,7 @@ export function resolveAllVariables(
 
           let allCandidates: SignalCandidate[] = [];
           for (const pattern of expr.alternatives) {
-            const candidates = expandPatternToCandidates(pattern, mcu, channel?.allowedPins);
+            const candidates = expandPatternToCandidates(pattern, mcu, channel?.allowedPins, excludedForChannel);
             allCandidates.push(...candidates);
           }
 
@@ -944,7 +972,7 @@ export function isGpioVariable(v: SolverVariable): boolean {
 export interface GpioPartitionResult {
   solveVars: SolverVariable[];
   gpioVars: SolverVariable[];
-  gpioCountPerConfig: Map<string, number>;
+  gpioVarsPerConfig: Map<string, SolverVariable[]>;
 }
 
 // ============================================================
@@ -976,15 +1004,20 @@ export function partitionGpioVariables(
 ): GpioPartitionResult {
   const solveVars: SolverVariable[] = [];
   const gpioVars: SolverVariable[] = [];
-  const gpioCountPerConfig = new Map<string, number>();
+  const gpioVarsPerConfig = new Map<string, SolverVariable[]>();
 
   for (const v of variables) {
     if (isGpioVariable(v)) {
-      const key = `${v.portName}\0${v.configName}`;
-      gpioCountPerConfig.set(key, (gpioCountPerConfig.get(key) ?? 0) + 1);
       if (skipGpioMapping) {
+        // Not placed by the search — record it so the availability check can
+        // verify enough (and the right) pads remain.
+        const key = `${v.portName}\0${v.configName}`;
+        const list = gpioVarsPerConfig.get(key);
+        if (list) list.push(v); else gpioVarsPerConfig.set(key, [v]);
         gpioVars.push(v);
       } else {
+        // Solved normally: the pins it takes are already in the solution, so
+        // it must NOT also be charged against the leftover-pad budget.
         solveVars.push(v);
       }
     } else {
@@ -992,27 +1025,58 @@ export function partitionGpioVariables(
     }
   }
 
-  return { solveVars, gpioVars, gpioCountPerConfig };
+  return { solveVars, gpioVars, gpioVarsPerConfig };
 }
 
 /** Annotate solutions with gpioCount and filter those without enough free pins. */
 export function validateGpioAvailability(
   solutions: Solution[],
-  gpioCountPerConfig: Map<string, number>,
+  gpioVarsPerConfig: Map<string, SolverVariable[]>,
   mcu: Mcu,
   reservedPins: string[],
   pinnedAssignments: PinnedAssignment[]
 ): Solution[] {
-  if (gpioCountPerConfig.size === 0) {
+  if (gpioVarsPerConfig.size === 0) {
     for (const s of solutions) s.gpioCount = 0;
     return solutions;
   }
 
-  const totalAssignable = mcu.logicalPins.filter(p => p.isAssignable).length;
+  // Only pins that can actually host a GPIO count toward the budget — an
+  // assignable pin without a GPIO signal (e.g. an H7 `_C` analog-only pad)
+  // can never satisfy an IN/OUT channel. Count unique *physical* pads so two
+  // logical pins bonded to one pad aren't counted twice.
+  const gpioCapablePads = new Set<string>();
+  for (const p of mcu.logicalPins) {
+    if (!p.isAssignable) continue;
+    if (!p.signals.some(s => s.peripheralType === 'GPIO')) continue;
+    gpioCapablePads.add(p.physical.position);
+  }
+
+  /** Physical pad a pin name refers to (logical or GPIO alias), if any. */
+  const padOf = (name: string): string | undefined =>
+    (mcu.logicalPinByName.get(name) ?? mcu.logicalPinByGpioName.get(name))?.physical.position;
+
   const alwaysUnavailable = new Set<string>(reservedPins);
   for (const pa of pinnedAssignments) {
     alwaysUnavailable.add(pa.pinName);
   }
+
+  /**
+   * Pads a GPIO variable may use, or `null` when it accepts every GPIO pad
+   * (no `@` restriction) — the common case, which needs no per-solution work.
+   * Computed once per variable.
+   */
+  const restrictionCache = new Map<SolverVariable, string[] | null>();
+  const padsOf = (v: SolverVariable): string[] | null => {
+    let pads = restrictionCache.get(v);
+    if (pads === undefined) {
+      const set = new Set<string>();
+      for (const ci of v.domain) set.add(v.candidates[ci].pin.physical.position);
+      pads = set.size >= gpioCapablePads.size ? null : [...set];
+      restrictionCache.set(v, pads);
+    }
+    return pads;
+  };
 
   return solutions.filter(solution => {
     let totalGpio = 0;
@@ -1022,15 +1086,46 @@ export function validateGpioAvailability(
         if (a.portName !== '<pinned>') unavailable.add(a.pinName);
       }
 
-      let gpioNeeded = 0;
+      const activeVars: SolverVariable[] = [];
       for (const [portName, configName] of configAssignment.activeConfigs) {
-        gpioNeeded += gpioCountPerConfig.get(`${portName}\0${configName}`) ?? 0;
+        const vars = gpioVarsPerConfig.get(`${portName}\0${configName}`);
+        if (vars) activeVars.push(...vars);
       }
-      totalGpio = Math.max(totalGpio, gpioNeeded);
+      totalGpio = Math.max(totalGpio, activeVars.length);
+      if (activeVars.length === 0) continue;
 
-      if (gpioNeeded > 0 && totalAssignable - unavailable.size < gpioNeeded) {
-        return false;
+      // A pad is spent once any logical pin bonded to it is taken.
+      const usedPads = new Set<string>();
+      for (const name of unavailable) {
+        const pad = padOf(name);
+        if (pad !== undefined) usedPads.add(pad);
       }
+      const freePads: string[] = [];
+      for (const pad of gpioCapablePads) if (!usedPads.has(pad)) freePads.push(pad);
+      const freeSet = new Set(freePads);
+
+      // Split into unrestricted channels (accept any free pad) and
+      // `@`-restricted ones. Optional (`?=`) channels may go unplaced, so they
+      // never veto a solution.
+      let unrestricted = 0;
+      const restricted: string[][] = [];
+      for (const v of activeVars) {
+        const pads = padsOf(v);
+        if (pads === null) { unrestricted++; continue; }
+        const usable = pads.filter(p => freeSet.has(p));
+        if (usable.length === 0) {
+          if (v.optional) continue;
+          return false;                       // restricted channel has no legal pad left
+        }
+        if (usable.length === freePads.length) unrestricted++;
+        else restricted.push(usable);
+      }
+
+      // Unrestricted channels take any leftover pad, so a plain count settles
+      // them; the restricted ones additionally need a system of distinct
+      // representatives (Hall's condition).
+      if (restricted.length + unrestricted > freePads.length) return false;
+      if (restricted.length > 1 && !hasPerfectMatching(restricted)) return false;
     }
     solution.gpioCount = totalGpio;
     return true;
@@ -1621,7 +1716,7 @@ export interface SolverContext {
   tracker: PinTracker;
   stats: SolverStats;
   deepest: { depth: number; assignments: VariableAssignment[] };
-  gpioCountPerConfig: Map<string, number>;
+  gpioVarsPerConfig: Map<string, SolverVariable[]>;
   dmaData?: DmaData;
   mcuInfo?: EvalMcuInfo;
 }
@@ -1683,7 +1778,7 @@ export function prepareSolverContext(
 
   // Remove optional variables with empty domains (they'll remain unassigned)
   const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
-  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(nonEmptyVars, !!skipGpioMapping);
+  const { solveVars: variables, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!skipGpioMapping);
 
   if (variables.length === 0 && gpioVars.length === 0) return null;
 
@@ -1740,7 +1835,7 @@ export function prepareSolverContext(
   return {
     expandedAst, ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns,
     configCombinations, variables, lastVarOfConfig, configRequiresMap,
-    tracker, stats, deepest, gpioCountPerConfig,
+    tracker, stats, deepest, gpioVarsPerConfig,
     dmaData: hasDmaConstraints ? mcu.dma : undefined,
     mcuInfo,
   };
@@ -1827,7 +1922,7 @@ export function solveConstraints(
 
   // Remove optional variables with empty domains (they'll remain unassigned)
   const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
-  const { solveVars: variables, gpioVars, gpioCountPerConfig } = partitionGpioVariables(nonEmptyVars, !!cfg.skipGpioMapping);
+  const { solveVars: variables, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!cfg.skipGpioMapping);
 
   if (gpioVars.length > 0) {
     errors.push({
@@ -1919,7 +2014,7 @@ export function solveConstraints(
     }
   }
 
-  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
 }
 
 export function solveBacktrack(

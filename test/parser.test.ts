@@ -414,6 +414,27 @@ describe('Constraint parser', () => {
       expect(by('NEARR').anchor).toEqual({ kind: 'near_region', target: 'NW' });
     });
 
+    it('parses `!pin` exclusions on channels, ports and configs', () => {
+      const src = `port CMD: @ PA1, !PB1
+  channel TX @ !PA9
+  channel RX @ PA2, !PA3
+
+  config "c": @ !PC1
+    TX = USART*_TX
+    RX = USART*_RX`;
+      const ast = parseOk(src);
+      const port = ast.statements[0] as PortDeclNode;
+      // Port header mixes a required pin and an exclusion.
+      expect(port.anchorFixedPins).toEqual(['PA1']);
+      expect(port.anchorExcludedPins).toEqual(['PB1']);
+      const by = (n: string) => port.channels.find(c => c.name === n)!;
+      expect(by('TX').excludedPins).toEqual(['PA9']);
+      expect(by('TX').allowedPins).toBeUndefined();
+      expect(by('RX').allowedPins).toEqual(['PA2']);
+      expect(by('RX').excludedPins).toEqual(['PA3']);
+      expect(port.configs[0].anchorExcludedPins).toEqual(['PC1']);
+    });
+
     it('parses @ placement clauses on the port and config headers', () => {
       const src = `port CMD: @ PA1
   channel TX

@@ -128,5 +128,5 @@ export function solvePriorityDiverse(
   }
 
   stats.validSolutions = allSolutions.length;
-  return finalizeSolutions(allSolutions, mcu, config.costWeights, errors, stats, startTime, ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
+  return finalizeSolutions(allSolutions, mcu, config.costWeights, errors, stats, startTime, ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }

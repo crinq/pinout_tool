@@ -113,7 +113,7 @@ export function solveConflictDirected(
 
   return finalizeSolutions(
     solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime,
-    ctx.gpioCountPerConfig, ctx.reservedPins, ctx.pinnedAssignments,
+    ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments,
   );
 }
 

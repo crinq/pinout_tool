@@ -38,7 +38,7 @@ MISO = SPI*_MISO $s
 MOSI = SPI*_MOSI $s
 NSS = SPI*_NSS $s
 require dma(MISO, "SPI_RX")
-require dma(MOSI, "SPI_TXX")
+require dma(MOSI, "SPI_TX")
 
 #I2C
 SCL = I2C*_SCL $i

@@ -726,6 +726,7 @@ class Parser {
     let comment: string | undefined;
     let anchor: PinAnchor | undefined;
     let anchorFixedPins: string[] | undefined;
+    let anchorExcludedPins: string[] | undefined;
 
     // Inline color (before colon): port NAME from TMPL color "red"
     if (this.check('KEYWORD') && this.peek().value === 'color') {
@@ -742,11 +743,12 @@ class Parser {
 
     this.expect('COLON');
 
-    // Optional placement clause on the header: `port CMD: @ ~NW` / `@ PA1`
+    // Optional placement clause on the header: `port CMD: @ ~NW` / `@ PA1, !PB1`
     if (this.check('AT')) {
       const at = this.parseAtClause();
       anchor = at.anchor;
       anchorFixedPins = at.fixedPins;
+      anchorExcludedPins = at.excludedPins;
     }
 
     comment = this.skipComment();
@@ -756,7 +758,7 @@ class Parser {
       // A header-only port is valid when it derives from a template or only
       // overrides placement (e.g. `enc1 from enc0: @ ~NW`).
       if (template || anchor || anchorFixedPins) {
-        return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, loc };
+        return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, anchorExcludedPins, loc };
       }
       this.error('Expected indented block after port declaration', this.peek());
       return { type: 'port_decl', name, template, channels, configs, loc };
@@ -820,7 +822,7 @@ class Parser {
       });
     }
 
-    return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, loc };
+    return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, anchorExcludedPins, loc };
   }
 
   // Parse a `@` placement clause (AT already at current token).
@@ -828,7 +830,7 @@ class Parser {
   //   @ ~PA1       proximity to a pin           -> { anchor: near_pin }
   //   @ ~1 / ~A1   proximity to a position      -> { anchor: near_pos }
   //   @ ~NW        proximity to a compass region -> { anchor: near_region }
-  private parseAtClause(): { fixedPins?: string[]; anchor?: PinAnchor } {
+  private parseAtClause(): { fixedPins?: string[]; excludedPins?: string[]; anchor?: PinAnchor } {
     this.expect('AT');
     if (this.check('TILDE')) {
       this.advance();
@@ -844,12 +846,24 @@ class Parser {
       this.error(`Invalid anchor '~${raw}' (expected a pin like ~PA1, a position like ~1, or a region like ~NW)`, this.peek());
       return {};
     }
-    const fixedPins: string[] = [this.parsePinName()];
-    while (this.check('COMMA')) {
+    // Comma-separated list mixing required pins and `!pin` exclusions,
+    // e.g. `@ PA1, !PB1`.
+    const fixedPins: string[] = [];
+    const excludedPins: string[] = [];
+    do {
+      if (this.check('BANG')) {
+        this.advance();
+        excludedPins.push(this.parsePinName());
+      } else {
+        fixedPins.push(this.parsePinName());
+      }
+      if (!this.check('COMMA')) break;
       this.advance();
-      fixedPins.push(this.parsePinName());
-    }
-    return { fixedPins };
+    } while (!this.isAtEnd());
+    return {
+      fixedPins: fixedPins.length > 0 ? fixedPins : undefined,
+      excludedPins: excludedPins.length > 0 ? excludedPins : undefined,
+    };
   }
 
   // channel IDENT (@ pin_list | @ ~target)? (= signal_expr ($var)* )?
@@ -860,10 +874,12 @@ class Parser {
     const name = this.parseCompoundIdent();
 
     let allowedPins: string[] | undefined;
+    let excludedPins: string[] | undefined;
     let anchor: PinAnchor | undefined;
     if (this.check('AT')) {
       const at = this.parseAtClause();
       allowedPins = at.fixedPins;
+      excludedPins = at.excludedPins;
       anchor = at.anchor;
     }
 
@@ -896,7 +912,7 @@ class Parser {
 
     const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return [{ type: 'channel_decl', name, allowedPins, anchor, comment, loc }, inlineMapping];
+    return [{ type: 'channel_decl', name, allowedPins, excludedPins, anchor, comment, loc }, inlineMapping];
   }
 
   // config STRING: (@ ...)? NEWLINE INDENT config_body DEDENT
@@ -909,10 +925,12 @@ class Parser {
     // Optional placement clause: `config "UART": @ ~NW` / `@ PA1`
     let anchor: PinAnchor | undefined;
     let anchorFixedPins: string[] | undefined;
+    let anchorExcludedPins: string[] | undefined;
     if (this.check('AT')) {
       const at = this.parseAtClause();
       anchor = at.anchor;
       anchorFixedPins = at.fixedPins;
+      anchorExcludedPins = at.excludedPins;
     }
     this.skipComment();
     this.expectNewline();
@@ -921,7 +939,7 @@ class Parser {
 
     if (!this.check('INDENT')) {
       this.error('Expected indented block after config declaration', this.peek());
-      return { type: 'config_decl', name, body, anchor, anchorFixedPins, loc };
+      return { type: 'config_decl', name, body, anchor, anchorFixedPins, anchorExcludedPins, loc };
     }
     this.expect('INDENT');
 
@@ -939,7 +957,7 @@ class Parser {
       this.advance();
     }
 
-    return { type: 'config_decl', name, body, anchor, anchorFixedPins, loc };
+    return { type: 'config_decl', name, body, anchor, anchorFixedPins, anchorExcludedPins, loc };
   }
 
   private parseConfigBodyItem(): ConfigBodyNode | null {

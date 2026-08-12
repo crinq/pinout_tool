@@ -41,6 +41,18 @@ let activeAnchors: SolutionAnchors | null = null;
 export function setActiveAnchors(a: SolutionAnchors | null): void { activeAnchors = a; }
 export function getActiveAnchors(): SolutionAnchors | null { return activeAnchors; }
 
+/**
+ * When set, the distance-based cost functions (pin_clustering, pin_proximity,
+ * pin_anchor) accumulate squared distances instead of raw ones, so a single
+ * far-away pin is punished much harder than several slightly-spread ones.
+ * Set once per solve alongside the anchors (see setActiveAnchors).
+ */
+let squaredCosts = false;
+export function setSquaredCosts(v: boolean): void { squaredCosts = v; }
+export function getSquaredCosts(): boolean { return squaredCosts; }
+/** Apply the squared-distance option to a single distance term. */
+const dist = (d: number): number => (squaredCosts ? d * d : d);
+
 export function getCostFunction(id: string): CostFunction | undefined {
   return registry.get(id);
 }
@@ -371,7 +383,7 @@ registerCostFunction({
             maxDist = Math.max(maxDist, Math.min(diff, totalPins - diff));
           }
       }
-      cost += maxDist;
+      cost += dist(maxDist);
     }
     return cost;
   },
@@ -416,7 +428,7 @@ registerCostFunction({
           for (let j = i + 1; j < parsed.length; j++) {
             const dr = parsed[i].row - parsed[j].row;
             const dc = parsed[i].col - parsed[j].col;
-            cost += Math.sqrt(dr * dr + dc * dc);
+            cost += dist(Math.sqrt(dr * dr + dc * dc));
           }
         }
       } else {
@@ -426,7 +438,7 @@ registerCostFunction({
           for (let i = 0; i < nums.length; i++) {
             for (let j = i + 1; j < nums.length; j++) {
               const diff = Math.abs(nums[i] - nums[j]);
-              cost += Math.min(diff, totalPins - diff);
+              cost += dist(Math.min(diff, totalPins - diff));
             }
           }
         }
@@ -462,7 +474,7 @@ registerCostFunction({
         if (!p) continue;
         for (const t of targets) {
           const dx = p.x - t.x, dy = p.y - t.y;
-          cost += Math.sqrt(dx * dx + dy * dy) * geom.scale;
+          cost += dist(Math.sqrt(dx * dx + dy * dy) * geom.scale);
         }
       }
     }

@@ -233,7 +233,7 @@ export function solveMrvGroup(
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
-  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
 
   if (solveVars.length === 0 && gpioVars.length === 0) {
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
@@ -458,6 +458,6 @@ export function solveMrvGroup(
 
   return finalizeSolutions(
     solutions, mcu, config.costWeights, errors, stats,
-    startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments,
+    startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments,
   );
 }

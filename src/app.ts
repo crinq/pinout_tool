@@ -10,7 +10,7 @@ import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
 import { getDataSource, entryPackageNames, entryVariantNames, type IndexDeviceEntry } from './datasource';
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
-import { getAllCostFunctions } from './solver/cost-functions';
+import { getAllCostFunctions, setSquaredCosts } from './solver/cost-functions';
 import { getSolvers } from './solver/solver-registry';
 import { SolutionEditor, type EditCandidate } from './solver/solution-editor';
 import { renderMarkdown } from './ui/markdown';
@@ -141,6 +141,7 @@ export interface AppSettings {
   mouseZoomGain: number;
   skipGpioMapping: boolean;
   postOptimize: boolean;
+  squaredCosts: boolean;
   dataInspector: boolean;
   dynamicTimeoutMultiplier: number;
   solverDebugOverlay: boolean;
@@ -170,6 +171,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   mouseZoomGain: 0.025,
   skipGpioMapping: true,
   postOptimize: false,
+  squaredCosts: false,
   dataInspector: false,
   solverDebugOverlay: false,
   urlEncoding: 'none',
@@ -689,6 +691,7 @@ export class App {
       costWeights: new Map(Object.entries(this.settings.costWeights)),
       skipGpioMapping: this.settings.skipGpioMapping,
       postOptimize: this.settings.postOptimize,
+      squaredCosts: this.settings.squaredCosts,
     };
 
     for (const job of workerJobs) {
@@ -1926,6 +1929,9 @@ export class App {
       return;
     }
     const weights = new Map(Object.entries(this.settings.costWeights));
+    // Modify mode costs run on the main thread (not the worker), so mirror the
+    // squared-distance option here too.
+    setSquaredCosts(this.settings.squaredCosts);
     // skipGpioMapping=false so IN/OUT channels are real variables the user can
     // place by hand (the solve may have skipped them; here they're editable).
     const editor = SolutionEditor.fromSolution(this.currentSolution, ast, this.currentMcu, weights, false);
@@ -2339,6 +2345,10 @@ export class App {
         <section class="settings-section">
           <h3>Cost Function Weights</h3>
           <p class="settings-hint">0 = disabled, 1 = normal, 2 = 200% impact</p>
+          <div class="settings-row">
+            <label title="Sum squared distances in Pin Clustering / Pin Proximity / Pin Anchor, so one far-away pin is punished much harder than several slightly-spread pins">Square distance costs</label>
+            <input type="checkbox" id="set-squared-costs" ${this.settings.squaredCosts ? 'checked' : ''}>
+          </div>
           ${costFunctions.map(fn => `
             <div class="settings-row">
               <label title="${fn.description}">${fn.name}</label>
@@ -2425,6 +2435,7 @@ export class App {
 
       this.settings.skipGpioMapping = (modal.querySelector('#set-skip-gpio') as HTMLInputElement).checked;
       this.settings.postOptimize = (modal.querySelector('#set-post-optimize') as HTMLInputElement).checked;
+      this.settings.squaredCosts = (modal.querySelector('#set-squared-costs') as HTMLInputElement).checked;
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
       this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;
       this.settings.urlEncoding = (modal.querySelector('#set-url-encoding') as HTMLSelectElement).value as AppSettings['urlEncoding'];

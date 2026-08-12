@@ -133,13 +133,16 @@ function matchPart(
 export function expandPatternToCandidates(
   pattern: SignalPatternNode,
   mcu: Mcu,
-  allowedPins?: Set<string>
+  allowedPins?: Set<string>,
+  excludedPins?: Set<string>
 ): SignalCandidate[] {
   const candidates: SignalCandidate[] = [];
 
   for (const pin of mcu.logicalPins) {
     if (!pin.isAssignable) continue;
     if (allowedPins && !allowedPins.has(pin.name) && !allowedPins.has(gpioName(pin))) continue;
+    // `@ !PA1` on the channel / port / config removes the pin from the domain.
+    if (excludedPins && (excludedPins.has(pin.name) || excludedPins.has(gpioName(pin)))) continue;
 
     for (const signal of pin.signals) {
       if (matchSignalPattern(pattern, signal)) {

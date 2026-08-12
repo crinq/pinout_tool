@@ -1,4 +1,5 @@
 import { solveConstraints, estimateComplexity, setActiveAnchorsFor } from './solver';
+import { setSquaredCosts } from './cost-functions';
 import type { SolverConfig } from './solver';
 import { solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
@@ -199,6 +200,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
     // Placement anchors are read via a module global; set them once here so
     // every solver (not just those using prepareSolverContext) sees them.
     setActiveAnchorsFor(ast, mcu);
+    setSquaredCosts(!!config.squaredCosts);
 
     const complexity = estimateComplexity(ast, mcu);
 

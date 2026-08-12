@@ -15,17 +15,25 @@ import type {
   PinAnchor,
 } from '../parser/constraint-ast';
 
-/** Render a `@` clause (fixed pins and/or a soft anchor) as badge text, or '' if none. */
-export function anchorBadgeText(fixedPins?: string[], anchor?: PinAnchor): string {
-  const parts: string[] = [];
-  if (fixedPins && fixedPins.length > 0) parts.push(fixedPins.join(', '));
-  if (anchor) parts.push(`~${anchor.target}`);
-  return parts.length ? `@ ${parts.join(', ')}` : '';
-}
 import type { ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
 import { escapeHtml } from '../utils';
+
+/** Render a `@` clause (fixed pins, `!` exclusions, and/or a soft anchor) as badge text. */
+export function anchorBadgeText(fixedPins?: string[], anchor?: PinAnchor, excludedPins?: string[]): string {
+  const parts: string[] = [];
+  if (fixedPins && fixedPins.length > 0) parts.push(fixedPins.join(', '));
+  if (excludedPins && excludedPins.length > 0) parts.push(excludedPins.map(p => `!${p}`).join(', '));
+  if (anchor) parts.push(`~${anchor.target}`);
+  return parts.length ? `@ ${parts.join(', ')}` : '';
+}
+
+/** Pins barred for a channel: its own `@ !pin` plus the port's. */
+export function channelExcludedPins(port: PortDeclNode, ch?: ChannelDeclNode): Set<string> | undefined {
+  const all = [...(port.anchorExcludedPins ?? []), ...(ch?.excludedPins ?? [])];
+  return all.length > 0 ? new Set(all) : undefined;
+}
 
 // Auto-assigned pastel colors for ports without explicit color
 const DEFAULT_PORT_COLORS = [
@@ -169,7 +177,7 @@ export class ConstraintViewer implements Panel {
     if (port.template) {
       titleText += ` <span class="cv-port-template">: ${escapeHtml(port.template)}</span>`;
     }
-    const portBadge = anchorBadgeText(port.anchorFixedPins, port.anchor);
+    const portBadge = anchorBadgeText(port.anchorFixedPins, port.anchor, port.anchorExcludedPins);
     if (portBadge) {
       titleText += ` <span class="cv-pin-badge">${escapeHtml(portBadge)}</span>`;
     }
@@ -210,7 +218,7 @@ export class ConstraintViewer implements Panel {
     nameSpan.textContent = ch.name;
     el.appendChild(nameSpan);
 
-    const badge = anchorBadgeText(ch.allowedPins, ch.anchor);
+    const badge = anchorBadgeText(ch.allowedPins, ch.anchor, ch.excludedPins);
     if (badge) {
       const pinBadge = document.createElement('span');
       pinBadge.className = 'cv-pin-badge';
@@ -416,10 +424,11 @@ export class ConstraintViewer implements Panel {
     // Find allowed pins for this channel
     const ch = port.channels.find(c => c.name === mapping.channelName);
     const allowedPins = ch?.allowedPins ? new Set(ch.allowedPins) : undefined;
+    const excludedPins = channelExcludedPins(port, ch);
 
     for (const expr of mapping.signalExprs) {
       for (const pattern of expr.alternatives) {
-        const candidates = expandPatternToCandidates(pattern, this.currentMcu, allowedPins);
+        const candidates = expandPatternToCandidates(pattern, this.currentMcu, allowedPins, excludedPins);
         for (const c of candidates) {
           pins.add(c.pin.name);
         }

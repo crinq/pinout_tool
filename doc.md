@@ -355,18 +355,24 @@ You cannot mix inline mappings with explicit `config` blocks in the same port.
 
 ### Pin Placement (`@`)
 
-The `@` clause controls *where* a channel's pin ends up. It has a **hard** form
-(a fixed pin list, which filters the candidate pins) and **soft** forms (a `~`
-anchor, which only nudges the [cost ranking](#cost-functions) — it never removes
-a candidate).
+The `@` clause controls *where* a channel's pin ends up. It has **hard** forms
+(a fixed pin list or a `!` exclusion, which filter the candidate pins) and
+**soft** forms (a `~` anchor, which only nudges the
+[cost ranking](#cost-functions) — it never removes a candidate).
 
 ```
 channel TX @ PA1              # hard: TX must use PA1
 channel TX @ PA1, PB2         # hard: TX must use PA1 or PB2
+channel TX @ !PA1             # hard: TX must NOT use PA1
+channel TX @ PA1, PB2, !PB2   # required and excluded pins can be mixed
 channel TX @ ~PA1             # soft: prefer pins near PA1
 channel TX @ ~1               # soft: prefer pins near package position 1 (or ~A1 on BGA)
 channel TX @ ~NW              # soft: prefer pins in the north-west of the package
 ```
+
+**Excluding pins** with `!` removes them from the channel's candidate pins
+before the search starts. Combine exclusions freely with required pins in one
+comma-separated list.
 
 **Soft anchor targets:**
 
@@ -387,14 +393,21 @@ direction; `C` pulls it back toward the center.
 or config:
 
 ```
-port CMD: @ PA1        # hard: some channel of the port must use PA1
-port CMD: @ ~NW        # soft: pull every channel of the port toward the NW
-config "UART": @ ~NW   # soft: applies only to channels mapped in this config
+port CMD: @ PA1          # hard: some channel of the port must use PA1
+port CMD: @ !PB1         # hard: no channel of the port may use PB1
+port CMD: @ PA1, !PB1    # both at once
+port CMD: @ ~NW          # soft: pull every channel of the port toward the NW
+config "UART": @ !PB1    # hard: no channel mapped in this config may use PB1
+config "UART": @ ~NW     # soft: applies only to channels mapped in this config
 ```
 
 A hard `@ PA1` on a port/config requires *some* channel to land on that pin
-(each pin in a list must be covered); solutions that don't are discarded. A soft
-`@ ~...` applies to every affected channel.
+(each pin in a list must be covered); solutions that don't are discarded. A hard
+`@ !PB1` bars the pin from *every* channel of the port (or, on a config, from
+every channel mapped in it). A soft `@ ~...` applies to every affected channel.
+
+Exclusions compose: a channel may not use the union of its own, its port's, and
+its active config's excluded pins.
 
 Ports from [templates](#port-templates) inherit the template's placement clause
 unless they declare their own, which overrides it:
@@ -1073,6 +1086,18 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 
 Weights are configurable: `0` = disabled, `1` = normal, higher values = more impact.
 
+**Square distance costs** (Settings) changes how the three distance-based
+functions — **pin_clustering**, **pin_proximity** and **pin_anchor** — accumulate:
+they sum *squared* distances instead of raw ones. A single far-away pin is then
+punished much harder than several slightly-spread pins, which is usually what
+matters for routing. Off by default.
+
+```
+port pin distances 1, 1, 10
+  linear   →   1 +  1 +  10 =  12
+  squared  →   1 +  1 + 100 = 102     ← the outlier dominates
+```
+
 ### Settings
 
 Access via the **Settings** button:
@@ -1086,7 +1111,8 @@ Access via the **Settings** button:
 - **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 5)
 - **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on)
 - **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
-- **Cost weights** -- adjust the ranking formula for all 7 cost functions
+- **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)
+- **Cost weights** -- adjust the ranking formula for all cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
 
 ---

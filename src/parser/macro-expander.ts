@@ -154,6 +154,7 @@ function applyTemplate(port: PortDeclNode, template: PortDeclNode): PortDeclNode
     // (e.g. `enc1 from enc0: @ ~NW`); otherwise inherit it.
     anchor: port.anchor ?? template.anchor,
     anchorFixedPins: port.anchorFixedPins ?? template.anchorFixedPins,
+    anchorExcludedPins: port.anchorExcludedPins ?? template.anchorExcludedPins,
   };
 }
 

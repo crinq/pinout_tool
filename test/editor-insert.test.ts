@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parsePeripheralLibrary, DEFAULT_PERIPHERAL_LIBRARY, type Peripheral } from '../src/parser/peripheral-lib';
-import { analyzeEditorContext, insertPeripheralLines } from '../src/ui/constraint-editor';
+import { analyzeEditorContext, insertPeripheralLines, opensHelperMenu } from '../src/ui/constraint-editor';
 
 const USART: Peripheral = {
   name: 'USART',
@@ -10,11 +10,27 @@ const USART: Peripheral = {
 describe('parsePeripheralLibrary', () => {
   it('splits #Name blocks into channels + require lines', () => {
     const peris = parsePeripheralLibrary(DEFAULT_PERIPHERAL_LIBRARY);
-    const usart = peris.find(p => p.name === 'USART')!;
-    expect(usart.lines).toEqual(USART.lines);
-    const spi = peris.find(p => p.name === 'SPI')!;
-    expect(spi.lines.filter(l => l.includes('=')).length).toBe(3); // SCK/MISO/MOSI
-    expect(peris.some(p => p.name === 'SPI master + NSS')).toBe(true); // spaces in name
+    // USART is the documented reference block; assert it exactly.
+    expect(peris.find(p => p.name === 'USART')!.lines).toEqual(USART.lines);
+    // Every block must be non-empty and carry at least one mapping line.
+    expect(peris.length).toBeGreaterThan(1);
+    for (const p of peris) {
+      expect(p.name, 'block name must be non-empty').not.toBe('');
+      expect(p.lines.some(l => /^[A-Za-z0-9_]+\s*=/.test(l)), `${p.name} has a mapping`).toBe(true);
+    }
+  });
+
+  it('parses names with spaces and separates mappings from requires', () => {
+    const peris = parsePeripheralLibrary(`#SPI master + NSS
+SCK = SPI*_SCK $s
+MOSI = SPI*_MOSI $s
+require dma(MOSI, "SPI_TX")
+
+#I2C
+SCL = I2C*_SCL $i`);
+    expect(peris.map(p => p.name)).toEqual(['SPI master + NSS', 'I2C']);
+    expect(peris[0].lines.filter(l => l.startsWith('require')).length).toBe(1);
+    expect(peris[0].lines.filter(l => l.includes('=') && !l.startsWith('require')).length).toBe(2);
   });
 });
 
@@ -80,5 +96,20 @@ describe('insertPeripheralLines', () => {
     insertPeripheralLines(lines, ctx, USART);
     expect(lines.some(l => l === '  channel TX = USART*_TX $u2')).toBe(true);
     expect(lines.some(l => l === '  channel RX = USART*_RX $u2')).toBe(true);
+  });
+});
+
+describe('opensHelperMenu (double-click gating)', () => {
+  it('opens on whitespace / empty selections', () => {
+    expect(opensHelperMenu('')).toBe(true);        // clicked past end of line
+    expect(opensHelperMenu('  ')).toBe(true);      // clicked indentation
+    expect(opensHelperMenu('\n')).toBe(true);      // blank line
+    expect(opensHelperMenu('\t')).toBe(true);
+  });
+
+  it('stays out of the way when text was selected', () => {
+    expect(opensHelperMenu('channel')).toBe(false);        // double-click a word
+    expect(opensHelperMenu('  channel TX = OUT')).toBe(false); // triple-click a line
+    expect(opensHelperMenu('USART*_TX')).toBe(false);
   });
 });

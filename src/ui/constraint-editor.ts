@@ -28,7 +28,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   shared: 'Allow a peripheral instance to be used by more than one port. e.g. shared: ADC[1,2]',
   pin: 'Fix a pin to a signal. e.g. pin PA4 = DAC1_OUT1  (or = IN / = OUT)',
   port: 'A group of related channels. Optional: from <template>, color, @ placement.',
-  channel: 'One signal that needs a pin. Optional @ pin/anchor and inline = <signal> mapping.',
+  channel: 'One signal that needs a pin. Optional @ placement (pin, !pin, ~anchor) and inline = <signal> mapping.',
   config: 'An alternative wiring of a port; the solver tries every config combination.',
   require: 'A constraint the solution must satisfy. require? makes it soft (best-effort).',
   macro: 'A reusable block of mappings/requires. Declare with params, then call by name.',
@@ -157,6 +157,16 @@ export function insertPeripheralLines(lines: string[], ctx: EditorContext, p: Pe
   const at = portBodyEnd(lines, ctx.portIdx);
   lines.splice(at, 0, '', `  config "${cname}":`, ...body.map(l => `    ${l}`));
   return at + 2;
+}
+
+/**
+ * Whether a double-click should open the "add" helper, given the text the
+ * browser selected. Anything containing a word character is a word/line
+ * selection the user wants to keep; empty or whitespace-only means they
+ * clicked blank space.
+ */
+export function opensHelperMenu(selectedText: string): boolean {
+  return !/\S/.test(selectedText);
 }
 
 /** Determine whether the cursor line sits in a port and/or a config. */
@@ -581,10 +591,17 @@ export class ConstraintEditor implements Panel {
 
   private setupDoubleClickHelper(): void {
     this.textarea.addEventListener('dblclick', (e) => {
+      // The browser has already extended the selection by the time dblclick
+      // fires: a word (double-click) or a whole line (triple-click) selects
+      // text, whereas clicking whitespace / past the end of a line selects
+      // nothing. Only offer the helper in the latter case so normal text
+      // selection keeps working.
+      const { selectionStart, selectionEnd, value } = this.textarea;
+      if (!opensHelperMenu(value.slice(selectionStart, selectionEnd))) return;
+
       e.preventDefault();
-      const lines = this.textarea.value.split('\n');
-      const before = this.textarea.value.slice(0, this.textarea.selectionStart);
-      const lineIdx = (before.match(/\n/g) || []).length;
+      const lines = value.split('\n');
+      const lineIdx = (value.slice(0, selectionStart).match(/\n/g) || []).length;
       const ctx = analyzeEditorContext(lines, lineIdx);
       showContextMenu(e.clientX, e.clientY, this.buildHelperMenu(ctx));
     });
@@ -973,6 +990,8 @@ port CMD:
           <h3>Pin Placement (<code>@</code>)</h3>
           <pre class="ce-help-code"># Hard: restrict a channel to specific pins
 channel TX @ PA1, PB2
+channel TX @ !PA1        # exclude a pin
+channel TX @ PA1, !PB2   # required and excluded can be mixed
 
 # Soft: nudge toward a pin / position / compass region
 channel TX @ ~PA1        # near pin PA1
@@ -981,10 +1000,12 @@ channel TX @ ~NW         # near the north-west of the package
 
 # Port / config placement (after the colon)
 port CMD: @ PA1          # some channel must use PA1 (hard)
+port CMD: @ !PB1         # no channel may use PB1 (hard)
 port CMD: @ ~NW          # pull every channel toward NW (soft)
 config "UART": @ ~NW     # only the channels in this config</pre>
-          <p>Bare pins (<code>@ PA1</code>) filter candidates. A <code>~</code> anchor is soft &mdash; it only
-          biases ranking via the <b>Pin Anchor</b> cost weight. Compass letters <code>N/S/E/W/C</code> combine
+          <p>Bare pins (<code>@ PA1</code>) filter candidates; <code>!pin</code> removes a pin from them.
+          A <code>~</code> anchor is soft &mdash; it only biases ranking via the <b>Pin Anchor</b> cost weight.
+          Compass letters <code>N/S/E/W/C</code> combine
           (<code>NW</code>, <code>NNW</code>, <code>NC</code>) and rotate with the package as drawn.</p>
         </section>
 
@@ -1013,7 +1034,7 @@ config "UART": @ ~NW     # only the channels in this config</pre>
 
         <section>
           <h3>Operators in Mappings</h3>
-          <p><code>|</code> (alternatives): pin matches ANY of the patterns<br>
+          <p><code>|</code> (alternatives): channel matches ANY of the patterns<br>
           <code>+</code> (multi-pin): channel gets a separate pin for EACH expression</p>
           <p>Evaluation: <code>A | B + C | D</code> means <code>(A | B) + (C | D)</code></p>
           <pre class="ce-help-code"># Channel accepts SPI or I2C (alternatives):

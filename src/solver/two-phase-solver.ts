@@ -149,7 +149,7 @@ export function solveTwoPhase(
     };
   }
 
-  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
 
   if (solveVars.length === 0 && gpioVars.length === 0) {
     return {
@@ -300,7 +300,7 @@ export function solveTwoPhase(
 
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioCountPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
 }
 
 // ============================================================
@@ -888,7 +888,7 @@ export interface SharedPhase1Result {
   pinnedAssignments: PinnedAssignment[];
   sharedPatterns: PatternPart[];
   configCombinations: Map<string, string>[];
-  gpioCountPerConfig: Map<string, number>;
+  gpioVarsPerConfig: Map<string, SolverVariable[]>;
   gpioVarCount: number;
   errors: SolverError[];
   dmaData?: DmaData;
@@ -933,10 +933,10 @@ export function runSharedPhase1(
       message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
       source: `${emptyVar.portName}.${emptyVar.channelName}`,
     });
-    return { groups: [], solveVars: [], ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns, configCombinations, gpioCountPerConfig: new Map(), gpioVarCount: 0, errors, dmaData };
+    return { groups: [], solveVars: [], ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns, configCombinations, gpioVarsPerConfig: new Map(), gpioVarCount: 0, errors, dmaData };
   }
 
-  const { solveVars, gpioVars, gpioCountPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
+  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
   if (solveVars.length === 0 && gpioVars.length === 0) return null;
 
   if (gpioVars.length > 0) {
@@ -1000,7 +1000,7 @@ export function runSharedPhase1(
   return {
     groups, solveVars, ports, reservedPins: reserved.pins,
     pinnedAssignments, sharedPatterns, configCombinations,
-    gpioCountPerConfig, gpioVarCount: gpioVars.length, errors, dmaData,
+    gpioVarsPerConfig, gpioVarCount: gpioVars.length, errors, dmaData,
   };
 }
 
@@ -1055,5 +1055,5 @@ export function runPhase2Only(
   }
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, phase1.gpioCountPerConfig, phase1.reservedPins, phase1.pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, phase1.gpioVarsPerConfig, phase1.reservedPins, phase1.pinnedAssignments);
 }
