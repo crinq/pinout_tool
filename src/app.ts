@@ -2555,6 +2555,7 @@ export class App {
       const hasDma = this.currentMcu?.dma !== undefined;
       const parseResult = this.constraintEditor.getParseResult();
       const hasAst = parseResult?.ast !== null && parseResult?.ast !== undefined;
+      const solverSolutionCount = this.solverSolutions.getSolverResult()?.solutions.length ?? 0;
 
       modal.innerHTML = `
         <div class="settings-header">
@@ -2571,6 +2572,10 @@ export class App {
                 <button class="btn btn-small" data-action="export-current-mcu" ${hasMcu ? '' : 'disabled'}>Export MCU</button>
                 <button class="btn btn-small" data-action="export-current-dma" ${hasDma ? '' : 'disabled'}>Export DMA</button>
                 <button class="btn btn-small" data-action="export-current-ast" ${hasAst ? '' : 'disabled'}>Export AST</button>
+              </div>
+              <div class="dm-row">
+                <span class="dm-name">Solver solutions: ${solverSolutionCount}</span>
+                <button class="btn btn-small" data-action="export-current-solutions" ${solverSolutionCount > 0 ? '' : 'disabled'}>Export Solutions</button>
               </div>
             </div>
           </section>
@@ -2733,6 +2738,9 @@ export class App {
               break;
             case 'export-current-ast':
               this.exportCurrentAst();
+              break;
+            case 'export-current-solutions':
+              this.exportCurrentSolutions();
               break;
             case 'delete-mcu':
               await getKv().delete(`mcu-xml:${name}`);
@@ -3506,6 +3514,19 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     const dma = this.currentMcu?.dma;
     if (!dma) return;
     this.downloadJson(serializeDma(dma), `${this.currentMcu!.refName}-dma.json`);
+  }
+
+  /** Export the current solver run's solutions (the Solver Solutions panel). */
+  private exportCurrentSolutions(): void {
+    const result = this.solverSolutions.getSolverResult();
+    if (!result || result.solutions.length === 0) return;
+    const name = this.currentProjectName || 'solutions';
+    this.downloadJson({
+      mcuRef: result.mcuRef,
+      solutionCount: result.solutions.length,
+      statistics: result.statistics,
+      solutions: result.solutions.map(serializeSolution),
+    }, `${name}-solutions.json`);
   }
 
   private exportCurrentAst(): void {

@@ -81,6 +81,11 @@ export class SolverSolutions implements Panel {
     this.focusCallbacks.push(callback);
   }
 
+  /** The last solver run's result, or null before the first solve. */
+  getSolverResult(): SolverResult | null {
+    return this.solverResult;
+  }
+
   setSolverResult(result: SolverResult): void {
     this.solverResult = result;
     this.expandedGroups.clear();
