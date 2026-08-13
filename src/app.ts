@@ -218,6 +218,7 @@ export class App {
 
     // Apply viewer settings
     this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
+    this.packageViewer.setGestureMode(this.settings.touchGestures);
 
     // Wire panels together
     this.wireEvents();
@@ -2343,6 +2344,10 @@ export class App {
             <label>Mouse zoom gain</label>
             <input type="number" class="settings-input" id="set-zoom-gain" min="0.01" max="1" step="0.01" value="${this.settings.mouseZoomGain}">
           </div>
+          <div class="settings-row">
+            <label title="Two fingers on a touchpad/touchscreen pan, pinch to zoom and twist to rotate in 90° steps. Off = the wheel zooms (classic mouse behaviour).">Touch gestures</label>
+            <input type="checkbox" id="set-touch-gestures" ${this.settings.touchGestures ? 'checked' : ''}>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -2401,6 +2406,7 @@ export class App {
       this.settings.minZoom = parseFloat((modal.querySelector('#set-min-zoom') as HTMLInputElement).value) || DEFAULT_SETTINGS.minZoom;
       this.settings.maxZoom = parseFloat((modal.querySelector('#set-max-zoom') as HTMLInputElement).value) || DEFAULT_SETTINGS.maxZoom;
       this.settings.mouseZoomGain = parseFloat((modal.querySelector('#set-zoom-gain') as HTMLInputElement).value) || DEFAULT_SETTINGS.mouseZoomGain;
+      this.settings.touchGestures = (modal.querySelector('#set-touch-gestures') as HTMLInputElement).checked;
 
       modal.querySelectorAll<HTMLInputElement>('[data-cost-id]').forEach(input => {
         const id = input.dataset.costId!;
@@ -2420,6 +2426,7 @@ export class App {
       this.saveSettings();
       this.updateUrlHash();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
+    this.packageViewer.setGestureMode(this.settings.touchGestures);
       close();
       this.showStatus('Settings saved', 'success');
     });
@@ -2440,6 +2447,7 @@ export class App {
       this.saveSettings();
       close();
       this.packageViewer.setZoomLimits(this.settings.minZoom, this.settings.maxZoom, this.settings.mouseZoomGain);
+    this.packageViewer.setGestureMode(this.settings.touchGestures);
       this.showStatus('Settings reset to defaults', 'success');
     });
   }

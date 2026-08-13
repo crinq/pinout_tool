@@ -16,6 +16,7 @@ import type {
   ProgramNode, RequireNode, PatternPart, ConstraintExprNode,
 } from '../parser/constraint-ast';
 import { expandAllMacros } from '../parser/macro-expander';
+import { checkGroupPinFeasibility } from './matching-oracle';
 import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
@@ -190,56 +191,11 @@ export function solveTwoPhase(
   }
 
   // ========== Phase 1: Instance Assignment per Config Combination ==========
-  // For each config combination, backtrack only over the active variables
-  const groupFingerprints = new Set<string>();
-  const groups: InstanceGroup[] = [];
-  const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
-
-  for (const combo of configCombinations) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-    if (groups.length >= config.maxGroups) break;
-
-    // Filter to only variables active in this config combination
-    const activeVars = allInstanceVars.filter(iv =>
-      combo.get(iv.portName) === iv.configName
-    );
-
-    if (activeVars.length === 0) continue;
-
-    // Sort by MRV
-    activeVars.sort((a, b) => a.domain.length - b.domain.length);
-
-    // Build eager-check structures for active variables
-    const lastVarOfConfig = new Map<string, number>();
-    for (let i = 0; i < activeVars.length; i++) {
-      const key = `${activeVars[i].portName}\0${activeVars[i].configName}`;
-      lastVarOfConfig.set(key, i);
-    }
-
-    const tracker: InstanceTracker = {
-      instanceOwner: new Map(),
-      instanceRefCount: new Map(),
-      sharedPatterns,
-    };
-
-    const comboGroups: InstanceGroup[] = [];
-    solvePhase1(
-      activeVars, 0, tracker, [],
-      ports, comboGroups, maxGroupsPerCombo,
-      startTime, config.timeoutMs,
-      lastVarOfConfig, configRequiresMap
-    );
-
-    // Add unique groups
-    for (const g of comboGroups) {
-      if (groups.length >= config.maxGroups) break;
-      const fp = groupFingerprint(g.assignments);
-      if (!groupFingerprints.has(fp)) {
-        groupFingerprints.add(fp);
-        groups.push(g);
-      }
-    }
-  }
+  const collect = (cap: number): InstanceGroup[] => collectPhase1Groups(
+    allInstanceVars, solveVars, configCombinations, ports, sharedPatterns, configRequiresMap,
+    cap, startTime, config.timeoutMs, dmaData,
+  );
+  let groups = collect(config.maxGroups);
 
   if (groups.length === 0) {
     errors.push({
@@ -284,12 +240,29 @@ export function solveTwoPhase(
       maxSol, startTime, config.timeoutMs, stats,
       phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage
     );
-  solutions.push(...runPhase2Diverse(groups, solveGroup, {
+  const runPhase2 = (gs: InstanceGroup[]): Solution[] => runPhase2Diverse(gs, solveGroup, {
     maxSolutionsPerGroup: config.maxSolutionsPerGroup,
     solutionsPerRound,
     timeoutMs: config.timeoutMs,
     startTime,
-  }));
+  });
+  solutions.push(...runPhase2(groups));
+
+  // Phase 2 can burn through a small group budget in milliseconds. Rather than
+  // give up with most of the timeout unspent, widen Phase 1 and try again: the
+  // first groups it emits are not necessarily routable.
+  const MAX_GROUP_CAP = 20000;
+  let cap = config.maxGroups;
+  while (
+    solutions.length === 0 &&
+    groups.length >= cap &&
+    cap < MAX_GROUP_CAP &&
+    performance.now() - startTime < config.timeoutMs * 0.9
+  ) {
+    cap = Math.min(cap * 4, MAX_GROUP_CAP);
+    groups = collect(cap);
+    solutions.push(...runPhase2(groups));
+  }
 
   if (solutions.length === 0 && groups.length > 0) {
     errors.push({
@@ -359,6 +332,137 @@ export function unassignInstance(
   }
 }
 
+/**
+ * Collect Phase-1 instance groups across all config combinations.
+ *
+ * Combos are searched with a *fair time slice* each: a single pathological
+ * combination (deep dead-end that DFS cannot escape) would otherwise consume
+ * the whole budget and starve every later — possibly easy — combination,
+ * reporting "no valid peripheral instance assignments" for a solvable problem.
+ * If the sliced pass finds nothing, a second pass re-runs with the remaining
+ * budget unsliced, so anything the old single-pass search could solve is still
+ * solved.
+ */
+export function collectPhase1Groups(
+  allInstanceVars: InstanceVariable[],
+  solveVars: SolverVariable[],
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  sharedPatterns: PatternPart[],
+  configRequiresMap: Map<string, RequireNode[]>,
+  maxGroups: number,
+  startTime: number,
+  timeoutMs: number,
+  dmaData?: DmaData,
+): InstanceGroup[] {
+  const groupFingerprints = new Set<string>();
+  const groups: InstanceGroup[] = [];
+  // Dividing the quota evenly starves everyone when there are many combos and
+  // few groups (20 groups / 12 combos = 1 each): productive combinations stop
+  // early while barren ones still burn their slice. Let a combo contribute a
+  // useful batch so the quota fills from whatever is productive, then stop.
+  const MIN_GROUPS_PER_COMBO = 8;
+  const maxGroupsPerCombo = Math.min(
+    maxGroups,
+    Math.max(MIN_GROUPS_PER_COMBO, Math.ceil(maxGroups / configCombinations.length)),
+  );
+
+
+  // Only keep instance groups that can actually be pin-routed. The oracle is a
+  // sound relaxation (it never rejects a routable group), so this cannot lose
+  // solutions — but it stops Phase 2 from burning the whole budget on groups
+  // that provably have no perfect pin matching.
+  const deadline = startTime + timeoutMs;
+  const acceptGroup = (assignments: Map<string, string>): boolean =>
+    checkGroupPinFeasibility(solveVars, configCombinations, { assignments }, { deadline }).feasible;
+  /** Never slice below this: a slice too small to reach any leaf is wasted. */
+  const MIN_SLICE_MS = 50;
+
+  const runPass = (sliced: boolean): void => {
+    for (let i = 0; i < configCombinations.length; i++) {
+      const remaining = timeoutMs - (performance.now() - startTime);
+      if (remaining <= 0) return;
+      if (groups.length >= maxGroups) return;
+
+      const activeVars = allInstanceVars.filter(iv => combosMatch(configCombinations[i], iv));
+      if (activeVars.length === 0) continue;
+
+      orderByConfigBlock(activeVars);
+
+      const lastVarOfConfig = new Map<string, number>();
+      for (let k = 0; k < activeVars.length; k++) {
+        lastVarOfConfig.set(`${activeVars[k].portName}\0${activeVars[k].configName}`, k);
+      }
+
+      const tracker: InstanceTracker = {
+        instanceOwner: new Map(),
+        instanceRefCount: new Map(),
+        sharedPatterns,
+      };
+
+      const budget = sliced
+        ? Math.min(remaining, Math.max(MIN_SLICE_MS, remaining / (configCombinations.length - i)))
+        : remaining;
+
+      const comboGroups: InstanceGroup[] = [];
+      solvePhase1(
+        activeVars, 0, tracker, [],
+        ports, comboGroups, maxGroupsPerCombo,
+        performance.now(), budget,
+        lastVarOfConfig, configRequiresMap, dmaData, undefined, acceptGroup
+      );
+
+      for (const g of comboGroups) {
+        if (groups.length >= maxGroups) break;
+        const fp = groupFingerprint(g.assignments);
+        if (!groupFingerprints.has(fp)) {
+          groupFingerprints.add(fp);
+          groups.push(g);
+        }
+      }
+    }
+  };
+
+  runPass(true);
+  if (groups.length === 0) runPass(false); // fall back to the unsliced search
+  return groups;
+}
+
+/**
+ * Order instance variables as contiguous (port, config) blocks, most-constrained
+ * block first and MRV within each block.
+ *
+ * A port's `require`s are only evaluated once its last variable is assigned
+ * (see lastVarOfConfig). Under a global MRV sort a port's variables end up
+ * scattered across the whole ordering, so those checks fire near the very
+ * bottom of the tree and the search thrashes: it re-derives the same conflict
+ * after re-assigning everything above it. Keeping each port together makes its
+ * constraints prune as soon as that port is complete.
+ */
+export function orderByConfigBlock(vars: InstanceVariable[]): void {
+  const blocks = new Map<string, InstanceVariable[]>();
+  for (const v of vars) {
+    const key = `${v.portName}\0${v.configName}`;
+    const list = blocks.get(key);
+    if (list) list.push(v); else blocks.set(key, [v]);
+  }
+  for (const list of blocks.values()) list.sort((a, b) => a.domain.length - b.domain.length);
+
+  // Most-constrained block first: smallest domain, then fewest variables.
+  const ordered = [...blocks.values()].sort((a, b) => {
+    const da = Math.min(...a.map(v => v.domain.length));
+    const db = Math.min(...b.map(v => v.domain.length));
+    if (da !== db) return da - db;
+    return a.length - b.length;
+  });
+
+  vars.length = 0;
+  for (const list of ordered) vars.push(...list);
+}
+
+const combosMatch = (combo: Map<string, string>, iv: InstanceVariable): boolean =>
+  combo.get(iv.portName) === iv.configName;
+
 export function solvePhase1(
   variables: InstanceVariable[],
   varIndex: number,
@@ -372,7 +476,8 @@ export function solvePhase1(
   lastVarOfConfig: Map<string, number>,
   configRequiresMap: Map<string, RequireNode[]>,
   dmaData?: DmaData,
-  isBlocked?: (current: InstanceAssignment[]) => boolean
+  isBlocked?: (current: InstanceAssignment[]) => boolean,
+  acceptGroup?: (assignments: Map<string, string>) => boolean
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (groups.length >= maxGroups) return;
@@ -383,7 +488,8 @@ export function solvePhase1(
     for (const ia of current) {
       assignments.set(varKey(ia.variable), ia.instance);
     }
-    groups.push({ assignments });
+    // A rejected leaf must not consume the group budget — keep searching.
+    if (!acceptGroup || acceptGroup(assignments)) groups.push({ assignments });
     return;
   }
 
@@ -436,12 +542,22 @@ export function solvePhase1(
       }
     }
 
+    // Pin-feasibility of the partial assignment, checked at the same (port,
+    // config) boundary as the requires. The oracle treats unassigned variables
+    // as unrestricted, so a partial map is sound — and rejecting here prunes a
+    // whole subtree instead of one leaf.
+    if (!pruned && acceptGroup && lastVarOfConfig.get(configKey) === varIndex) {
+      const partial = new Map<string, string>();
+      for (const ia of current) partial.set(varKey(ia.variable), ia.instance);
+      if (!acceptGroup(partial)) pruned = true;
+    }
+
     if (!pruned) {
       solvePhase1(
         variables, varIndex + 1, tracker, current,
         ports, groups, maxGroups,
         startTime, timeoutMs, lastVarOfConfig, configRequiresMap,
-        dmaData, isBlocked
+        dmaData, isBlocked, acceptGroup
       );
     }
 
@@ -954,48 +1070,11 @@ export function runSharedPhase1(
     }
   }
 
-  // Phase 1: diverse multi-round instance assignment
-  const groupFingerprints = new Set<string>();
-  const groups: InstanceGroup[] = [];
-  const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
-
-  for (const combo of configCombinations) {
-    if (performance.now() - startTime > config.timeoutMs) break;
-    if (groups.length >= config.maxGroups) break;
-
-    const activeVars = allInstanceVars.filter(iv => combo.get(iv.portName) === iv.configName);
-    if (activeVars.length === 0) continue;
-
-    activeVars.sort((a, b) => a.domain.length - b.domain.length);
-
-    const lastVarOfConfig = new Map<string, number>();
-    for (let i = 0; i < activeVars.length; i++) {
-      lastVarOfConfig.set(`${activeVars[i].portName}\0${activeVars[i].configName}`, i);
-    }
-
-    const tracker: InstanceTracker = {
-      instanceOwner: new Map(),
-      instanceRefCount: new Map(),
-      sharedPatterns,
-    };
-
-    const comboGroups: InstanceGroup[] = [];
-    solvePhase1(
-      activeVars, 0, tracker, [],
-      ports, comboGroups, maxGroupsPerCombo,
-      startTime, config.timeoutMs,
-      lastVarOfConfig, configRequiresMap, dmaData
-    );
-
-    for (const g of comboGroups) {
-      if (groups.length >= config.maxGroups) break;
-      const fp = groupFingerprint(g.assignments);
-      if (!groupFingerprints.has(fp)) {
-        groupFingerprints.add(fp);
-        groups.push(g);
-      }
-    }
-  }
+  // Phase 1: instance assignment across config combinations
+  const groups = collectPhase1Groups(
+    allInstanceVars, solveVars, configCombinations, ports, sharedPatterns, configRequiresMap,
+    config.maxGroups, startTime, config.timeoutMs, dmaData,
+  );
 
   return {
     groups, solveVars, ports, reservedPins: reserved.pins,

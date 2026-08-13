@@ -22,9 +22,10 @@ import {
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
-  groupFingerprint, sortInstanceDomainsByCost,
+  groupFingerprint, sortInstanceDomainsByCost, orderByConfigBlock,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
+import { checkGroupPinFeasibility } from './matching-oracle';
 import { diversifyDomain } from './solver-utils';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
@@ -100,17 +101,26 @@ export function solveDiverseInstances(
   }
 
   // ========== Phase 1: Multi-round diverse instance assignment ==========
+  // Only accept instance groups that can actually be pin-routed (sound: the
+  // oracle never rejects a routable group) so Phase 2 is not fed dead ends.
+  const phase1Deadline = startTime + config.timeoutMs;
+  const acceptGroup = (assignments: Map<string, string>): boolean =>
+    checkGroupPinFeasibility(solveVars, configCombinations, { assignments }, { deadline: phase1Deadline }).feasible;
+
   const groupFingerprints = new Set<string>();
   const groups: InstanceGroup[] = [];
-  const maxGroupsPerCombo = Math.max(1, Math.ceil(config.maxGroups / configCombinations.length));
+
+  /** Collect groups up to `groupCap`; re-runnable with a wider cap. */
+  const collectGroups = (groupCap: number): void => {
+  const maxGroupsPerCombo = Math.max(1, Math.ceil(groupCap / configCombinations.length));
 
   for (let round = 0; round < MAX_DIVERSITY_ROUNDS; round++) {
     if (performance.now() - startTime > config.timeoutMs) break;
-    if (groups.length >= config.maxGroups) break;
+    if (groups.length >= groupCap) break;
 
     for (const combo of configCombinations) {
       if (performance.now() - startTime > config.timeoutMs) break;
-      if (groups.length >= config.maxGroups) break;
+      if (groups.length >= groupCap) break;
 
       // Filter to active variables
       let activeVars = allInstanceVars.filter(iv =>
@@ -128,8 +138,9 @@ export function solveDiverseInstances(
         }));
       }
 
-      // Sort by MRV
-      activeVars.sort((a, b) => a.domain.length - b.domain.length);
+      // Keep each (port, config) contiguous so its requires prune early
+      // (see orderByConfigBlock).
+      orderByConfigBlock(activeVars);
 
       const lastVarOfConfig = new Map<string, number>();
       for (let i = 0; i < activeVars.length; i++) {
@@ -143,7 +154,7 @@ export function solveDiverseInstances(
         sharedPatterns,
       };
 
-      const remaining = config.maxGroups - groups.length;
+      const remaining = groupCap - groups.length;
       const limit = Math.min(maxGroupsPerCombo, remaining);
 
       const comboGroups: InstanceGroup[] = [];
@@ -151,11 +162,12 @@ export function solveDiverseInstances(
         activeVars, 0, tracker, [],
         ports, comboGroups, limit,
         startTime, config.timeoutMs,
-        lastVarOfConfig, configRequiresMap
+        lastVarOfConfig, configRequiresMap, dmaData, undefined,
+        acceptGroup
       );
 
       for (const g of comboGroups) {
-        if (groups.length >= config.maxGroups) break;
+        if (groups.length >= groupCap) break;
         const fp = groupFingerprint(g.assignments);
         if (!groupFingerprints.has(fp)) {
           groupFingerprints.add(fp);
@@ -165,8 +177,10 @@ export function solveDiverseInstances(
     }
 
     // If round 0 already found enough groups, stop
-    if (round === 0 && groups.length >= config.maxGroups) break;
+    if (round === 0 && groups.length >= groupCap) break;
   }
+  };
+  collectGroups(config.maxGroups);
 
   if (groups.length === 0) {
     errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
@@ -212,12 +226,30 @@ export function solveDiverseInstances(
       maxSol, startTime, config.timeoutMs, stats,
       phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage
     );
-  solutions.push(...runPhase2Diverse(groups, solveGroup, {
+  const runPhase2 = (gs: InstanceGroup[]): Solution[] => runPhase2Diverse(gs, solveGroup, {
     maxSolutionsPerGroup: config.maxSolutionsPerGroup,
     solutionsPerRound,
     timeoutMs: config.timeoutMs,
     startTime,
-  }));
+  });
+  solutions.push(...runPhase2(groups));
+
+  // Phase 2 can exhaust a small group set in milliseconds; widen Phase 1 and
+  // retry rather than give up with most of the timeout unspent.
+  const MAX_GROUP_CAP = 20000;
+  let cap = config.maxGroups;
+  while (
+    solutions.length === 0 &&
+    groups.length >= cap &&
+    cap < MAX_GROUP_CAP &&
+    performance.now() - startTime < config.timeoutMs * 0.9
+  ) {
+    cap = Math.min(cap * 4, MAX_GROUP_CAP);
+    const before = groups.length;
+    collectGroups(cap);
+    if (groups.length === before) break; // Phase 1 has nothing more to give
+    solutions.push(...runPhase2(groups));
+  }
 
   if (solutions.length === 0 && groups.length > 0) {
     errors.push({

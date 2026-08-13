@@ -49,6 +49,36 @@ function physicalAssignments(
   return out;
 }
 
+/**
+ * Quarter turns a twist of `degrees` corresponds to. Rotation snaps: a ~45°
+ * twist trips the first step, then every further 90°.
+ */
+export function snapQuarterTurns(degrees: number): number {
+  // Round the magnitude, not the signed value: Math.round(-0.5) is -0, which
+  // would make a counter-clockwise twist need 90° where clockwise needs 45°.
+  const steps = Math.round(Math.abs(degrees) / 90);
+  if (steps === 0) return 0;
+  return degrees < 0 ? -steps : steps;
+}
+
+/**
+ * New pan so the point `cursorOffset` (screen distance from the view origin)
+ * stays put while scaling by `appliedScale`.
+ * Screen = R·z·(p − c) + c + pan  ⇒  pan' = pan + offset·(1 − scale).
+ */
+export function anchoredPan(pan: number, cursorOffset: number, appliedScale: number): number {
+  return pan + cursorOffset * (1 - appliedScale);
+}
+
+/** WebKit-only trackpad gesture event (not in lib.dom). */
+interface GestureLikeEvent {
+  scale: number;
+  rotation: number;   // degrees, relative to gesturestart
+  clientX: number;
+  clientY: number;
+  preventDefault(): void;
+}
+
 export class PackageViewer implements Panel {
   readonly id = 'package-viewer';
   readonly title = 'Package Viewer';
@@ -82,6 +112,11 @@ export class PackageViewer implements Panel {
   // View transform state
   private zoom = 1;
   private rotation = 0; // 0, 1, 2, 3 => 0°, 90°, 180°, 270°
+  /** View pan in screen pixels, applied on top of the rotate+zoom transform. */
+  private panX = 0;
+  private panY = 0;
+  /** Two-finger gestures (pan/pinch/rotate); false = classic wheel-zoom. */
+  private gestures = true;
   private zoomLabel!: HTMLElement;
   private minZoom = 0.3;
   private maxZoom = 5;
@@ -198,8 +233,21 @@ export class PackageViewer implements Panel {
     this.canvas.addEventListener('click', (e) => this.onClick(e));
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      this.zoomBy(e.deltaY > 0 ? -this.mouseZoomGain : this.mouseZoomGain);
+      if (!this.gestures) {
+        // Classic mouse behaviour: the wheel zooms.
+        this.zoomBy(e.deltaY > 0 ? -this.mouseZoomGain : this.mouseZoomGain);
+        return;
+      }
+      if (e.ctrlKey) {
+        // Browsers report a touchpad pinch as a ctrl-wheel.
+        this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
+      } else {
+        // Two-finger scroll pans.
+        this.panBy(-e.deltaX, -e.deltaY);
+      }
     }, { passive: false });
+
+    this.setupGestureInput();
 
     const resizeObserver = new ResizeObserver(() => this.render());
     resizeObserver.observe(this.container);
@@ -280,6 +328,11 @@ export class PackageViewer implements Panel {
     this.pinClickCallbacks.push(callback);
   }
 
+  /** Enable two-finger pan/pinch/rotate; false restores classic wheel-zoom. */
+  setGestureMode(enabled: boolean): void {
+    this.gestures = enabled;
+  }
+
   setZoomLimits(minZoom: number, maxZoom: number, mouseZoomGain: number): void {
     this.minZoom = minZoom;
     this.maxZoom = maxZoom;
@@ -302,6 +355,113 @@ export class PackageViewer implements Panel {
     this.pinDeclLookup = fn;
   }
 
+  /** Pan the view by a screen-space delta. */
+  private panBy(dx: number, dy: number): void {
+    this.panX += dx;
+    this.panY += dy;
+    this.render();
+  }
+
+  /**
+   * Scale by `factor`, keeping the model point under (clientX, clientY) fixed.
+   * Screen = R·z·(p − c) + c + pan, so holding a point still means
+   * pan += (s − c − pan)·(1 − factor).
+   */
+  private zoomAt(clientX: number, clientY: number, factor: number): void {
+    const before = this.zoom;
+    this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom * factor));
+    const applied = this.zoom / before;
+    if (applied !== 1) {
+      const rect = this.canvas.getBoundingClientRect();
+      const dx = (clientX - rect.left) - rect.width / 2 - this.panX;
+      const dy = (clientY - rect.top) - rect.height / 2 - this.panY;
+      this.panX = anchoredPan(this.panX, dx, applied);
+      this.panY = anchoredPan(this.panY, dy, applied);
+    }
+    this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
+    this.render();
+  }
+
+  /** Rotate by whole quarter turns (positive = clockwise). */
+  private rotateSteps(steps: number): void {
+    if (steps === 0) return;
+    this.rotation = (((this.rotation + steps) % 4) + 4) % 4;
+    this.render();
+  }
+
+  /**
+   * Two-finger input. Touchpads reach us two ways: as wheel events (handled
+   * above) and, on WebKit, as gesture events that additionally carry rotation.
+   * Real touchscreens go through the touch events below.
+   */
+  private setupGestureInput(): void {
+    // --- WebKit trackpad gestures (the only route that reports rotation) ---
+    let gestureRotationSteps = 0;
+    let gestureScale = 1;
+    const el = this.canvas as unknown as {
+      addEventListener(t: string, l: (e: GestureLikeEvent) => void, o?: AddEventListenerOptions): void;
+    };
+    el.addEventListener('gesturestart', (e: GestureLikeEvent) => {
+      if (!this.gestures) return;
+      e.preventDefault();
+      gestureRotationSteps = 0;
+      gestureScale = e.scale || 1;
+    }, { passive: false });
+    el.addEventListener('gesturechange', (e: GestureLikeEvent) => {
+      if (!this.gestures) return;
+      e.preventDefault();
+      const scale = e.scale || 1;
+      if (gestureScale > 0) this.zoomAt(e.clientX, e.clientY, scale / gestureScale);
+      gestureScale = scale;
+      // Snap rotation to quarter turns: a ~45° twist trips the next step.
+      const steps = snapQuarterTurns(e.rotation || 0);
+      this.rotateSteps(steps - gestureRotationSteps);
+      gestureRotationSteps = steps;
+    }, { passive: false });
+
+    // --- Touchscreens: two-finger pan + pinch + rotate ---
+    let touchDist = 0, touchAngle = 0, touchSteps = 0, touchTwist = 0;
+    let touchMidX = 0, touchMidY = 0;
+    const twoFinger = (e: TouchEvent) => {
+      const [a, b] = [e.touches[0], e.touches[1]];
+      const dx = b.clientX - a.clientX, dy = b.clientY - a.clientY;
+      return {
+        dist: Math.hypot(dx, dy),
+        angle: Math.atan2(dy, dx) * 180 / Math.PI,
+        midX: (a.clientX + b.clientX) / 2,
+        midY: (a.clientY + b.clientY) / 2,
+      };
+    };
+
+    this.canvas.addEventListener('touchstart', (e) => {
+      if (!this.gestures || e.touches.length !== 2) return;
+      e.preventDefault();
+      const t = twoFinger(e);
+      touchDist = t.dist; touchAngle = t.angle;
+      touchMidX = t.midX; touchMidY = t.midY;
+      touchSteps = 0; touchTwist = 0;
+    }, { passive: false });
+
+    this.canvas.addEventListener('touchmove', (e) => {
+      if (!this.gestures || e.touches.length !== 2) return;
+      e.preventDefault();
+      const t = twoFinger(e);
+      this.panBy(t.midX - touchMidX, t.midY - touchMidY);
+      touchMidX = t.midX; touchMidY = t.midY;
+      if (touchDist > 0 && t.dist > 0) this.zoomAt(t.midX, t.midY, t.dist / touchDist);
+      touchDist = t.dist;
+      // Accumulate the total twist since touchstart, then snap to quarter turns.
+      let delta = t.angle - touchAngle;
+      while (delta > 180) delta -= 360;
+      while (delta < -180) delta += 360;
+      touchAngle = t.angle;
+      touchTwist += delta;
+      const steps = snapQuarterTurns(touchTwist);
+      this.rotateSteps(steps - touchSteps);
+      touchSteps = steps;
+    }, { passive: false });
+  }
+
   private zoomBy(delta: number): void {
     this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom + delta));
     this.zoomLabel.textContent = `${Math.round(this.zoom * 100)}%`;
@@ -321,6 +481,8 @@ export class PackageViewer implements Panel {
   private resetView(): void {
     this.zoom = 1;
     this.rotation = 0;
+    this.panX = 0;
+    this.panY = 0;
     this.zoomLabel.textContent = '100%';
     this.render();
   }
@@ -635,7 +797,7 @@ export class PackageViewer implements Panel {
     // Apply view transform (zoom + rotation around center)
     const cx = width / 2;
     const cy = height / 2;
-    ctx.translate(cx, cy);
+    ctx.translate(cx + this.panX, cy + this.panY);
     ctx.rotate(this.rotation * Math.PI / 2);
     ctx.scale(this.zoom, this.zoom);
     ctx.translate(-cx, -cy);
@@ -672,7 +834,7 @@ export class PackageViewer implements Panel {
 
     ctx.scale(dpr, dpr);
     const cx = width / 2, cy = height / 2;
-    ctx.translate(cx, cy);
+    ctx.translate(cx + this.panX, cy + this.panY);
     ctx.rotate(this.rotation * Math.PI / 2);
     ctx.scale(this.zoom, this.zoom);
     ctx.translate(-cx, -cy);
@@ -1344,9 +1506,9 @@ export class PackageViewer implements Panel {
     const cx = rect.width / 2;
     const cy = rect.height / 2;
 
-    // Translate to center
-    x -= cx;
-    y -= cy;
+    // Undo pan, then translate to center
+    x -= cx + this.panX;
+    y -= cy + this.panY;
 
     // Inverse rotation
     const angle = -this.rotation * Math.PI / 2;

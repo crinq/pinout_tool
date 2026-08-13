@@ -16,6 +16,8 @@ export interface AppSettings {
   minZoom: number;
   maxZoom: number;
   mouseZoomGain: number;
+  /** Two-finger pan/pinch/rotate in the package viewer; false = wheel zooms. */
+  touchGestures: boolean;
   skipGpioMapping: boolean;
   postOptimize: boolean;
   squaredCosts: boolean;
@@ -46,6 +48,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   minZoom: 0.5,
   maxZoom: 2,
   mouseZoomGain: 0.025,
+  touchGestures: true,
   skipGpioMapping: true,
   postOptimize: false,
   squaredCosts: false,

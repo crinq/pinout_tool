@@ -973,9 +973,17 @@ The package viewer renders the MCU package with interactive pin display.
 
 ### Controls
 
-- **Zoom:** `+`/`-` buttons or mouse wheel
-- **Rotate:** Rotate button (90 degrees clockwise per click)
-- **Reset:** Reset zoom and rotation to defaults
+- **Zoom:** `+`/`-` buttons, pinch, or the mouse wheel (see Touch gestures below)
+- **Pan:** two-finger scroll / drag
+- **Rotate:** Rotate buttons (90° per click), or twist with two fingers — rotation snaps to 90° steps
+- **Reset:** Reset zoom, rotation and pan to defaults
+
+**Touch gestures** (Settings → Viewer, on by default): two fingers on a touchpad
+or touchscreen pan, pinch to zoom (anchored on the cursor/pinch centre) and
+twist to rotate in 90° steps. Turn the setting off to restore the classic mouse
+behaviour, where the wheel zooms. Trackpad rotation needs gesture events, so it
+is available in Safari and on touchscreens; pan and pinch-zoom work in every
+browser.
 - **Search:** Type signal patterns to highlight matching pins with a pulsing glow
 - **Export:** Click to open the export modal with format options:
   - **PNG** -- raster image of the current canvas view
@@ -1160,6 +1168,7 @@ Access via the **Settings** button:
 - **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)
 - **Cost weights** -- adjust the ranking formula for all cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity
+- **Touch gestures** -- two-finger pan/pinch/rotate in the package viewer; off = the wheel zooms (default: on)
 
 ---
 

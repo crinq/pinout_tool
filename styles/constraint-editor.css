@@ -29,6 +29,9 @@
 }
 
 .ce-solver-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
   padding: 2px 8px;
   font-size: 11px;
   background: var(--bg-secondary);
@@ -37,8 +40,39 @@
   min-height: 0;
 }
 
-.ce-solver-status:empty {
+/* No solver output yet — hide the bar and its toggle entirely. */
+.ce-solver-status.is-empty {
   display: none;
+}
+
+.ce-status-toggle {
+  flex: none;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.ce-status-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* Expanded: grow to a few lines, then scroll rather than eat the editor. */
+.ce-status-content {
+  flex: 1;
+  min-width: 0;
+  max-height: 110px;
+  overflow-y: auto;
+  line-height: 16px;
+}
+
+/* Collapsed: keep the first line visible as a summary. */
+.ce-solver-status.collapsed .ce-status-content {
+  max-height: 16px;
+  overflow: hidden;
 }
 
 .ce-editor-wrapper {
@@ -110,6 +144,14 @@
   pointer-events: none;
   color: var(--text-primary);
   overflow: hidden;
+}
+
+/* The overlay layers are translated to follow the textarea's scroll (see
+   syncScroll) — the outer boxes stay put and clip, the inner ones move. */
+.ce-highlight-inner,
+.ce-line-nums-inner {
+  display: block;
+  will-change: transform;
 }
 
 .ce-textarea {
