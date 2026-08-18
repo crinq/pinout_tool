@@ -648,11 +648,18 @@ export class App {
 
     const totalCount = workerJobs.length;
 
-    // Scale per-worker solution cap so total across all workers stays bounded.
-    // Each worker gets at most 2× its fair share to allow headroom for dedup.
-    const perWorkerMax = totalCount > 1
-      ? Math.ceil(this.solveSettings.maxSolutions / totalCount * 2)
-      : this.solveSettings.maxSolutions;
+    // Bound the per-worker solution budget. Every worker's solutions live in the
+    // renderer at once (they are merged, then trimmed to maxSolutions), so an
+    // over-generous per-worker cap multiplies memory by the worker count — that
+    // is what OOM-killed the tab on roomy packages. A modest dedup headroom is
+    // enough; PER_WORKER_CEILING keeps one worker from hoarding either.
+    const PER_WORKER_CEILING = 1500;
+    const perWorkerMax = Math.min(
+      PER_WORKER_CEILING,
+      totalCount > 1
+        ? Math.max(50, Math.ceil(this.solveSettings.maxSolutions / totalCount * 1.25))
+        : this.solveSettings.maxSolutions,
+    );
 
     const baseConfig = {
       maxSolutions: perWorkerMax,
@@ -694,11 +701,13 @@ export class App {
           }
         }
         completedCount++;
+        // Release this worker now — holding every worker alive until the last
+        // one finishes keeps N solution sets in memory simultaneously.
+        this.retireWorker(worker);
         if (totalCount > 1) {
           this.showStatus(`${statusPrefix}Solving... (${completedCount}/${totalCount} complete)`, 'info');
         }
         if (completedCount === totalCount) {
-          // Terminate workers for this MCU before proceeding
           this.terminateWorkers();
           onComplete(results);
         }
@@ -758,6 +767,13 @@ export class App {
         });
       }
     }
+  }
+
+  /** Terminate one finished worker and drop it from the pool. */
+  private retireWorker(worker: Worker): void {
+    try { worker.terminate(); } catch { /* Vite module worker proxy may throw */ }
+    const i = this.solverWorkers.indexOf(worker);
+    if (i >= 0) this.solverWorkers.splice(i, 1);
   }
 
   private terminateWorkers(): void {

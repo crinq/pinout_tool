@@ -1,0 +1,96 @@
+settings from "complex":
+  
+mcu: STM32G491rc
+package: UFBGA64
+#mcu: STM32G474cc
+#package: UFQFPN48
+
+
+port clock:
+  channel IN = RCC_OSCIN
+  channel OUT = RCC_OSCOUT
+  channel id = IN
+  color "brown"
+  
+  
+port debug:
+  channel DIO = *_SWDIO
+  channel JDI = *_JTDI
+  channel CLK = *_SWCLK
+  channel SWO = *_SWO
+#  channel TX = USART*_TX $u
+#  channel RX = USART*_RX $u
+#  channel DP = USB*_OTGFSDP
+#  channel DM = USB*_OTGFSDM
+#  require dma(TX, "USART_TX")
+#  require dma(RX, "USART_RX")
+  color "brown"
+    
+
+port SAFETY:
+  channel APP_TX = USART*_TX $au
+  channel APP_RX = USART*_RX $au
+  channel SAFE_TX = USART*_TX $su
+  channel SAFE_RX = USART*_RX $su
+  require dma(APP_TX, "USART_TX")
+  require dma(APP_RX, "USART_TX")
+  require dma(SAFE_TX, "USART_TX")
+  require dma(SAFE_RX, "USART_TX")
+
+
+port ENC0: @ ~W
+  channel MA
+  channel MO
+  channel SL
+  channel CS
+  color "orange"
+
+  config "SPI": 
+    SL = SPI*_MISO $s
+    MA = SPI*_SCK $s
+    MO = SPI*_MOSI $s # reserved for future use
+    require dma(SL, "SPI_RX")
+    
+  # optional
+  config "UART": 
+    SL = USART*_RX $u # reserved for future use, connected
+    require dma(SL, "USART_RX")
+
+
+port ENC1 from ENC0: @ ~N
+  color "green"
+  
+port ENC2 from ENC0: @ ~W
+  color "red"
+  
+  #config "TIM":
+  #  MO = TIM[1,2,3,4,5,8,20]_CH[1,2] $t
+  #  SL = TIM*_CH[1,2] $t
+  #  MA = TIM*_CH[3,4] $t
+
+
+port MOT: 
+  # sto
+  channel STO_FB = TIM[1,8]_BKIN | TIM*_BKIN2 $t
+  channel VGATE_EN = TIM*_CH* $t
+  channel STO_EN = OUT
+
+  # phase, dc, brake currents
+  channel IA = ADC1_IN*
+  channel IB = ADC2_IN*
+  channel IC = ADC3_IN*
+  # channel IDC = ADC1_IN*
+  channel IBRAKE = ADC1_IN*
+
+  # phase, dc voltages
+  channel UA = ADC1_IN*
+  channel UB = ADC2_IN*
+  channel UC = ADC3_IN*
+  # channel UDC = ADC3_IN*
+  channel UBRAKE = ADC2_IN*
+  channel UGATE = ADC1_IN*
+
+  require dma(UA)
+  require dma(UB)
+  require dma(UC)
+  color "blue"
