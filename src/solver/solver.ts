@@ -1136,11 +1136,25 @@ export function validateGpioAvailability(
 // Pre-solve Validation
 // ============================================================
 
+/**
+ * Value of a literal argument. `true`/`false` reach us as idents (the
+ * expression grammar has no boolean literal), so they are recognised here —
+ * which is what lets `require flag(TX, "5V_tolerant", true)` read naturally.
+ */
+export function literalValue(
+  expr: ConstraintExprNode,
+): string | number | boolean | undefined {
+  if (expr.type === 'string_literal') return expr.value;
+  if (expr.type === 'number_literal') return expr.value;
+  if (expr.type === 'boolean_literal') return expr.value;
+  return undefined;
+}
+
 const KNOWN_FUNCTIONS = new Set([
   'same_instance', 'diff_instance', 'instance', 'type',
   'gpio_pin', 'gpio_port', 'dma', 'channel_signal',
   'channel_number', 'instance_number', 'pin_number',
-  'pin_row', 'pin_col', 'pin_distance',
+  'pin_row', 'pin_col', 'pin_distance', 'flag',
 ]);
 
 /**
@@ -2399,6 +2413,9 @@ export function evaluateExpr(
     case 'string_literal':
       return expr.value;
 
+    case 'boolean_literal':
+      return expr.value;
+
     case 'number_literal':
       return expr.value;
 
@@ -2506,6 +2523,25 @@ function evaluateFunctionCall(
         }
       }
       return '';
+    }
+
+    case 'flag': {
+      // flag(ch, "name", value) — every pin the channel occupies must carry
+      // that per-pin flag with that value. A missing flag fails, so data
+      // without flags (e.g. CubeMX XML) never satisfies the constraint.
+      if (args.length !== 3) return false;
+      const wanted = literalValue(args[2]);
+      if (wanted === undefined) return false;   // not a literal we can compare
+      const flagName = args[1].type === 'string_literal' ? args[1].value : null;
+      if (flagName === null) return false;
+      const vas = resolveChannel(args[0]);
+      if (vas.length === 0) return true;        // nothing assigned: vacuously true
+      for (const va of vas) {
+        const have = va.candidate.pin.flags?.[flagName];
+        if (have === undefined) return false;   // flag absent on this pin
+        if (have !== wanted && String(have) !== String(wanted)) return false;
+      }
+      return true;
     }
 
     case 'gpio_pin': {

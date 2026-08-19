@@ -643,6 +643,7 @@ port DEBUG:
 | `gpio_pin(ch, "TYPE")` | 1 channel + type | string | Pin name filtered by signal type |
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
 | `gpio_port(ch, "TYPE")` | 1 channel + type | string | GPIO port filtered by signal type |
+| `flag(ch, "name", value)` | 1 channel + name + value | boolean | Every pin the channel uses carries that vendor pin flag with that value |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
 | `dma(ch, "TYPE")` or `dma(ch, "TYPE_REQUEST")` | 1 channel + filter | boolean | DMA check filtered by peripheral type, or type + specific request (e.g. `"USART_TX"`) |
 | `pin_number(ch)` | 1 channel | number | Physical pin number (position) |
@@ -667,6 +668,29 @@ require channel_number(IA) != channel_number(IB)
 require pin_row(TX) == pin_row(RX)
 require pin_distance(MOSI, MISO) < 5
 ```
+
+#### Pin flags
+
+Vendor JSON data may attach per-pin flags (e.g. 5 V tolerance). `flag()` requires
+**every pin the channel occupies** to carry that flag with that value:
+
+```
+channel TX = USART*_TX
+require flag(TX, "5V_tolerant", true)
+```
+
+The value may be `true`/`false`, a number, or a quoted string. A pin whose data
+does not carry the flag at all **fails** the condition — so a channel is only
+accepted when the data explicitly says so. For a multi-pin channel
+(`CH = A + B`) every pin must match.
+
+Flags come from the remote JSON catalogue's optional `flags` dict per GPIO:
+
+```json
+{ "name": "PA9", "flags": { "5V_tolerant": true } }
+```
+
+CubeMX XML carries no flags, so `flag()` never holds for XML-imported MCUs.
 
 #### DMA constraints
 

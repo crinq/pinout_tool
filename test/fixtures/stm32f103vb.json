@@ -1,0 +1,5031 @@
+{
+  "schema": 1,
+  "name": "stm32f103vb",
+  "family": "stm32f1",
+  "sub_family": "stm32f103",
+  "line": "STM32F103",
+  "die": "DIE410",
+  "cores": [
+    {
+      "name": "cm3",
+      "nvic_prio_bits": 4,
+      "type_full": "cortex-m3",
+      "revision": "r1p1",
+      "freq_max_hz": 36000000
+    }
+  ],
+  "voltage": {
+    "min_v": 2.0,
+    "max_v": 3.6
+  },
+  "temperature": {
+    "min_c": -40,
+    "max_c": 105,
+    "suffix": "7"
+  },
+  "memory": [
+    {
+      "name": "BANK_1",
+      "kind": "flash",
+      "address": "0x08000000",
+      "size": 131072,
+      "access": "rx",
+      "erase_size": 1024,
+      "write_size": 4
+    },
+    {
+      "name": "SRAM",
+      "kind": "ram",
+      "address": "0x20000000",
+      "size": 20480,
+      "access": "rwx",
+      "erase_size": null,
+      "write_size": null
+    }
+  ],
+  "flash_wait_states": [
+    {
+      "vcore_min_mv": 1800,
+      "wait_states": [
+        {
+          "ws": 0,
+          "hclk_max": 24000000
+        },
+        {
+          "ws": 1,
+          "hclk_max": 48000000
+        },
+        {
+          "ws": 2,
+          "hclk_max": 72000000
+        }
+      ]
+    }
+  ],
+  "docs": {
+    "refmanual": "http://www.st.com/resource/en/reference_manual/CD00171190.pdf",
+    "refmanual_id": "CD00171190",
+    "refmanual_title": "STM32F101xx, STM32F102xx, STM32F103xx, STM32F105xx and STM32F107xx advanced Arm-based 32-bit MCUs",
+    "programming_manual": "http://www.st.com/resource/en/programming_manual/CD00228163.pdf",
+    "datasheet": "http://www.st.com/resource/en/datasheet/CD00161566.pdf",
+    "other": [
+      {
+        "type": "errata_sheet",
+        "title": "STM32F101x8/B, STM32F102x8/B and STM32F103x8/B medium-density device limitations",
+        "name": "CD00190234",
+        "url": "http://www.st.com/resource/en/errata_sheet/CD00190234.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Using the STM32F0/F1/F3/Gx/Lx Series DMA controller",
+        "name": "CD00160362",
+        "url": "http://www.st.com/resource/en/application_note/CD00160362.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Getting started with STM32F10xxx hardware development",
+        "name": "CD00164185",
+        "url": "http://www.st.com/resource/en/application_note/CD00164185.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32F101xx and STM32F103xx RTC calibration",
+        "name": "CD00167326",
+        "url": "http://www.st.com/resource/en/application_note/CD00167326.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 microcontroller system memory boot mode",
+        "name": "CD00167594",
+        "url": "http://www.st.com/resource/en/application_note/CD00167594.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "How to get the best ADC accuracy in STM32 microcontrollers",
+        "name": "CD00211314",
+        "url": "http://www.st.com/resource/en/application_note/CD00211314.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Managing the Driver Enable signal for RS-485 and IO-Link communications with the STM32s USART",
+        "name": "CD00249778",
+        "url": "http://www.st.com/resource/en/application_note/CD00249778.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Audio and waveform generation using the DAC in STM32 products",
+        "name": "CD00259245",
+        "url": "http://www.st.com/resource/en/application_note/CD00259245.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "CAN protocol used in the STM32 bootloader",
+        "name": "CD00264321",
+        "url": "http://www.st.com/resource/en/application_note/CD00264321.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "USART protocol used in the STM32 bootloader",
+        "name": "CD00264342",
+        "url": "http://www.st.com/resource/en/application_note/CD00264342.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "USB DFU protocol used in the STM32 bootloader",
+        "name": "CD00264379",
+        "url": "http://www.st.com/resource/en/application_note/CD00264379.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migration and compatibility guidelines for STM32 microcontroller applications",
+        "name": "DM00024853",
+        "url": "http://www.st.com/resource/en/application_note/DM00024853.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migration of microcontroller applications from STM32F1 to STM32L1 series",
+        "name": "DM00032987",
+        "url": "http://www.st.com/resource/en/application_note/DM00032987.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migrating a microcontroller application from STM32F1 to STM32F2 series",
+        "name": "DM00033267",
+        "url": "http://www.st.com/resource/en/application_note/DM00033267.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 proprietary code protection overview",
+        "name": "DM00033344",
+        "url": "http://www.st.com/resource/en/application_note/DM00033344.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 cross-series timer overview",
+        "name": "DM00042534",
+        "url": "http://www.st.com/resource/en/application_note/DM00042534.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migrating between STM32F1 and STM32F0 series microcontrollers",
+        "name": "DM00052530",
+        "url": "http://www.st.com/resource/en/application_note/DM00052530.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "How to implement a vocoder solution using STM32 microcontrollers",
+        "name": "DM00073742",
+        "url": "http://www.st.com/resource/en/application_note/DM00073742.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Using STM32 device PWM shut-down features for motor control and digital power conversion",
+        "name": "DM00080497",
+        "url": "http://www.st.com/resource/en/application_note/DM00080497.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Extending the DAC performance of STM32 microcontrollers",
+        "name": "DM00129215",
+        "url": "http://www.st.com/resource/en/application_note/DM00129215.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migrating from STM32F1 Series to STM32L4 Series / STM32L4+ Series microntrollers",
+        "name": "DM00156964",
+        "url": "http://www.st.com/resource/en/application_note/DM00156964.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Virtually increasing the number of serial communication peripherals in STM32 applications",
+        "name": "DM00160482",
+        "url": "http://www.st.com/resource/en/application_note/DM00160482.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32Cube firmware examples for STM32F1 Series",
+        "name": "DM00209695",
+        "url": "http://www.st.com/resource/en/application_note/DM00209695.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Handling of soft errors in STM32 applications",
+        "name": "DM00220769",
+        "url": "http://www.st.com/resource/en/application_note/DM00220769.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "General-purpose timer cookbook for STM32 microcontrollers",
+        "name": "DM00236305",
+        "url": "http://www.st.com/resource/en/application_note/DM00236305.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "High-speed SI simulations using IBIS and board-level simulations using HyperLynx SI on STM32 MCUs and MPUs",
+        "name": "DM00257177",
+        "url": "http://www.st.com/resource/en/application_note/DM00257177.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Managing memory protection unit in STM32 MCUs",
+        "name": "DM00272912",
+        "url": "http://www.st.com/resource/en/application_note/DM00272912.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "USB hardware and PCB guidelines using STM32 MCUs",
+        "name": "DM00296349",
+        "url": "http://www.st.com/resource/en/application_note/DM00296349.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 GPIO configuration for hardware settings and low-power consumption",
+        "name": "DM00315319",
+        "url": "http://www.st.com/resource/en/application_note/DM00315319.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Migration of microcontroller applications from STM32F1 Series to STM32F4 Access lines",
+        "name": "DM00325582",
+        "url": "http://www.st.com/resource/en/application_note/DM00325582.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 USART automatic baud rate detection",
+        "name": "DM00327191",
+        "url": "http://www.st.com/resource/en/application_note/DM00327191.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "STM32 microcontroller debug toolbox",
+        "name": "DM00354244",
+        "url": "http://www.st.com/resource/en/application_note/DM00354244.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Interfacing PDM digital microphones using STM32 MCUs and MPUs",
+        "name": "DM00380469",
+        "url": "http://www.st.com/resource/en/application_note/DM00380469.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Thermal management guidelines for STM32 applications",
+        "name": "DM00395696",
+        "url": "http://www.st.com/resource/en/application_note/DM00395696.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Introduction to STM32 microcontrollers security",
+        "name": "DM00493651",
+        "url": "http://www.st.com/resource/en/application_note/DM00493651.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "USB Type-C Power Delivery using STM32 MCUs and MPUs",
+        "name": "DM00536349",
+        "url": "http://www.st.com/resource/en/application_note/DM00536349.pdf"
+      },
+      {
+        "type": "application_note",
+        "title": "Enhanced methods to handle SPI communication on STM32 devices",
+        "name": "DM00725181",
+        "url": "http://www.st.com/resource/en/application_note/DM00725181.pdf"
+      }
+    ],
+    "product_url": "https://www.st.com/en/microcontrollers-microprocessors/stm32f103.html",
+    "refmanual_rm_id": "RM0008",
+    "refmanual_rm_title": "STM32F101xx, STM32F102xx, STM32F103xx, STM32F105xx, and STM32F107xx",
+    "refmanual_rm_url": "https://www.st.com/resource/en/reference_manual/cd00171190.pdf"
+  },
+  "packages": [
+    {
+      "name": "LFBGA100",
+      "variant": "STM32F103VBHx",
+      "pins": [
+        {
+          "position": "A1",
+          "names": [
+            "PC14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A10",
+          "names": [
+            "PA13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A2",
+          "names": [
+            "PC13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A3",
+          "names": [
+            "PE2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A4",
+          "names": [
+            "PB9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A5",
+          "names": [
+            "PB7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A6",
+          "names": [
+            "PB4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A7",
+          "names": [
+            "PB3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A8",
+          "names": [
+            "PA15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A9",
+          "names": [
+            "PA14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B1",
+          "names": [
+            "PC15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B10",
+          "names": [
+            "PA12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B2",
+          "names": [
+            "VBAT"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "B3",
+          "names": [
+            "PE3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B4",
+          "names": [
+            "PB8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B5",
+          "names": [
+            "PB6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B6",
+          "names": [
+            "PD5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B7",
+          "names": [
+            "PD2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B8",
+          "names": [
+            "PC11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B9",
+          "names": [
+            "PC10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C1",
+          "names": [
+            "OSC_IN"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "C10",
+          "names": [
+            "PA11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C2",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "C3",
+          "names": [
+            "PE4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C4",
+          "names": [
+            "PE1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C5",
+          "names": [
+            "PB5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C6",
+          "names": [
+            "PD6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C7",
+          "names": [
+            "PD3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C8",
+          "names": [
+            "PC12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C9",
+          "names": [
+            "PA9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D1",
+          "names": [
+            "OSC_OUT"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "D10",
+          "names": [
+            "PA10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D2",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "D3",
+          "names": [
+            "PE5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D4",
+          "names": [
+            "PE0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D5",
+          "names": [
+            "BOOT0"
+          ],
+          "type": "boot"
+        },
+        {
+          "position": "D6",
+          "names": [
+            "PD7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D7",
+          "names": [
+            "PD4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D8",
+          "names": [
+            "PD0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D9",
+          "names": [
+            "PA8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E1",
+          "names": [
+            "NRST"
+          ],
+          "type": "reset"
+        },
+        {
+          "position": "E10",
+          "names": [
+            "PC7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E2",
+          "names": [
+            "PC2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E3",
+          "names": [
+            "PE6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E4",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E5",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E6",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E7",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E8",
+          "names": [
+            "PD1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E9",
+          "names": [
+            "PC9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "F1",
+          "names": [
+            "PC0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "F10",
+          "names": [
+            "PC6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "F2",
+          "names": [
+            "PC1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "F3",
+          "names": [
+            "PC3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "F4",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F5",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F6",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F7",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F8",
+          "names": [
+            "NC"
+          ],
+          "type": "nc"
+        },
+        {
+          "position": "F9",
+          "names": [
+            "PC8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G1",
+          "names": [
+            "VSSA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "G10",
+          "names": [
+            "PD15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G2",
+          "names": [
+            "PA0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G3",
+          "names": [
+            "PA4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G4",
+          "names": [
+            "PC4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G5",
+          "names": [
+            "PB2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G6",
+          "names": [
+            "PE10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G7",
+          "names": [
+            "PE14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G8",
+          "names": [
+            "PB15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "G9",
+          "names": [
+            "PD11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H1",
+          "names": [
+            "VREF-"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "H10",
+          "names": [
+            "PD14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H2",
+          "names": [
+            "PA1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H3",
+          "names": [
+            "PA5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H4",
+          "names": [
+            "PC5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H5",
+          "names": [
+            "PE7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H6",
+          "names": [
+            "PE11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H7",
+          "names": [
+            "PE15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H8",
+          "names": [
+            "PB14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H9",
+          "names": [
+            "PD10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J1",
+          "names": [
+            "VREF+"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "J10",
+          "names": [
+            "PD13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J2",
+          "names": [
+            "PA2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J3",
+          "names": [
+            "PA6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J4",
+          "names": [
+            "PB0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J5",
+          "names": [
+            "PE8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J6",
+          "names": [
+            "PE12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J7",
+          "names": [
+            "PB10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J8",
+          "names": [
+            "PB13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J9",
+          "names": [
+            "PD9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K1",
+          "names": [
+            "VDDA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "K10",
+          "names": [
+            "PD12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K2",
+          "names": [
+            "PA3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K3",
+          "names": [
+            "PA7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K4",
+          "names": [
+            "PB1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K5",
+          "names": [
+            "PE9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K6",
+          "names": [
+            "PE13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K7",
+          "names": [
+            "PB11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K8",
+          "names": [
+            "PB12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K9",
+          "names": [
+            "PD8"
+          ],
+          "type": "io"
+        }
+      ]
+    },
+    {
+      "name": "LQFP100",
+      "variant": "STM32F103VBTx",
+      "pins": [
+        {
+          "position": "1",
+          "names": [
+            "PE2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "2",
+          "names": [
+            "PE3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "3",
+          "names": [
+            "PE4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "4",
+          "names": [
+            "PE5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "5",
+          "names": [
+            "PE6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "6",
+          "names": [
+            "VBAT"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "7",
+          "names": [
+            "PC13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "8",
+          "names": [
+            "PC14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "9",
+          "names": [
+            "PC15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "10",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "11",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "12",
+          "names": [
+            "OSC_IN"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "13",
+          "names": [
+            "OSC_OUT"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "14",
+          "names": [
+            "NRST"
+          ],
+          "type": "reset"
+        },
+        {
+          "position": "15",
+          "names": [
+            "PC0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "16",
+          "names": [
+            "PC1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "17",
+          "names": [
+            "PC2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "18",
+          "names": [
+            "PC3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "19",
+          "names": [
+            "VSSA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "20",
+          "names": [
+            "VREF-"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "21",
+          "names": [
+            "VREF+"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "22",
+          "names": [
+            "VDDA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "23",
+          "names": [
+            "PA0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "24",
+          "names": [
+            "PA1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "25",
+          "names": [
+            "PA2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "26",
+          "names": [
+            "PA3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "27",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "28",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "29",
+          "names": [
+            "PA4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "30",
+          "names": [
+            "PA5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "31",
+          "names": [
+            "PA6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "32",
+          "names": [
+            "PA7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "33",
+          "names": [
+            "PC4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "34",
+          "names": [
+            "PC5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "35",
+          "names": [
+            "PB0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "36",
+          "names": [
+            "PB1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "37",
+          "names": [
+            "PB2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "38",
+          "names": [
+            "PE7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "39",
+          "names": [
+            "PE8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "40",
+          "names": [
+            "PE9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "41",
+          "names": [
+            "PE10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "42",
+          "names": [
+            "PE11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "43",
+          "names": [
+            "PE12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "44",
+          "names": [
+            "PE13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "45",
+          "names": [
+            "PE14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "46",
+          "names": [
+            "PE15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "47",
+          "names": [
+            "PB10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "48",
+          "names": [
+            "PB11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "49",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "50",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "51",
+          "names": [
+            "PB12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "52",
+          "names": [
+            "PB13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "53",
+          "names": [
+            "PB14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "54",
+          "names": [
+            "PB15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "55",
+          "names": [
+            "PD8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "56",
+          "names": [
+            "PD9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "57",
+          "names": [
+            "PD10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "58",
+          "names": [
+            "PD11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "59",
+          "names": [
+            "PD12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "60",
+          "names": [
+            "PD13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "61",
+          "names": [
+            "PD14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "62",
+          "names": [
+            "PD15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "63",
+          "names": [
+            "PC6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "64",
+          "names": [
+            "PC7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "65",
+          "names": [
+            "PC8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "66",
+          "names": [
+            "PC9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "67",
+          "names": [
+            "PA8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "68",
+          "names": [
+            "PA9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "69",
+          "names": [
+            "PA10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "70",
+          "names": [
+            "PA11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "71",
+          "names": [
+            "PA12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "72",
+          "names": [
+            "PA13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "73",
+          "names": [
+            "NC"
+          ],
+          "type": "nc"
+        },
+        {
+          "position": "74",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "75",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "76",
+          "names": [
+            "PA14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "77",
+          "names": [
+            "PA15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "78",
+          "names": [
+            "PC10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "79",
+          "names": [
+            "PC11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "80",
+          "names": [
+            "PC12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "81",
+          "names": [
+            "PD0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "82",
+          "names": [
+            "PD1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "83",
+          "names": [
+            "PD2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "84",
+          "names": [
+            "PD3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "85",
+          "names": [
+            "PD4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "86",
+          "names": [
+            "PD5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "87",
+          "names": [
+            "PD6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "88",
+          "names": [
+            "PD7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "89",
+          "names": [
+            "PB3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "90",
+          "names": [
+            "PB4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "91",
+          "names": [
+            "PB5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "92",
+          "names": [
+            "PB6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "93",
+          "names": [
+            "PB7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "94",
+          "names": [
+            "BOOT0"
+          ],
+          "type": "boot"
+        },
+        {
+          "position": "95",
+          "names": [
+            "PB8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "96",
+          "names": [
+            "PB9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "97",
+          "names": [
+            "PE0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "98",
+          "names": [
+            "PE1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "99",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "100",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        }
+      ]
+    },
+    {
+      "name": "UFBGA100",
+      "variant": "STM32F103VBIx",
+      "pins": [
+        {
+          "position": "A1",
+          "names": [
+            "PE3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A10",
+          "names": [
+            "PA14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A11",
+          "names": [
+            "PA13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A12",
+          "names": [
+            "PA12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A2",
+          "names": [
+            "PE1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A3",
+          "names": [
+            "PB8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A4",
+          "names": [
+            "BOOT0"
+          ],
+          "type": "boot"
+        },
+        {
+          "position": "A5",
+          "names": [
+            "PD7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A6",
+          "names": [
+            "PD5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A7",
+          "names": [
+            "PB4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A8",
+          "names": [
+            "PB3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "A9",
+          "names": [
+            "PA15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B1",
+          "names": [
+            "PE4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B10",
+          "names": [
+            "PC12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B11",
+          "names": [
+            "PC10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B12",
+          "names": [
+            "PA11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B2",
+          "names": [
+            "PE2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B3",
+          "names": [
+            "PB9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B4",
+          "names": [
+            "PB7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B5",
+          "names": [
+            "PB6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B6",
+          "names": [
+            "PD6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B7",
+          "names": [
+            "PD4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B8",
+          "names": [
+            "PD3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "B9",
+          "names": [
+            "PD1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C1",
+          "names": [
+            "PC13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C10",
+          "names": [
+            "PC11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C11",
+          "names": [
+            "NC"
+          ],
+          "type": "nc"
+        },
+        {
+          "position": "C12",
+          "names": [
+            "PA10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C2",
+          "names": [
+            "PE5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C3",
+          "names": [
+            "PE0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C4",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "C5",
+          "names": [
+            "PB5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C8",
+          "names": [
+            "PD2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "C9",
+          "names": [
+            "PD0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D1",
+          "names": [
+            "PC14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D10",
+          "names": [
+            "PA9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D11",
+          "names": [
+            "PA8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D12",
+          "names": [
+            "PC9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D2",
+          "names": [
+            "PE6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "D3",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E1",
+          "names": [
+            "PC15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E10",
+          "names": [
+            "PC8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E11",
+          "names": [
+            "PC7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E12",
+          "names": [
+            "PC6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "E2",
+          "names": [
+            "VBAT"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "E3",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F1",
+          "names": [
+            "OSC_IN"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "F11",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F12",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "F2",
+          "names": [
+            "VSS"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "G1",
+          "names": [
+            "OSC_OUT"
+          ],
+          "type": "mono_io"
+        },
+        {
+          "position": "G11",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "G12",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "G2",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "H1",
+          "names": [
+            "PC0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H10",
+          "names": [
+            "PD15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H11",
+          "names": [
+            "PD14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H12",
+          "names": [
+            "PD13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "H2",
+          "names": [
+            "NRST"
+          ],
+          "type": "reset"
+        },
+        {
+          "position": "H3",
+          "names": [
+            "VDD"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "J1",
+          "names": [
+            "VSSA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "J10",
+          "names": [
+            "PD12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J11",
+          "names": [
+            "PD11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J12",
+          "names": [
+            "PD10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J2",
+          "names": [
+            "PC1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "J3",
+          "names": [
+            "PC2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K1",
+          "names": [
+            "VREF-"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "K10",
+          "names": [
+            "PB15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K11",
+          "names": [
+            "PB14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K12",
+          "names": [
+            "PB13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K2",
+          "names": [
+            "PC3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K3",
+          "names": [
+            "PA2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K4",
+          "names": [
+            "PA5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K5",
+          "names": [
+            "PC4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K8",
+          "names": [
+            "PD9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "K9",
+          "names": [
+            "PD8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L1",
+          "names": [
+            "VREF+"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "L10",
+          "names": [
+            "PB10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L11",
+          "names": [
+            "PB11"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L12",
+          "names": [
+            "PB12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L2",
+          "names": [
+            "PA0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L3",
+          "names": [
+            "PA3"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L4",
+          "names": [
+            "PA6"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L5",
+          "names": [
+            "PC5"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L6",
+          "names": [
+            "PB2"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L7",
+          "names": [
+            "PE8"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L8",
+          "names": [
+            "PE10"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "L9",
+          "names": [
+            "PE12"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M1",
+          "names": [
+            "VDDA"
+          ],
+          "type": "power"
+        },
+        {
+          "position": "M10",
+          "names": [
+            "PE13"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M11",
+          "names": [
+            "PE14"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M12",
+          "names": [
+            "PE15"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M2",
+          "names": [
+            "PA1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M3",
+          "names": [
+            "PA4"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M4",
+          "names": [
+            "PA7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M5",
+          "names": [
+            "PB0"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M6",
+          "names": [
+            "PB1"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M7",
+          "names": [
+            "PE7"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M8",
+          "names": [
+            "PE9"
+          ],
+          "type": "io"
+        },
+        {
+          "position": "M9",
+          "names": [
+            "PE11"
+          ],
+          "type": "io"
+        }
+      ]
+    }
+  ],
+  "gpios": [
+    {
+      "name": "PA0",
+      "port": "a",
+      "pin": 0,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN0",
+        "ADC2_IN0",
+        "TIM2_CH1",
+        "TIM2_ETR",
+        "USART2_CTS",
+        "SYS_WKUP"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA1",
+      "port": "a",
+      "pin": 1,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN1",
+        "ADC2_IN1",
+        "TIM2_CH2",
+        "USART2_RTS"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA2",
+      "port": "a",
+      "pin": 2,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN2",
+        "ADC2_IN2",
+        "TIM2_CH3",
+        "USART2_TX"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA3",
+      "port": "a",
+      "pin": 3,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN3",
+        "ADC2_IN3",
+        "TIM2_CH4",
+        "USART2_RX"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA4",
+      "port": "a",
+      "pin": 4,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN4",
+        "ADC2_IN4",
+        "SPI1_NSS",
+        "USART2_CK"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA5",
+      "port": "a",
+      "pin": 5,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN5",
+        "ADC2_IN5",
+        "SPI1_SCK"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA6",
+      "port": "a",
+      "pin": 6,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN6",
+        "ADC2_IN6",
+        "SPI1_MISO",
+        "TIM1_BKIN",
+        "TIM3_CH1"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA7",
+      "port": "a",
+      "pin": 7,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN7",
+        "ADC2_IN7",
+        "SPI1_MOSI",
+        "TIM1_CH1N",
+        "TIM3_CH2"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PA8",
+      "port": "a",
+      "pin": 8,
+      "alternate_functions": {},
+      "additional_functions": [
+        "RCC_MCO",
+        "TIM1_CH1",
+        "USART1_CK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA9",
+      "port": "a",
+      "pin": 9,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH2",
+        "USART1_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA10",
+      "port": "a",
+      "pin": 10,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH3",
+        "USART1_RX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA11",
+      "port": "a",
+      "pin": 11,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_RX",
+        "TIM1_CH4",
+        "USART1_CTS",
+        "USB_DM",
+        "ADC1_EXTI11",
+        "ADC2_EXTI11"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA12",
+      "port": "a",
+      "pin": 12,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_TX",
+        "TIM1_ETR",
+        "USART1_RTS",
+        "USB_DP"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA13",
+      "port": "a",
+      "pin": 13,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_JTMS",
+        "SYS_SWDIO"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA14",
+      "port": "a",
+      "pin": 14,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_JTCK",
+        "SYS_SWCLK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PA15",
+      "port": "a",
+      "pin": 15,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI1_NSS",
+        "TIM2_CH1",
+        "TIM2_ETR",
+        "ADC1_EXTI15",
+        "ADC2_EXTI15",
+        "SYS_JTDI"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB0",
+      "port": "b",
+      "pin": 0,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN8",
+        "ADC2_IN8",
+        "TIM1_CH2N",
+        "TIM3_CH3"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PB1",
+      "port": "b",
+      "pin": 1,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN9",
+        "ADC2_IN9",
+        "TIM1_CH3N",
+        "TIM3_CH4"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PB2",
+      "port": "b",
+      "pin": 2,
+      "alternate_functions": {},
+      "additional_functions": [],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB3",
+      "port": "b",
+      "pin": 3,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI1_SCK",
+        "TIM2_CH2",
+        "SYS_JTDO",
+        "SYS_TRACESWO"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB4",
+      "port": "b",
+      "pin": 4,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI1_MISO",
+        "TIM3_CH1",
+        "SYS_NJTRST"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB5",
+      "port": "b",
+      "pin": 5,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C1_SMBA",
+        "SPI1_MOSI",
+        "TIM3_CH2"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PB6",
+      "port": "b",
+      "pin": 6,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C1_SCL",
+        "TIM4_CH1",
+        "USART1_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB7",
+      "port": "b",
+      "pin": 7,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C1_SDA",
+        "TIM4_CH2",
+        "USART1_RX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB8",
+      "port": "b",
+      "pin": 8,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_RX",
+        "I2C1_SCL",
+        "TIM4_CH3"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB9",
+      "port": "b",
+      "pin": 9,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_TX",
+        "I2C1_SDA",
+        "TIM4_CH4"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB10",
+      "port": "b",
+      "pin": 10,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C2_SCL",
+        "TIM2_CH3",
+        "USART3_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB11",
+      "port": "b",
+      "pin": 11,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C2_SDA",
+        "TIM2_CH4",
+        "USART3_RX",
+        "ADC1_EXTI11",
+        "ADC2_EXTI11"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB12",
+      "port": "b",
+      "pin": 12,
+      "alternate_functions": {},
+      "additional_functions": [
+        "I2C2_SMBA",
+        "SPI2_NSS",
+        "TIM1_BKIN",
+        "USART3_CK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB13",
+      "port": "b",
+      "pin": 13,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI2_SCK",
+        "TIM1_CH1N",
+        "USART3_CTS"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB14",
+      "port": "b",
+      "pin": 14,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI2_MISO",
+        "TIM1_CH2N",
+        "USART3_RTS"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PB15",
+      "port": "b",
+      "pin": 15,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SPI2_MOSI",
+        "TIM1_CH3N",
+        "ADC1_EXTI15",
+        "ADC2_EXTI15"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC0",
+      "port": "c",
+      "pin": 0,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN10",
+        "ADC2_IN10"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC1",
+      "port": "c",
+      "pin": 1,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN11",
+        "ADC2_IN11"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC2",
+      "port": "c",
+      "pin": 2,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN12",
+        "ADC2_IN12"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC3",
+      "port": "c",
+      "pin": 3,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN13",
+        "ADC2_IN13"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC4",
+      "port": "c",
+      "pin": 4,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN14",
+        "ADC2_IN14"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC5",
+      "port": "c",
+      "pin": 5,
+      "alternate_functions": {},
+      "additional_functions": [
+        "ADC1_IN15",
+        "ADC2_IN15"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC6",
+      "port": "c",
+      "pin": 6,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM3_CH1"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC7",
+      "port": "c",
+      "pin": 7,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM3_CH2"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC8",
+      "port": "c",
+      "pin": 8,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM3_CH3"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC9",
+      "port": "c",
+      "pin": 9,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM3_CH4"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC10",
+      "port": "c",
+      "pin": 10,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC11",
+      "port": "c",
+      "pin": 11,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_RX",
+        "ADC1_EXTI11",
+        "ADC2_EXTI11"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC12",
+      "port": "c",
+      "pin": 12,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_CK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PC13",
+      "port": "c",
+      "pin": 13,
+      "alternate_functions": {},
+      "additional_functions": [
+        "RTC_OUT",
+        "RTC_TAMPER"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC14",
+      "port": "c",
+      "pin": 14,
+      "alternate_functions": {},
+      "additional_functions": [
+        "RCC_OSC32_IN"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PC15",
+      "port": "c",
+      "pin": 15,
+      "alternate_functions": {},
+      "additional_functions": [
+        "RCC_OSC32_OUT",
+        "ADC1_EXTI15",
+        "ADC2_EXTI15"
+      ],
+      "flags": {
+        "5V_tolerant": false
+      }
+    },
+    {
+      "name": "PD0",
+      "port": "d",
+      "pin": 0,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_RX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD1",
+      "port": "d",
+      "pin": 1,
+      "alternate_functions": {},
+      "additional_functions": [
+        "CAN_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD2",
+      "port": "d",
+      "pin": 2,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM3_ETR"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD3",
+      "port": "d",
+      "pin": 3,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART2_CTS"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD4",
+      "port": "d",
+      "pin": 4,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART2_RTS"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD5",
+      "port": "d",
+      "pin": 5,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART2_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD6",
+      "port": "d",
+      "pin": 6,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART2_RX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD7",
+      "port": "d",
+      "pin": 7,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART2_CK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD8",
+      "port": "d",
+      "pin": 8,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_TX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD9",
+      "port": "d",
+      "pin": 9,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_RX"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD10",
+      "port": "d",
+      "pin": 10,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_CK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD11",
+      "port": "d",
+      "pin": 11,
+      "alternate_functions": {},
+      "additional_functions": [
+        "USART3_CTS",
+        "ADC1_EXTI11",
+        "ADC2_EXTI11"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD12",
+      "port": "d",
+      "pin": 12,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM4_CH1",
+        "USART3_RTS"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD13",
+      "port": "d",
+      "pin": 13,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM4_CH2"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD14",
+      "port": "d",
+      "pin": 14,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM4_CH3"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PD15",
+      "port": "d",
+      "pin": 15,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM4_CH4",
+        "ADC1_EXTI15",
+        "ADC2_EXTI15"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE0",
+      "port": "e",
+      "pin": 0,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM4_ETR"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE1",
+      "port": "e",
+      "pin": 1,
+      "alternate_functions": {},
+      "additional_functions": [],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE2",
+      "port": "e",
+      "pin": 2,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_TRACECLK"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE3",
+      "port": "e",
+      "pin": 3,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_TRACED0"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE4",
+      "port": "e",
+      "pin": 4,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_TRACED1"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE5",
+      "port": "e",
+      "pin": 5,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_TRACED2"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE6",
+      "port": "e",
+      "pin": 6,
+      "alternate_functions": {},
+      "additional_functions": [
+        "SYS_TRACED3"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE7",
+      "port": "e",
+      "pin": 7,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_ETR"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE8",
+      "port": "e",
+      "pin": 8,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH1N"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE9",
+      "port": "e",
+      "pin": 9,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH1"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE10",
+      "port": "e",
+      "pin": 10,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH2N"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE11",
+      "port": "e",
+      "pin": 11,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH2",
+        "ADC1_EXTI11",
+        "ADC2_EXTI11"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE12",
+      "port": "e",
+      "pin": 12,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH3N"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE13",
+      "port": "e",
+      "pin": 13,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH3"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE14",
+      "port": "e",
+      "pin": 14,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_CH4"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    },
+    {
+      "name": "PE15",
+      "port": "e",
+      "pin": 15,
+      "alternate_functions": {},
+      "additional_functions": [
+        "TIM1_BKIN",
+        "ADC1_EXTI15",
+        "ADC2_EXTI15"
+      ],
+      "flags": {
+        "5V_tolerant": true
+      }
+    }
+  ],
+  "peripherals": [
+    {
+      "name": "ADC1",
+      "kind": "adc",
+      "version": "f1",
+      "register_block": "ADC",
+      "base_address": "0x40012400",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "ADC1EN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "ADC1RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "ADC1_2"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "ADC1",
+          "dma": [
+            "DMA1_CH1"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ADC12_COMMON",
+      "kind": null,
+      "version": null,
+      "register_block": null,
+      "base_address": "0x40012400",
+      "rcc": null,
+      "interrupts": []
+    },
+    {
+      "name": "ADC2",
+      "kind": "adc",
+      "version": "f1",
+      "register_block": "ADC",
+      "base_address": "0x40012800",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "ADC2EN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "ADC2RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "ADC1_2"
+        }
+      ],
+      "modm_version": "stm32"
+    },
+    {
+      "name": "AFIO",
+      "kind": "afio",
+      "version": "f1",
+      "register_block": "AFIO",
+      "base_address": "0x40010000",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "AFIOEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "AFIORST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "BKP",
+      "kind": "bkp",
+      "version": "v1",
+      "register_block": "BKP",
+      "base_address": "0x40006C00",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "BKPEN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "BKPRST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "CAN",
+      "kind": "can",
+      "version": "bxcan",
+      "register_block": "CAN",
+      "base_address": "0x40006400",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "CANEN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "CANRST"
+      },
+      "interrupts": [
+        {
+          "signal": "RX0",
+          "interrupt": "USB_LP_CAN1_RX0"
+        },
+        {
+          "signal": "RX1",
+          "interrupt": "CAN1_RX1"
+        },
+        {
+          "signal": "SCE",
+          "interrupt": "CAN1_SCE"
+        },
+        {
+          "signal": "TX",
+          "interrupt": "USB_HP_CAN1_TX"
+        }
+      ],
+      "features": [
+        "filter-14"
+      ],
+      "modm_version": "stm32"
+    },
+    {
+      "name": "CRC",
+      "kind": "crc",
+      "version": "v1",
+      "register_block": "CRC",
+      "base_address": "0x40023000",
+      "rcc": {
+        "bus_clock": "HCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "HCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "AHBENR",
+        "enable_field": "CRCEN",
+        "reset_register": null,
+        "reset_field": null
+      },
+      "interrupts": [],
+      "modm_version": "stm32"
+    },
+    {
+      "name": "DBGMCU",
+      "kind": "dbgmcu",
+      "version": "f1",
+      "register_block": "DBGMCU",
+      "base_address": "0xE0042000",
+      "rcc": null,
+      "interrupts": []
+    },
+    {
+      "name": "DMA1",
+      "kind": "bdma",
+      "version": "v1",
+      "register_block": "DMA",
+      "base_address": "0x40020000",
+      "rcc": {
+        "bus_clock": "HCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "HCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "AHBENR",
+        "enable_field": "DMA1EN",
+        "reset_register": null,
+        "reset_field": null
+      },
+      "interrupts": [
+        {
+          "signal": "CH1",
+          "interrupt": "DMA1_Channel1"
+        },
+        {
+          "signal": "CH2",
+          "interrupt": "DMA1_Channel2"
+        },
+        {
+          "signal": "CH3",
+          "interrupt": "DMA1_Channel3"
+        },
+        {
+          "signal": "CH4",
+          "interrupt": "DMA1_Channel4"
+        },
+        {
+          "signal": "CH5",
+          "interrupt": "DMA1_Channel5"
+        },
+        {
+          "signal": "CH6",
+          "interrupt": "DMA1_Channel6"
+        },
+        {
+          "signal": "CH7",
+          "interrupt": "DMA1_Channel7"
+        }
+      ]
+    },
+    {
+      "name": "EXTI",
+      "kind": "exti",
+      "version": "v1",
+      "register_block": "EXTI",
+      "base_address": "0x40010400",
+      "rcc": null,
+      "interrupts": [
+        {
+          "signal": "EXTI0",
+          "interrupt": "EXTI0"
+        },
+        {
+          "signal": "EXTI1",
+          "interrupt": "EXTI1"
+        },
+        {
+          "signal": "EXTI10",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI11",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI12",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI13",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI14",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI15",
+          "interrupt": "EXTI15_10"
+        },
+        {
+          "signal": "EXTI2",
+          "interrupt": "EXTI2"
+        },
+        {
+          "signal": "EXTI3",
+          "interrupt": "EXTI3"
+        },
+        {
+          "signal": "EXTI4",
+          "interrupt": "EXTI4"
+        },
+        {
+          "signal": "EXTI5",
+          "interrupt": "EXTI9_5"
+        },
+        {
+          "signal": "EXTI6",
+          "interrupt": "EXTI9_5"
+        },
+        {
+          "signal": "EXTI7",
+          "interrupt": "EXTI9_5"
+        },
+        {
+          "signal": "EXTI8",
+          "interrupt": "EXTI9_5"
+        },
+        {
+          "signal": "EXTI9",
+          "interrupt": "EXTI9_5"
+        }
+      ]
+    },
+    {
+      "name": "FLASH",
+      "kind": "flash",
+      "version": "f1",
+      "register_block": "FLASH",
+      "base_address": "0x40022000",
+      "rcc": {
+        "bus_clock": "HCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "HCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "AHBENR",
+        "enable_field": "FLASHEN",
+        "reset_register": null,
+        "reset_field": null
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "FLASH"
+        }
+      ]
+    },
+    {
+      "name": "GPIOA",
+      "kind": "gpio",
+      "version": "v1",
+      "register_block": "GPIO",
+      "base_address": "0x40010800",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "GPIOAEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "GPIOARST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "GPIOB",
+      "kind": "gpio",
+      "version": "v1",
+      "register_block": "GPIO",
+      "base_address": "0x40010C00",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "GPIOBEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "GPIOBRST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "GPIOC",
+      "kind": "gpio",
+      "version": "v1",
+      "register_block": "GPIO",
+      "base_address": "0x40011000",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "GPIOCEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "GPIOCRST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "GPIOD",
+      "kind": "gpio",
+      "version": "v1",
+      "register_block": "GPIO",
+      "base_address": "0x40011400",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "GPIODEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "GPIODRST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "GPIOE",
+      "kind": "gpio",
+      "version": "v1",
+      "register_block": "GPIO",
+      "base_address": "0x40011800",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "GPIOEEN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "GPIOERST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "I2C1",
+      "kind": "i2c",
+      "version": "v1",
+      "register_block": "I2C",
+      "base_address": "0x40005400",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "I2C1EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "I2C1RST"
+      },
+      "interrupts": [
+        {
+          "signal": "ER",
+          "interrupt": "I2C1_ER"
+        },
+        {
+          "signal": "EV",
+          "interrupt": "I2C1_EV"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH6"
+          ]
+        },
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "I2C2",
+      "kind": "i2c",
+      "version": "v1",
+      "register_block": "I2C",
+      "base_address": "0x40005800",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "I2C2EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "I2C2RST"
+      },
+      "interrupts": [
+        {
+          "signal": "ER",
+          "interrupt": "I2C2_ER"
+        },
+        {
+          "signal": "EV",
+          "interrupt": "I2C2_EV"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "IWDG",
+      "kind": "iwdg",
+      "version": "v1",
+      "register_block": "IWDG",
+      "base_address": "0x40003000",
+      "rcc": null,
+      "interrupts": [],
+      "modm_version": "stm32"
+    },
+    {
+      "name": "PWR",
+      "kind": "pwr",
+      "version": "f1",
+      "register_block": "PWR",
+      "base_address": "0x40007000",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "PWREN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "PWRRST"
+      },
+      "interrupts": []
+    },
+    {
+      "name": "RCC",
+      "kind": "rcc",
+      "version": "f1",
+      "register_block": "RCC",
+      "base_address": "0x40021000",
+      "rcc": null,
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "RCC"
+        }
+      ],
+      "modm_version": "stm32-v1.0"
+    },
+    {
+      "name": "RTC",
+      "kind": "rtc",
+      "version": "v1",
+      "register_block": "RTC",
+      "base_address": "0x40002800",
+      "rcc": null,
+      "interrupts": [
+        {
+          "signal": "ALARM",
+          "interrupt": "RTC_Alarm"
+        },
+        {
+          "signal": "SSRU",
+          "interrupt": "RTC"
+        },
+        {
+          "signal": "STAMP",
+          "interrupt": "RTC"
+        },
+        {
+          "signal": "TAMP",
+          "interrupt": "TAMPER"
+        },
+        {
+          "signal": "WKUP",
+          "interrupt": "RTC"
+        }
+      ],
+      "modm_version": "stm32-v1.1"
+    },
+    {
+      "name": "SPI1",
+      "kind": "spi",
+      "version": "v1",
+      "register_block": "SPI",
+      "base_address": "0x40013000",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "SPI1EN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "SPI1RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "SPI1"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH2"
+          ]
+        },
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SPI2",
+      "kind": "spi",
+      "version": "v1",
+      "register_block": "SPI",
+      "base_address": "0x40003800",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "SPI2EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "SPI2RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "SPI2"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TIM1",
+      "kind": "timer",
+      "version": "v1",
+      "register_block": "TIM_ADV",
+      "base_address": "0x40012C00",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2_TIM"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "TIM1EN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "TIM1RST"
+      },
+      "interrupts": [
+        {
+          "signal": "BRK",
+          "interrupt": "TIM1_BRK"
+        },
+        {
+          "signal": "CC",
+          "interrupt": "TIM1_CC"
+        },
+        {
+          "signal": "COM",
+          "interrupt": "TIM1_TRG_COM"
+        },
+        {
+          "signal": "TRG",
+          "interrupt": "TIM1_TRG_COM"
+        },
+        {
+          "signal": "UP",
+          "interrupt": "TIM1_UP"
+        }
+      ],
+      "modm_version": "stm32-advanced",
+      "dma_channels": [
+        {
+          "signal": "CH1",
+          "dma": [
+            "DMA1_CH2"
+          ]
+        },
+        {
+          "signal": "CH2",
+          "dma": [
+            "DMA1_CH3"
+          ]
+        },
+        {
+          "signal": "CH4",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "TRIG",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "COM",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "UP",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        },
+        {
+          "signal": "CH3",
+          "dma": [
+            "DMA1_CH6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TIM2",
+      "kind": "timer",
+      "version": "v1",
+      "register_block": "TIM_GP16",
+      "base_address": "0x40000000",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1_TIM"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "TIM2EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "TIM2RST"
+      },
+      "interrupts": [
+        {
+          "signal": "BRK",
+          "interrupt": "TIM2"
+        },
+        {
+          "signal": "CC",
+          "interrupt": "TIM2"
+        },
+        {
+          "signal": "COM",
+          "interrupt": "TIM2"
+        },
+        {
+          "signal": "TRG",
+          "interrupt": "TIM2"
+        },
+        {
+          "signal": "UP",
+          "interrupt": "TIM2"
+        }
+      ],
+      "modm_version": "stm32-general-purpose",
+      "dma_channels": [
+        {
+          "signal": "CH3",
+          "dma": [
+            "DMA1_CH1"
+          ]
+        },
+        {
+          "signal": "UP",
+          "dma": [
+            "DMA1_CH2"
+          ]
+        },
+        {
+          "signal": "CH1",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        },
+        {
+          "signal": "CH2",
+          "dma": [
+            "DMA1_CH7"
+          ]
+        },
+        {
+          "signal": "CH4",
+          "dma": [
+            "DMA1_CH7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TIM3",
+      "kind": "timer",
+      "version": "v1",
+      "register_block": "TIM_GP16",
+      "base_address": "0x40000400",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1_TIM"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "TIM3EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "TIM3RST"
+      },
+      "interrupts": [
+        {
+          "signal": "BRK",
+          "interrupt": "TIM3"
+        },
+        {
+          "signal": "CC",
+          "interrupt": "TIM3"
+        },
+        {
+          "signal": "COM",
+          "interrupt": "TIM3"
+        },
+        {
+          "signal": "TRG",
+          "interrupt": "TIM3"
+        },
+        {
+          "signal": "UP",
+          "interrupt": "TIM3"
+        }
+      ],
+      "modm_version": "stm32-general-purpose",
+      "dma_channels": [
+        {
+          "signal": "CH3",
+          "dma": [
+            "DMA1_CH2"
+          ]
+        },
+        {
+          "signal": "CH4",
+          "dma": [
+            "DMA1_CH3"
+          ]
+        },
+        {
+          "signal": "UP",
+          "dma": [
+            "DMA1_CH3"
+          ]
+        },
+        {
+          "signal": "CH1",
+          "dma": [
+            "DMA1_CH6"
+          ]
+        },
+        {
+          "signal": "TRIG",
+          "dma": [
+            "DMA1_CH6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TIM4",
+      "kind": "timer",
+      "version": "v1",
+      "register_block": "TIM_GP16",
+      "base_address": "0x40000800",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1_TIM"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "TIM4EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "TIM4RST"
+      },
+      "interrupts": [
+        {
+          "signal": "BRK",
+          "interrupt": "TIM4"
+        },
+        {
+          "signal": "CC",
+          "interrupt": "TIM4"
+        },
+        {
+          "signal": "COM",
+          "interrupt": "TIM4"
+        },
+        {
+          "signal": "TRG",
+          "interrupt": "TIM4"
+        },
+        {
+          "signal": "UP",
+          "interrupt": "TIM4"
+        }
+      ],
+      "modm_version": "stm32-general-purpose",
+      "dma_channels": [
+        {
+          "signal": "CH1",
+          "dma": [
+            "DMA1_CH1"
+          ]
+        },
+        {
+          "signal": "CH2",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "CH3",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        },
+        {
+          "signal": "UP",
+          "dma": [
+            "DMA1_CH7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "UID",
+      "kind": "uid",
+      "version": "v1",
+      "register_block": "UID",
+      "base_address": "0x1FFFF7E8",
+      "rcc": null,
+      "interrupts": []
+    },
+    {
+      "name": "USART1",
+      "kind": "usart",
+      "version": "v1",
+      "register_block": "USART",
+      "base_address": "0x40013800",
+      "rcc": {
+        "bus_clock": "PCLK2",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK2"
+        },
+        "stop_mode": null,
+        "enable_register": "APB2ENR",
+        "enable_field": "USART1EN",
+        "reset_register": "APB2RSTR",
+        "reset_field": "USART1RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "USART1"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH4"
+          ]
+        },
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "USART2",
+      "kind": "usart",
+      "version": "v1",
+      "register_block": "USART",
+      "base_address": "0x40004400",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "USART2EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "USART2RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "USART2"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH6"
+          ]
+        },
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "USART3",
+      "kind": "usart",
+      "version": "v1",
+      "register_block": "USART",
+      "base_address": "0x40004800",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "USART3EN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "USART3RST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "USART3"
+        }
+      ],
+      "modm_version": "stm32",
+      "dma_channels": [
+        {
+          "signal": "TX",
+          "dma": [
+            "DMA1_CH2"
+          ]
+        },
+        {
+          "signal": "RX",
+          "dma": [
+            "DMA1_CH3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "USB",
+      "kind": "usb",
+      "version": "v1",
+      "register_block": "USB",
+      "base_address": "0x40005C00",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "USB"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "USBEN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "USBRST"
+      },
+      "interrupts": [
+        {
+          "signal": "HP",
+          "interrupt": "USB_HP_CAN1_TX"
+        },
+        {
+          "signal": "LP",
+          "interrupt": "USB_LP_CAN1_RX0"
+        },
+        {
+          "signal": "WKUP",
+          "interrupt": "USBWakeUp"
+        }
+      ],
+      "modm_version": "stm32-v1.1"
+    },
+    {
+      "name": "USBRAM",
+      "kind": "usbram",
+      "version": "16x1_512",
+      "register_block": "USBRAM",
+      "base_address": "0x40006000",
+      "rcc": null,
+      "interrupts": []
+    },
+    {
+      "name": "WWDG",
+      "kind": "wwdg",
+      "version": "v1",
+      "register_block": "WWDG",
+      "base_address": "0x40002C00",
+      "rcc": {
+        "bus_clock": "PCLK1",
+        "kernel_clock": {
+          "type": "fixed",
+          "clock": "PCLK1"
+        },
+        "stop_mode": null,
+        "enable_register": "APB1ENR",
+        "enable_field": "WWDGEN",
+        "reset_register": "APB1RSTR",
+        "reset_field": "WWDGRST"
+      },
+      "interrupts": [
+        {
+          "signal": "GLOBAL",
+          "interrupt": "WWDG"
+        },
+        {
+          "signal": "RST",
+          "interrupt": "WWDG"
+        }
+      ],
+      "modm_version": "stm32-v1.0"
+    },
+    {
+      "name": "CPB",
+      "kind": "cpb",
+      "version": "armv7m",
+      "register_block": "CPB",
+      "base_address": "0xE000EF50",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "CPUID",
+      "kind": "cpuid",
+      "version": "armv7m",
+      "register_block": "CPUID",
+      "base_address": "0xE000ED00",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "DCB",
+      "kind": "dcb",
+      "version": "armv7m",
+      "register_block": "DCB",
+      "base_address": "0xE000EDF0",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "DWT",
+      "kind": "dwt",
+      "version": "armv7m",
+      "register_block": "DWT",
+      "base_address": "0xE0001000",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "FPB",
+      "kind": "fpb",
+      "version": "armv7m",
+      "register_block": "FPB",
+      "base_address": "0xE0002000",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "ITM",
+      "kind": "itm",
+      "version": "armv7m",
+      "register_block": "ITM",
+      "base_address": "0xE0000000",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "MPU",
+      "kind": "mpu",
+      "version": "armv7m",
+      "register_block": "MPU",
+      "base_address": "0xE000ED90",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "NVIC",
+      "kind": "nvic",
+      "version": "armv7m",
+      "register_block": "NVIC",
+      "base_address": "0xE000E100",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "SCB",
+      "kind": "scb",
+      "version": "armv7m",
+      "register_block": "SCB",
+      "base_address": "0xE000ED00",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "SYST",
+      "kind": "syst",
+      "version": "armv7m",
+      "register_block": "SYST",
+      "base_address": "0xE000E010",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    },
+    {
+      "name": "TPIU",
+      "kind": "tpiu",
+      "version": "armv7m",
+      "register_block": "TPIU",
+      "base_address": "0xE0040000",
+      "rcc": null,
+      "interrupts": [],
+      "pins": [],
+      "core": true
+    }
+  ],
+  "interrupts": [
+    {
+      "name": "WWDG",
+      "number": 0
+    },
+    {
+      "name": "PVD",
+      "number": 1
+    },
+    {
+      "name": "TAMPER",
+      "number": 2
+    },
+    {
+      "name": "RTC",
+      "number": 3
+    },
+    {
+      "name": "FLASH",
+      "number": 4
+    },
+    {
+      "name": "RCC",
+      "number": 5
+    },
+    {
+      "name": "EXTI0",
+      "number": 6
+    },
+    {
+      "name": "EXTI1",
+      "number": 7
+    },
+    {
+      "name": "EXTI2",
+      "number": 8
+    },
+    {
+      "name": "EXTI3",
+      "number": 9
+    },
+    {
+      "name": "EXTI4",
+      "number": 10
+    },
+    {
+      "name": "DMA1_Channel1",
+      "number": 11
+    },
+    {
+      "name": "DMA1_Channel2",
+      "number": 12
+    },
+    {
+      "name": "DMA1_Channel3",
+      "number": 13
+    },
+    {
+      "name": "DMA1_Channel4",
+      "number": 14
+    },
+    {
+      "name": "DMA1_Channel5",
+      "number": 15
+    },
+    {
+      "name": "DMA1_Channel6",
+      "number": 16
+    },
+    {
+      "name": "DMA1_Channel7",
+      "number": 17
+    },
+    {
+      "name": "ADC1_2",
+      "number": 18
+    },
+    {
+      "name": "USB_HP_CAN1_TX",
+      "number": 19
+    },
+    {
+      "name": "USB_LP_CAN1_RX0",
+      "number": 20
+    },
+    {
+      "name": "CAN1_RX1",
+      "number": 21
+    },
+    {
+      "name": "CAN1_SCE",
+      "number": 22
+    },
+    {
+      "name": "EXTI9_5",
+      "number": 23
+    },
+    {
+      "name": "TIM1_BRK",
+      "number": 24
+    },
+    {
+      "name": "TIM1_UP",
+      "number": 25
+    },
+    {
+      "name": "TIM1_TRG_COM",
+      "number": 26
+    },
+    {
+      "name": "TIM1_CC",
+      "number": 27
+    },
+    {
+      "name": "TIM2",
+      "number": 28
+    },
+    {
+      "name": "TIM3",
+      "number": 29
+    },
+    {
+      "name": "TIM4",
+      "number": 30
+    },
+    {
+      "name": "I2C1_EV",
+      "number": 31
+    },
+    {
+      "name": "I2C1_ER",
+      "number": 32
+    },
+    {
+      "name": "I2C2_EV",
+      "number": 33
+    },
+    {
+      "name": "I2C2_ER",
+      "number": 34
+    },
+    {
+      "name": "SPI1",
+      "number": 35
+    },
+    {
+      "name": "SPI2",
+      "number": 36
+    },
+    {
+      "name": "USART1",
+      "number": 37
+    },
+    {
+      "name": "USART2",
+      "number": 38
+    },
+    {
+      "name": "USART3",
+      "number": 39
+    },
+    {
+      "name": "EXTI15_10",
+      "number": 40
+    },
+    {
+      "name": "RTC_Alarm",
+      "number": 41
+    },
+    {
+      "name": "USBWakeUp",
+      "number": 42
+    }
+  ],
+  "dma_controllers": [
+    {
+      "name": "DMA1",
+      "channels": [
+        {
+          "name": "DMA1_CH1",
+          "channel": 0,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH2",
+          "channel": 1,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH3",
+          "channel": 2,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH4",
+          "channel": 3,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH5",
+          "channel": 4,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH6",
+          "channel": 5,
+          "dmamux": null,
+          "dmamux_channel": null
+        },
+        {
+          "name": "DMA1_CH7",
+          "channel": 6,
+          "dmamux": null,
+          "dmamux_channel": null
+        }
+      ]
+    }
+  ],
+  "clock_tree": {
+    "buses": [
+      "HCLK1",
+      "PCLK1",
+      "PCLK2"
+    ],
+    "kernel_clocks": [
+      "HCLK1",
+      "PCLK1",
+      "PCLK1_TIM",
+      "PCLK2",
+      "PCLK2_TIM",
+      "USB"
+    ],
+    "kernel_muxes": [],
+    "enable_registers": [
+      "AHBENR",
+      "APB1ENR",
+      "APB2ENR"
+    ]
+  },
+  "provenance": [
+    "datasheet_pins",
+    "embassy",
+    "modm",
+    "open_pin_data",
+    "stm32rs_parttable"
+  ]
+}

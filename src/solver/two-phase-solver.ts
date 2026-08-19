@@ -633,6 +633,9 @@ function evaluateExprPhase1(
     case 'string_literal':
       return expr.value;
 
+    case 'boolean_literal':
+      return expr.value;
+
     case 'number_literal':
       return expr.value;
 
@@ -756,6 +759,11 @@ function evaluateFunctionCallPhase1(
       }
       return true;
     }
+
+    case 'flag':
+      // Per-pin flags are unknowable before pin assignment — stay optimistic
+      // (Phase 2 evaluates it for real). Rejecting here would be unsound.
+      return true;
 
     case 'pin_number':
       // Phase 1: no pin assigned yet, return 0 (vacuously pass)

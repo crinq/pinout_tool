@@ -245,6 +245,7 @@ export type ConstraintExprNode =
   | IdentNode
   | StringLiteralNode
   | NumberLiteralNode
+  | BooleanLiteralNode
   | DotAccessNode;
 
 // same_instance(TX, RX)
@@ -291,6 +292,14 @@ export interface DotAccessNode {
 export interface StringLiteralNode {
   type: 'string_literal';
   value: string;
+  loc: SourceLocation;
+}
+
+// true, false — a distinct node so they are never mistaken for a channel
+// reference (which would make a require look vacuous and get skipped).
+export interface BooleanLiteralNode {
+  type: 'boolean_literal';
+  value: boolean;
   loc: SourceLocation;
 }
 

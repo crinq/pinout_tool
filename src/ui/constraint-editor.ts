@@ -11,7 +11,7 @@ import { getPeripherals, type Peripheral } from '../parser/peripheral-lib';
 import { ConstraintMinimap } from './constraint-minimap';
 
 const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from', 'settings']);
-const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma']);
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
 const KEYWORD_DOCS: Record<string, string> = {
@@ -53,6 +53,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   pin_col: 'Column of a channel\'s pin (BGA column, or LQFP x-component).',
   pin_distance: 'Physical distance between two channels\' pins. e.g. pin_distance(A, B) < 5',
   dma: 'True if the channel\'s signal has a DMA stream. Optional "TYPE" / "TYPE_REQUEST" filter.',
+  flag: 'True if every pin of the channel carries a vendor pin flag with that value. e.g. flag(TX, "5V_tolerant", true)',
 };
 
 /** Highlight span attribute carrying the keyword doc, or '' when there is none. */
@@ -1117,6 +1118,7 @@ MOSI = SPI*_MOSI + GPIO[1-2]_*</pre>
             <tr><td><code>pin_distance(A, B)</code></td><td>Physical distance between pins</td></tr>
             <tr><td><code>dma(A)</code></td><td>DMA stream available for channel</td></tr>
             <tr><td><code>dma(A, "USART")</code></td><td>DMA check filtered by type</td></tr>
+            <tr><td><code>flag(A, "5V_tolerant", true)</code></td><td>Every pin of the channel carries that vendor pin flag with that value (a missing flag fails)</td></tr>
           </table>
           <p>Numeric functions support comparison: <code>&lt;</code>, <code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>+</code>, <code>-</code></p>
           <pre class="ce-help-code">require channel_number(A) < channel_number(B)

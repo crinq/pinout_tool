@@ -85,6 +85,13 @@ export interface LogicalPin {
   /** Raw Variant attribute when present (e.g. "PINREMAP", "PINREMAP_10_12"). */
   variantGroup?: string;
 
+  /**
+   * Per-pin flags from the vendor data (e.g. `{ "5V_tolerant": true }`).
+   * Absent when the source carries none — CubeMX XML has no flags, so only
+   * JSON-sourced MCUs populate this. Queried by `require flag(ch, "name", v)`.
+   */
+  flags?: Record<string, string | number | boolean>;
+
   /** Back-reference to the package pad this logical pin is bonded to. */
   physical: PhysicalPin;
 }

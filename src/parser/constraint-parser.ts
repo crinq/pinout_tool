@@ -1365,6 +1365,18 @@ class Parser {
       return expr;
     }
 
+    // Boolean literal — recognised before identifiers so `true`/`false` are
+    // never treated as channel references (which would make a require look
+    // vacuous and get skipped).
+    if (tok.type === 'IDENT' && /^(true|false)$/i.test(tok.value)) {
+      this.advance();
+      return {
+        type: 'boolean_literal',
+        value: tok.value.toLowerCase() === 'true',
+        loc: { line: tok.line, column: tok.column },
+      };
+    }
+
     // String literal
     if (tok.type === 'STRING') {
       this.advance();

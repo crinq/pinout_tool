@@ -47,6 +47,8 @@ interface JsonGpio {
   pin?: number;                          // 0
   alternate_functions?: AltFunctions;
   additional_functions?: string[];
+  /** Optional per-pin properties, e.g. { "5V_tolerant": false }. */
+  flags?: Record<string, string | number | boolean>;
 }
 
 interface JsonPackagePin {
@@ -486,8 +488,10 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   // is a flat list of non-AF signals (analog inputs, wakeup pins,
   // remap-only options).
   const signalsByPin = new Map<string, Signal[]>();
+  const flagsByPin = new Map<string, Record<string, string | number | boolean>>();
   for (const g of doc.gpios ?? []) {
     if (!g.name) continue;
+    if (g.flags && Object.keys(g.flags).length > 0) flagsByPin.set(g.name, g.flags);
     const list: Signal[] = [];
 
     if (g.alternate_functions) {
@@ -514,7 +518,7 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   for (const pkg of doc.packages) {
     result.push(buildVariantMcu({
       doc, pkg, family, line, cores, freqMHz, voltage, temperature,
-      flashKB, ramKB, ccmKB, peripherals, signalsByPin, dma,
+      flashKB, ramKB, ccmKB, peripherals, signalsByPin, flagsByPin, dma,
     }));
   }
   return result;
@@ -534,6 +538,7 @@ interface VariantBuildArgs {
   ccmKB?: number;
   peripherals: Peripheral[];
   signalsByPin: Map<string, Signal[]>;
+  flagsByPin: Map<string, Record<string, string | number | boolean>>;
   dma?: DmaData;
 }
 
@@ -563,6 +568,7 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
         pinType,
         assignable,
         a.signalsByPin,
+        a.flagsByPin,
         logicalPins,
         i === 0 ? undefined : 'ALT',
       );
@@ -689,6 +695,7 @@ function addLogical(
   pinType: PinType,
   isAssignable: boolean,
   signalsByPin: Map<string, Signal[]>,
+  flagsByPin: Map<string, Record<string, string | number | boolean>>,
   logicalPins: LogicalPin[],
   variantGroup?: string,
 ): void {
@@ -722,6 +729,7 @@ function addLogical(
     isAssignable,
     isDefaultVariant: isDefault,
     variantGroup,
+    flags: flagsByPin.get(rawName),
     physical,
   };
   physical.logicals.push(lp);
