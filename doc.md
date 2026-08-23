@@ -716,7 +716,12 @@ Without a filter, `dma()` uses the channel's assigned signal name directly.
 
 The solver automatically verifies that a consistent DMA stream assignment exists across all channels that require DMA.
 
-**Note:** Using `dma()` requires loading the MCU's DMA modes XML file (separate from the MCU pinout XML). If no DMA data is loaded, the solver reports an error and does not start.
+**Note:** Using `dma()` requires DMA data for the MCU. For XML-imported MCUs
+that means also importing the matching DMA modes XML (separate from the pinout
+XML). If it is missing and a [remote data source](#loading-mcu-data-remote-catalogue-optional)
+is configured, the tool looks the same MCU up there and borrows its DMA data
+automatically — remote JSON MCUs always carry it. Only when neither is available
+does the solver report an error and stop.
 
 ### Macros
 

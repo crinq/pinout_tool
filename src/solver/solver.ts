@@ -1454,7 +1454,7 @@ export function validateDmaAvailability(
   if (!mcu.dma) {
     errors.push({
       type: 'error',
-      message: `Constraints use dma() but no DMA data is available for ${mcu.refName}. Load the DMA XML file for this MCU.`,
+      message: `Constraints use dma() but no DMA data is available for ${mcu.refName}. Import the matching DMA modes XML, or configure a remote data source that has this MCU.`,
     });
     return;
   }
@@ -3056,6 +3056,16 @@ export function lookupDmaStream(signalName: string, dmaMap: Map<string, string>)
     return dmaMap.get(signalName.substring(0, ui));
   }
   return undefined;
+}
+
+/**
+ * Whether the constraints use `dma()` anywhere, straight from the AST.
+ * Lets callers decide they need DMA data before a solver context exists (the
+ * app uses it to fetch missing DMA data before pre-solve validation runs).
+ */
+export function constraintsNeedDma(ast: ProgramNode): boolean {
+  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  return configsHaveDma(extractPorts(expanded));
 }
 
 export function configsHaveDma(ports: Map<string, PortSpec>): boolean {

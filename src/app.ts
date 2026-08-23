@@ -28,7 +28,7 @@ import type { ProjectData, ProjectVersion, SerializedSolution } from './storage'
 import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { fromWire, type WireSolverResult } from './solver/solution-transfer';
-import { runPreSolveChecks } from './solver/solver';
+import { runPreSolveChecks, constraintsNeedDma } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport } from './solver/diagnostics';
@@ -150,6 +150,10 @@ export class App {
    * block from the constraints folded in. Reset at the start of every solve.
    */
   private solveSettings: AppSettings = this.settings;
+  /** In-flight remote DMA lookup (see ensureDmaData), so Abort can cancel it. */
+  private dmaFetchAbort: AbortController | null = null;
+  /** refName → DMA data fetched remotely this session, to avoid refetching. */
+  private remoteDmaCache = new Map<string, DmaData>();
   private hasSolverResult = false;
   private loadingProject = false;
   private solverWorkers: Worker[] = [];
@@ -386,7 +390,7 @@ export class App {
 
   private async runSolver(): Promise<void> {
     // If already solving (or fetching), abort instead of restarting.
-    if (this.solverWorkers.length > 0 || this.fetchAbort) {
+    if (this.solverWorkers.length > 0 || this.fetchAbort || this.dmaFetchAbort) {
       this.abortSolver();
       return;
     }
@@ -506,6 +510,13 @@ export class App {
     if (solverTypes.length === 0) {
       this.showStatus('No solvers selected', 'error');
       return;
+    }
+
+    // Constraints using dma() need DMA data. An MCU imported from CubeMX XML
+    // has none until the matching DMA XML is loaded too, so try the remote
+    // catalogue (whose MCUs carry their own DMA data) before giving up.
+    if (constraintsNeedDma(parseResult.ast)) {
+      await this.ensureDmaData(mcuList);
     }
 
     // Run pre-solve validation per MCU. In a multi-MCU run an MCU that fails
@@ -998,7 +1009,14 @@ export class App {
   }
 
   private abortSolver(): void {
-    // Two cancel paths: pre-solve remote fetch, then worker phase.
+    // Cancel paths in order: MCU fetch, DMA lookup, then the worker phase.
+    if (this.dmaFetchAbort) {
+      this.dmaFetchAbort.abort();
+      this.dmaFetchAbort = null;
+      this.setSolveButtonState(false);
+      this.showStatus('Aborted DMA lookup', 'info');
+      return;
+    }
     if (this.fetchAbort) {
       this.fetchAbort.abort();
       this.fetchAbort = null;
@@ -1523,6 +1541,57 @@ export class App {
    * Find the DMA IP version in the MCU's peripherals and try to load
    * matching DMA XML from localStorage.
    */
+  /**
+   * Fill in missing DMA data from the remote catalogue.
+   *
+   * A locally-imported (XML) MCU only has DMA data once the matching DMA modes
+   * XML is imported as well. Remote JSON MCUs always carry theirs, so when the
+   * constraints need DMA we fetch the same part remotely and borrow it rather
+   * than failing with "no DMA data available".
+   */
+  private async ensureDmaData(mcuList: Mcu[]): Promise<void> {
+    const missing = mcuList.filter(m => !m.dma);
+    if (missing.length === 0) return;
+
+    const ds = getDataSource();
+    if (!ds.baseUrl()) return;   // nothing to fall back to
+
+    this.dmaFetchAbort = new AbortController();
+    this.setSolveButtonState(true);   // the lookup is abortable
+    let filled = 0;
+    try {
+      for (const mcu of missing) {
+        // Another variant of the same die already resolved? Reuse it: DMA data
+        // is per-die, so one fetch covers every package of that MCU.
+        const cached = this.remoteDmaCache.get(mcu.refName);
+        if (cached) { mcu.dma = cached; filled++; continue; }
+
+        this.showStatus(`Looking up DMA data for ${mcu.refName}…`, 'info');
+        try {
+          const remote = await ds.loadVariant(mcu.refName, this.dmaFetchAbort.signal);
+          if (remote?.dma) {
+            mcu.dma = remote.dma;
+            this.remoteDmaCache.set(mcu.refName, remote.dma);
+            filled++;
+          }
+        } catch (err) {
+          if ((err as Error)?.name === 'AbortError') return;
+          console.warn(`[dma] remote lookup failed for ${mcu.refName}:`, err);
+        }
+      }
+    } finally {
+      this.dmaFetchAbort = null;
+      // solve() re-arms the button when it dispatches workers; releasing here
+      // keeps a later validation bail-out from leaving it stuck on "Abort".
+      this.setSolveButtonState(false);
+    }
+
+    if (filled > 0) {
+      const still = mcuList.filter(m => !m.dma).length;
+      console.log(`[dma] fetched DMA data for ${filled} MCU(s) from the remote catalogue${still ? `, ${still} still without` : ''}`);
+    }
+  }
+
   private async attachDmaData(mcu: Mcu): Promise<void> {
     // Find the DMA peripheral's version tag
     const dmaPeripheral = mcu.peripherals.find(p => p.type === 'DMA' || p.originalType === 'DMA');
