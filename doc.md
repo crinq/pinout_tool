@@ -1040,8 +1040,16 @@ lists every logical pin and its signals separately. Three common cases:
 - **Multi-bond pads** on UFQFPN20 / WLCSP packages: multiple GPIOs are
   permanently tied together inside the package — only one can drive the pad
   at runtime.
-- **`_C` analog-switch siblings** on H7 (`PC2` / `PC2_C`): one logical
-  carries the digital AF set, the other a low-impedance analog path.
+- **`_C` dual-pad analog pins** on H7 (`PC2` / `PC2_C`): two *separate*
+  package pads joined by a configurable analog switch. The `_C` pad has its own
+  dedicated ADC channels, reachable with the switch open — so `PC2_C` doing ADC
+  and `PC2` doing something else at the same time is legitimate. Its digital
+  functions, however, belong to the base pin and need the switch closed, which
+  shorts the two pads: the tool therefore offers **only the analog channels** on
+  a `_C` pad, and a switch-through assignment (e.g. a forced
+  `pin PC2_C = SPI2_MISO`) also consumes `PC2`. You can name `_C` pads anywhere
+  a pin name is accepted (`@ PC2_C`, `@ !PC2_C`, `pin PC2_C = …`,
+  `reserve: PC2_C`).
 
 The solver enforces mutual exclusion: assigning a signal to one logical
 locks the physical and every co-bonded sibling for other ports. The

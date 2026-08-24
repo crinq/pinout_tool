@@ -21,8 +21,7 @@ import {
   generateConfigCombinations,
   emptyResult, pushSolverWarnings, finalizeSolutions,
   partitionGpioVariables, isGpioVariable,
-  configsHaveDma,
-} from './solver';
+  configsHaveDma, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
@@ -106,7 +105,7 @@ export function solvePriorityGroup(
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedPinSet.add(pa.pinName);
+    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 

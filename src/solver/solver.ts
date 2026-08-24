@@ -540,6 +540,71 @@ export interface PinTracker {
   configSignals: Map<string, Set<string>>;
 }
 
+/**
+ * The base pin an assignment electrically ties up, or undefined.
+ *
+ * H7-style dual-pad analog pins (`PC2` / `PC2_C`) are two package pads joined
+ * by a configurable analog switch:
+ *
+ *   - the `_C` pad has its own dedicated ADC channels, reachable with the
+ *     switch OPEN — independent of the base pin;
+ *   - the alternate functions the vendor data also lists on the `_C` pad are
+ *     only reachable with the switch CLOSED, which shorts the two pads. The
+ *     base pin is then part of the same net and cannot carry anything else.
+ *
+ * So a non-ADC signal on `X_C` consumes `X` as well. Checked against the vendor
+ * data: for all 120 `_C` pins in the corpus the non-ADC signals are exactly the
+ * base pin's, and the `_C` ADC channels are always disjoint from the base's.
+ * (Some packages bond out `X_C` without `X`; locking a pin that does not exist
+ * is harmless because nothing can assign it.)
+ */
+export function coupledBasePin(pin: string, signalName?: string): string | undefined {
+  if (!pin.endsWith('_C')) return undefined;
+  // Own ADC channel → switch open → no coupling.
+  if (signalName !== undefined && /^ADC\d*_/.test(signalName)) return undefined;
+  return pin.slice(0, -2);
+}
+
+/** Whether `pin` is free for this (port, config, channel). */
+function logicalPinFree(
+  tracker: PinTracker, pin: string, portName: string, configKey: string, channelName: string,
+): boolean {
+  const owner = tracker.pinOwner.get(pin);
+  if (owner !== undefined && owner !== portName) return false;
+  if (tracker.configPins.get(configKey)?.has(pin)) return false;
+  const existing = tracker.portPinChannel.get(`${portName}\0${pin}`);
+  return existing === undefined || existing === channelName;
+}
+
+/** Record `pin` as used by this (port, config, channel). */
+function lockLogicalPin(
+  tracker: PinTracker, pin: string, portName: string, configKey: string, channelName: string,
+): void {
+  tracker.pinOwner.set(pin, portName);
+  const ppKey = `${portName}\0${pin}`;
+  tracker.portPinRefCount.set(ppKey, (tracker.portPinRefCount.get(ppKey) || 0) + 1);
+  tracker.portPinChannel.set(ppKey, channelName);
+  let set = tracker.configPins.get(configKey);
+  if (!set) { set = new Set(); tracker.configPins.set(configKey, set); }
+  set.add(pin);
+}
+
+/** Release one reference to `pin` for this (port, config). */
+function unlockLogicalPin(
+  tracker: PinTracker, pin: string, portName: string, configKey: string,
+): void {
+  tracker.configPins.get(configKey)?.delete(pin);
+  const ppKey = `${portName}\0${pin}`;
+  const count = (tracker.portPinRefCount.get(ppKey) ?? 1) - 1;
+  if (count <= 0) {
+    tracker.portPinRefCount.delete(ppKey);
+    tracker.pinOwner.delete(pin);
+    tracker.portPinChannel.delete(ppKey);
+  } else {
+    tracker.portPinRefCount.set(ppKey, count);
+  }
+}
+
 export function createPinTracker(
   reservedPins: string[],
   sharedPatterns: PatternPart[],
@@ -603,6 +668,12 @@ export function canAssignPin(
   if (signalName && signalName.includes('_')) {
     if (tracker.configSignals.get(configKey)?.has(signalName)) return false;
   }
+  // A switch-through signal on a `_C` pad shorts it to its base pin, so that
+  // pin must be free as well (see coupledBasePin).
+  const coupled = coupledBasePin(pin, signalName);
+  if (coupled !== undefined && !logicalPinFree(tracker, coupled, portName, configKey, channelName)) {
+    return false;
+  }
   return true;
 }
 
@@ -634,6 +705,8 @@ export function assignPin(
     if (!tracker.configSignals.has(configKey)) tracker.configSignals.set(configKey, new Set());
     tracker.configSignals.get(configKey)!.add(signalName);
   }
+  const coupled = coupledBasePin(pin, signalName);
+  if (coupled !== undefined) lockLogicalPin(tracker, coupled, portName, configKey, channelName);
 }
 
 export function unassignPin(
@@ -676,6 +749,8 @@ export function unassignPin(
   if (signalName && signalName.includes('_')) {
     tracker.configSignals.get(configKey)?.delete(signalName);
   }
+  const coupled = coupledBasePin(pin, signalName);
+  if (coupled !== undefined) unlockLogicalPin(tracker, coupled, portName, configKey);
 }
 
 // ============================================================
@@ -804,6 +879,16 @@ export function resolveReservePatterns(ast: ProgramNode, mcu: Mcu): ReserveResul
 export interface PinnedAssignment {
   pinName: string;
   signalName: string;
+}
+
+/**
+ * Logical pins a `pin` declaration occupies. A switch-through signal on a `_C`
+ * pad also consumes its base pin (see coupledBasePin), so declaring
+ * `pin PC2_C = SPI2_MISO` must keep PC2 out of the solver's reach.
+ */
+export function pinnedOccupiedPins(pa: PinnedAssignment): string[] {
+  const coupled = coupledBasePin(pa.pinName, pa.signalName);
+  return coupled === undefined ? [pa.pinName] : [pa.pinName, coupled];
 }
 
 export function extractPinnedAssignments(ast: ProgramNode): PinnedAssignment[] {
@@ -1083,7 +1168,11 @@ export function validateGpioAvailability(
     for (const configAssignment of solution.configAssignments) {
       const unavailable = new Set(alwaysUnavailable);
       for (const a of configAssignment.assignments) {
-        if (a.portName !== '<pinned>') unavailable.add(a.pinName);
+        if (a.portName === '<pinned>') continue;
+        unavailable.add(a.pinName);
+        // A switch-through `_C` assignment also consumes its base pin's pad.
+        const coupled = coupledBasePin(a.pinName, a.signalName);
+        if (coupled !== undefined) unavailable.add(coupled);
       }
 
       const activeVars: SolverVariable[] = [];
@@ -1771,7 +1860,7 @@ export function prepareSolverContext(
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedPinSet.add(pa.pinName);
+    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
@@ -1886,7 +1975,7 @@ export function solveConstraints(
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedPinSet.add(pa.pinName);
+    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 

@@ -1190,6 +1190,20 @@ class Parser {
   }
 
   // pattern_part: IDENT | IDENT* | * | IDENT[range] | IDENT NUMBER | IDENT NUMBER * | NUMBER (position) | etc.
+  /**
+   * Optional `_C` suffix of a dual-pad analog pin (PC2_C). The lexer splits the
+   * underscore off, so pin names have to re-join it — without this, `PC2_C`
+   * parses as `PC2` and leaves `_C` behind as a syntax error.
+   */
+  private parseCSuffix(): string {
+    if (!this.check('UNDERSCORE')) return '';
+    const next = this.tokens[this.pos + 1];
+    if (next?.type !== 'IDENT' || next.value.toUpperCase() !== 'C') return '';
+    this.advance(); // _
+    this.advance(); // C
+    return '_C';
+  }
+
   private parsePatternPart(): PatternPart {
     // Just *
     if (this.check('STAR')) {
@@ -1221,6 +1235,10 @@ class Parser {
       prefix += this.peek().value;
       this.advance();
     }
+
+    // Dual-pad analog pin (`reserve: PC2_C`) — see parseCSuffix.
+    const cSuffix = this.parseCSuffix();
+    if (cSuffix) return { type: 'literal', value: prefix + cSuffix };
 
     // Check for wildcard: prefix*
     if (this.check('STAR')) {
@@ -1514,6 +1532,7 @@ class Parser {
       name += this.peek().value;
       this.advance();
     }
+    name += this.parseCSuffix();
     return name;
   }
 

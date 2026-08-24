@@ -31,8 +31,7 @@ import {
   partitionGpioVariables, isGpioVariable,
   configsHaveDma, buildPropagationContext,
   pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous,
-} from './solver';
+  isOptionalRequireVacuous, pinnedOccupiedPins } from './solver';
 import { mulberry32, shuffleArray } from './solver-utils';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
@@ -105,7 +104,7 @@ export function solveTwoPhase(
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedPinSet.add(pa.pinName);
+    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
@@ -1041,7 +1040,7 @@ export function runSharedPhase1(
   const sharedPatterns = extractSharedPatterns(expandedAst);
 
   const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) reservedPinSet.add(pa.pinName);
+  for (const pa of pinnedAssignments) for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
   const configCombinations = generateConfigCombinations(ports);

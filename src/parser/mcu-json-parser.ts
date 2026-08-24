@@ -132,6 +132,10 @@ export interface McuJsonDocument {
 // ============================================================
 
 const GPIO_NAME_RE = /^P([A-Z])(\d+)$/;
+/** Dual-pad analog pin, e.g. PC2_C — a second pad behind an analog switch. */
+const C_PIN_RE = /^P[A-Z]\d+_C$/;
+/** Signal types that reach a `_C` pad directly (switch open). */
+const ANALOG_PERIPHERAL_TYPES = new Set(['ADC', 'DAC', 'OPAMP', 'COMP']);
 
 /**
  * Map the JSON `pin.type` discriminator onto the existing `PinType`
@@ -492,20 +496,28 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   for (const g of doc.gpios ?? []) {
     if (!g.name) continue;
     if (g.flags && Object.keys(g.flags).length > 0) flagsByPin.set(g.name, g.flags);
+    // Dual-pad analog pins (PC2_C) are a second pad joined to the base pin by a
+    // configurable analog switch. Only their dedicated analog channels are
+    // reachable on their own; the digital functions the data also lists are the
+    // base pin's, reachable solely with the switch closed (which shorts the two
+    // pads). Keep analog only — same rule as the XML parser.
+    const isCPin = C_PIN_RE.test(g.name);
     const list: Signal[] = [];
+
+    const keep = (sig: Signal | null): void => {
+      if (!sig) return;
+      if (isCPin && (!sig.peripheralType || !ANALOG_PERIPHERAL_TYPES.has(sig.peripheralType))) return;
+      list.push(sig);
+    };
 
     if (g.alternate_functions) {
       for (const [af, value] of Object.entries(g.alternate_functions)) {
         const signals = Array.isArray(value) ? value : [value];
-        for (const rawSig of signals) {
-          const sig = buildSignalFromName(rawSig, `AF${af}`);
-          if (sig) list.push(sig);
-        }
+        for (const rawSig of signals) keep(buildSignalFromName(rawSig, `AF${af}`));
       }
     }
     for (const rawSig of g.additional_functions ?? []) {
-      const sig = buildSignalFromName(rawSig, undefined);
-      if (sig) list.push(sig);
+      keep(buildSignalFromName(rawSig, undefined));
     }
 
     if (list.length > 0) signalsByPin.set(g.name, list);

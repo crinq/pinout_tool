@@ -22,8 +22,7 @@ import {
   createPinTracker,
   partitionGpioVariables, isGpioVariable,
   configsHaveDma, buildPinLookups, buildSameInstancePropagator,
-  type SolverVariable, type PinnedAssignment, type PortSpec,
-} from './solver';
+  type SolverVariable, type PinnedAssignment, type PortSpec, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1,
@@ -211,7 +210,7 @@ export function solveMrvGroup(
 
   const reservedPinSet = new Set(reserved.pins);
   for (const pa of pinnedAssignments) {
-    reservedPinSet.add(pa.pinName);
+    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   }
   const reservedPeripheralSet = new Set(reserved.peripherals);
 

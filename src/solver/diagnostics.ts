@@ -21,8 +21,7 @@ import { expandAllMacros } from '../parser/macro-expander';
 import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
 import {
   extractPorts, extractSharedPatterns, isSharedInstance, extractPinnedAssignments,
-  resolveAllVariables, resolveReservePatterns, type PortSpec, type SolverVariable,
-} from './solver';
+  resolveAllVariables, resolveReservePatterns, type PortSpec, type SolverVariable, pinnedOccupiedPins } from './solver';
 import type { PinnedAssignment as ExportedPinnedAssignment } from './solver';
 
 // ============================================================
@@ -149,7 +148,7 @@ export function analyzeSolverInputs(
   const pinnedAssignments = pinnedAssignmentsArg ?? extractPinnedAssignments(expanded);
 
   const reservedPinSet = new Set<string>(reserved.pins);
-  for (const pa of pinnedAssignments) reservedPinSet.add(pa.pinName);
+  for (const pa of pinnedAssignments) for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
   const reservedPeripheralSet = new Set<string>(reserved.peripherals);
 
   // Re-resolve variables with reserves applied so candidate counts are
