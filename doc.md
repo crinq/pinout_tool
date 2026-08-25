@@ -61,6 +61,7 @@ companion `mcu_data` project — `index.json` plus per-die files under
 `mcu/<die>.json`), open the **Data Manager**, paste the URL into the
 **Remote Data Source** field, and click **Save**. Local `file://` paths
 work for testing, GitHub raw / Pages URLs work for production.
+A remote repo with most of the STM32 lineup is set as default.
 
 - **Browse…** opens a search overlay listing every die in the index.
   Type to filter by name. Click a die to fetch + parse it. Multi-package
