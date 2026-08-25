@@ -1006,6 +1006,11 @@ The package viewer renders the MCU package with interactive pin display.
 - **Pan:** two-finger scroll / drag
 - **Rotate:** Rotate buttons (90° per click), or twist with two fingers — rotation snaps to 90° steps
 - **Reset:** Reset zoom, rotation and pan to defaults
+- **DATA / MAN / ERR:** open the datasheet, reference manual and errata sheet
+  for the current MCU in a new tab. These links come from the
+  [remote JSON catalogue](#loading-mcu-data-remote-catalogue-optional); a button
+  is greyed out when the data has no link for that document (CubeMX XML carries
+  none, and a few dies are missing one)
 
 **Touch gestures** (Settings → Viewer, on by default): two fingers on a touchpad
 or touchscreen pan, pinch to zoom (anchored on the cursor/pinch centre) and

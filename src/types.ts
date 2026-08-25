@@ -6,6 +6,15 @@ export interface McuDatabase {
   mcus: Map<string, Mcu>;
 }
 
+export interface McuDocs {
+  /** Datasheet PDF. */
+  datasheet?: string;
+  /** Reference manual PDF. */
+  refmanual?: string;
+  /** Errata sheet PDF. */
+  errata?: string;
+}
+
 export interface Mcu {
   refName: string;
   family: string;
@@ -20,6 +29,13 @@ export interface Mcu {
   voltage: { min: number; max: number };
   temperature: { min: number; max: number };
   hasPowerPad: boolean;
+
+  /**
+   * Vendor documentation links, when the data source provides them (JSON
+   * catalogue only — CubeMX XML carries none). Drives the package viewer's
+   * DATA / MAN / ERR buttons.
+   */
+  docs?: McuDocs;
 
   peripherals: Peripheral[];
   /**

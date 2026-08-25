@@ -118,6 +118,7 @@ export class PackageViewer implements Panel {
   /** Two-finger gestures (pan/pinch/rotate); false = classic wheel-zoom. */
   private gestures = true;
   private zoomLabel!: HTMLElement;
+  private docButtons: HTMLButtonElement[] = [];
   private minZoom = 0.3;
   private maxZoom = 5;
   private mouseZoomGain = 0.1;
@@ -160,6 +161,9 @@ export class PackageViewer implements Panel {
       <button class="btn btn-small pv-btn" title="Rotate 90° counter-clockwise">&#x21BA;</button>
       <button class="btn btn-small pv-btn" title="Rotate 90° clockwise">&#x21BB;</button>
       <button class="btn btn-small pv-btn" title="Reset view">Reset</button>
+      <button class="btn btn-small pv-doc-btn" data-doc="datasheet">DATA</button>
+      <button class="btn btn-small pv-doc-btn" data-doc="refmanual">MAN</button>
+      <button class="btn btn-small pv-doc-btn" data-doc="errata">ERR</button>
     `;
     this.container.appendChild(toolbar);
 
@@ -170,6 +174,15 @@ export class PackageViewer implements Panel {
     buttons[2].addEventListener('click', () => this.rotateCCW());
     buttons[3].addEventListener('click', () => this.rotateCW());
     buttons[4].addEventListener('click', () => this.resetView());
+
+    this.docButtons = [...toolbar.querySelectorAll<HTMLButtonElement>('.pv-doc-btn')];
+    for (const btn of this.docButtons) {
+      btn.addEventListener('click', () => {
+        const url = this.docUrl(btn.dataset.doc);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    }
+    this.refreshDocButtons();
 
     // Search input
     const separator = document.createElement('span');
@@ -296,6 +309,7 @@ export class PackageViewer implements Panel {
 
   setMcu(mcu: Mcu): void {
     this.mcu = mcu;
+    this.refreshDocButtons();
     this.assignments = [];
     this.compatibility = null;
     this.hoveredPhys = null;
@@ -460,6 +474,32 @@ export class PackageViewer implements Panel {
       this.rotateSteps(steps - touchSteps);
       touchSteps = steps;
     }, { passive: false });
+  }
+
+  /** URL behind a DATA/MAN/ERR button for the current MCU, if the data has one. */
+  private docUrl(kind: string | undefined): string | undefined {
+    const docs = this.mcu?.docs;
+    if (!docs || !kind) return undefined;
+    return docs[kind as keyof typeof docs];
+  }
+
+  /**
+   * Enable each documentation button only when the current MCU actually links
+   * that document — CubeMX XML carries no links, and even in the JSON
+   * catalogue some dies are missing one.
+   */
+  private refreshDocButtons(): void {
+    const labels: Record<string, string> = {
+      datasheet: 'datasheet', refmanual: 'reference manual', errata: 'errata sheet',
+    };
+    for (const btn of this.docButtons) {
+      const kind = btn.dataset.doc ?? '';
+      const url = this.docUrl(kind);
+      btn.disabled = !url;
+      btn.title = url
+        ? `Open the ${labels[kind] ?? kind} for ${this.mcu?.refName ?? 'this MCU'} in a new tab`
+        : `No ${labels[kind] ?? kind} link in the data for ${this.mcu?.refName ?? 'this MCU'}`;
+    }
   }
 
   private zoomBy(delta: number): void {

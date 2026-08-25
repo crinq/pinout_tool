@@ -1363,6 +1363,15 @@
 .pv-edit-delta.good { color: #22c55e; }
 .pv-edit-delta.bad { color: #ef4444; }
 .pv-edit-delta.neutral { color: var(--text-secondary); }
+/* Documentation links (DATA / MAN / ERR) — greyed out when the current MCU
+   has no link for that document. */
+.pv-doc-btn { font-size: 10px; letter-spacing: 0.03em; }
+.pv-doc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
 .pv-btn.pv-btn-primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .pv-btn.pv-btn-primary:hover { background: #1d4ed8; }
 

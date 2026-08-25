@@ -90,3 +90,22 @@ See [doc.md](doc.md) for the full constraint language reference, practical examp
 npm run build    # production build to dist/
 npm run dev      # development server with HMR
 ```
+
+## Known Limitations
+### Data quality (working on it)
+Some data in the remote repo is parsed from datasheets and not imported from official ST XML files. There will be bugs.
+
+### Constraints syntax (won't fix)
+The constraints language was build around some personal ideas about embedded design (e.g. peripheral instances are exclusive per port). It can't express all possible requirements.
+
+### Vendor lock in (maybe later)
+Right now only cpu data for the STM32 lineup is available, but most of the code base is vendor agnostic.
+The [data format specification](https://github.com/crinq/mcu_data_generated/blob/master/format-spec.md) is available and the remote url is configurable. The format might change in the future to support new features or other vendors.
+
+### Vendor specific quirks (working on some)
+Some special cases are not known or ignored by the solvers. 
+- STM32H7 direct pins can be connected to the corresponding base pin via an analog switch. Currently the solver will not assing any alternate function to a direct pin.
+- Some STM32 peripherals allow pinswaping (e.g. UART_TX <-> UART_RX) or simmilar features (e.g. half duplex TX/RX on the same pin). This is not represented in the data.
+
+### CubeMX export (won't fix for now)
+CubeMX .ioc files need more information to be valid (e.g. peripheral and clock settings). This data is currently not available.

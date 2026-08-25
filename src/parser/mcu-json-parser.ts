@@ -24,6 +24,7 @@
 
 import {
   type Mcu, type Peripheral, type LogicalPin, type PhysicalPin, type PinType, type Signal,
+  type McuDocs,
   type DmaData, type DmaStreamInfo,
 } from '../types';
 import { normalizePeripheralType } from './mcu-xml-parser';
@@ -123,6 +124,7 @@ export interface McuJsonDocument {
   packages?: JsonPackage[];
   peripherals?: JsonPeripheral[];
   gpios?: JsonGpio[];
+  docs?: JsonDocs;
   dma_controllers?: JsonDmaController[];
   die?: string;
 }
@@ -133,6 +135,29 @@ export interface McuJsonDocument {
 
 const GPIO_NAME_RE = /^P([A-Z])(\d+)$/;
 /** Dual-pad analog pin, e.g. PC2_C — a second pad behind an analog switch. */
+/** Vendor doc links live under `docs`; the errata sits in `docs.other[]`. */
+interface JsonDocs {
+  datasheet?: string;
+  refmanual?: string;
+  other?: { type?: string; url?: string }[];
+}
+
+/**
+ * Pick out the three documents the UI links to. URLs are upgraded to https —
+ * the vendor data still uses http and the app is typically served over https.
+ */
+function parseDocs(docs: JsonDocs | undefined): McuDocs | undefined {
+  if (!docs) return undefined;
+  const https = (u?: string): string | undefined =>
+    u ? u.replace(/^http:\/\//i, 'https://') : undefined;
+  const out: McuDocs = {
+    datasheet: https(docs.datasheet),
+    refmanual: https(docs.refmanual),
+    errata: https(docs.other?.find(o => o.type === 'errata_sheet')?.url),
+  };
+  return out.datasheet || out.refmanual || out.errata ? out : undefined;
+}
+
 const C_PIN_RE = /^P[A-Z]\d+_C$/;
 /** Signal types that reach a `_C` pad directly (switch open). */
 const ANALOG_PERIPHERAL_TYPES = new Set(['ADC', 'DAC', 'OPAMP', 'COMP']);
@@ -684,6 +709,7 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
     voltage: a.voltage,
     temperature: a.temperature,
     hasPowerPad: false,
+    docs: parseDocs(a.doc.docs),
     peripherals,
     logicalPins,
     physicalPins,
