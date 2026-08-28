@@ -95,10 +95,10 @@ npm run dev      # development server with HMR
 ### Data quality (working on it)
 Some data in the remote repo is parsed from datasheets and not imported from official ST XML files. There will be bugs.
 
-### Constraints syntax (won't fix)
+### Constraints syntax (it's a feature not a bug, won't fix)
 The constraints language was build around some personal ideas about embedded design (e.g. peripheral instances are exclusive per port). It can't express all possible requirements.
 
-### Vendor lock in (maybe later)
+### Vendor lock-in (maybe later)
 Right now only cpu data for the STM32 lineup is available, but most of the code base is vendor agnostic.
 The [data format specification](https://github.com/crinq/mcu_data_generated/blob/master/format-spec.md) is available and the remote url is configurable. The format might change in the future to support new features or other vendors.
 
