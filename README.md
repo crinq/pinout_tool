@@ -73,6 +73,9 @@ Click **Export** in the viewer toolbar to choose a format:
 - **JSON** -- structured pin assignment data
 - **Custom** -- user-defined JavaScript export functions (manage via Data Manager)
 
+### Skill
+You can use this [skill](https://github.com/crinq/skills/tree/master/pinout-constraints) to generate constraints from porject description and user feedback.
+
 ## Documentation
 
 See [doc.md](doc.md) for the full constraint language reference, practical examples, and detailed feature documentation.
