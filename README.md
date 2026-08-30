@@ -110,6 +110,7 @@ Some special cases are not known or ignored by the solvers.
 - STM32H7 direct pins can be connected to the corresponding base pin via an analog switch. Currently the solver will not assing any alternate function to a direct pin.
 - Some STM32 peripherals allow pinswaping (e.g. UART_TX <-> UART_RX) or simmilar features (e.g. half duplex TX/RX on the same pin). This is not represented in the data.
 - Some STM32 peripherals need a combination of pin mappings to work, e.g. the H7 SPI needs a mapped clock pin to work in any mode.
+- The naming of compatible peripherals and signals differs between some ST MCUs (e.g. ADC1_IN1 / ADC1_INP1).
 
 ### CubeMX export (won't fix for now)
 CubeMX .ioc files need more information to be valid (e.g. peripheral and clock settings). This data is currently not available.
