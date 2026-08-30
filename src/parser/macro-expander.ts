@@ -352,8 +352,13 @@ function expandBody(
       continue;
     }
 
-    if (expansionStack.has(item.name)) {
-      errors.push({ message: `Recursive macro call detected: '${item.name}'`, macroName: item.name });
+    // Keyed by name/arity, like the lookup above — overloads are different
+    // macros, so `encoder(A, B, Z)` calling `encoder(A, B)` is not recursion.
+    if (expansionStack.has(key)) {
+      errors.push({
+        message: `Recursive macro call detected: '${item.name}' (${item.args.length} args)`,
+        macroName: item.name,
+      });
       continue;
     }
 
@@ -365,9 +370,9 @@ function expandBody(
     const substituted = substituteParams(macro.body, paramMap);
 
     // Recursively expand any macro calls in the expanded body
-    expansionStack.add(item.name);
+    expansionStack.add(key);
     const expanded = expandBody(substituted, macros, expansionStack, errors, depth + 1);
-    expansionStack.delete(item.name);
+    expansionStack.delete(key);
 
     result.push(...expanded);
   }

@@ -1463,6 +1463,7 @@ export function validatePeripheralAvailability(
   mcu: Mcu,
   reservedPeripherals: Set<string>,
   errors: SolverError[],
+  sharedPatterns: PatternPart[] = [],
 ): void {
   // For each port, for each config, collect the set of peripheral types needed
   // A port needs at least 1 instance of each type used in its mappings
@@ -1489,10 +1490,15 @@ export function validatePeripheralAvailability(
 
   // Build available instances per type, minus reserved
   const availableByType = new Map<string, number>();
+  // Types with at least one shared instance available. One shared instance can
+  // serve every port at once, so counting one instance per port says nothing
+  // about feasibility for that type — see the skip below.
+  const sharedTypes = new Set<string>();
   for (const [type, instances] of mcu.typeToInstances) {
     const normType = normalizePeripheralType(type);
-    const available = instances.filter(inst => !reservedPeripherals.has(inst)).length;
-    availableByType.set(normType, (availableByType.get(normType) ?? 0) + available);
+    const free = instances.filter(inst => !reservedPeripherals.has(inst));
+    availableByType.set(normType, (availableByType.get(normType) ?? 0) + free.length);
+    if (free.some(inst => isSharedInstance(inst, sharedPatterns))) sharedTypes.add(normType);
   }
 
   // For the worst case, sum up needed instances per type across all ports
@@ -1518,6 +1524,8 @@ export function validatePeripheralAvailability(
 
   // Compare needed vs available
   for (const [type, { count, ports: needPorts }] of totalNeeded) {
+    // `shared:` lifts the one-port-per-instance assumption this count rests on.
+    if (sharedTypes.has(type)) continue;
     const available = availableByType.get(type) ?? 0;
     if (count > available) {
       const portList = needPorts.join(', ');
@@ -1777,12 +1785,13 @@ export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
+  const sharedPatterns = extractSharedPatterns(expandedAst);
+
   validateDuplicates(expandedAst, errors);
   validateConstraints(ports, errors);
-  validatePeripheralAvailability(ports, mcu, reservedPeripheralSet, errors);
+  validatePeripheralAvailability(ports, mcu, reservedPeripheralSet, errors, sharedPatterns);
   validateDmaAvailability(ports, mcu, errors);
 
-  const sharedPatterns = extractSharedPatterns(expandedAst);
   const reservedPinSet = new Set(reserved.pins);
   const variables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
   validateInstanceExclusivity(variables, sharedPatterns, ports, errors);
