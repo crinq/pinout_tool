@@ -1383,6 +1383,20 @@ class Parser {
       return expr;
     }
 
+    // Peripheral pattern used as a value (`TIM[1-5,8,20]`, `TIM*`). The
+    // bracket/star after the identifier is what distinguishes it; a bare
+    // identifier stays a channel reference.
+    if (tok.type === 'IDENT') {
+      const after = this.tokens[this.pos + 1];
+      const afterNum = after?.type === 'NUMBER' ? this.tokens[this.pos + 2] : after;
+      if (afterNum?.type === 'LBRACKET' || afterNum?.type === 'STAR') {
+        const from = this.pos;
+        const pattern = this.parsePatternPart();
+        const text = this.tokens.slice(from, this.pos).map(t => t.value).join('');
+        return { type: 'pattern_literal', pattern, text, loc: { line: tok.line, column: tok.column } };
+      }
+    }
+
     // Boolean literal — recognised before identifiers so `true`/`false` are
     // never treated as channel references (which would make a require look
     // vacuous and get skipped).

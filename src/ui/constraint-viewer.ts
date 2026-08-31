@@ -367,6 +367,8 @@ export class ConstraintViewer implements Panel {
         return String(expr.value);
       case 'boolean_literal':
         return expr.value ? 'true' : 'false';
+      case 'pattern_literal':
+        return expr.text;
     }
   }
 

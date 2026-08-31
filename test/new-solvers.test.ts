@@ -142,7 +142,7 @@ describe('cegar solver', () => {
     const result = solveCegar(ast, mcu, { ...TP(10000), skipGpioMapping: true });
     expect(result.solutions.length).toBeGreaterThan(0);
     validateSolutions(result);
-  }, 15000);
+  }, 30000);   // solver budget is 10s; wall clock needs slack under parallel test load
 
   it('solves the very hard case (h755i/ecat_more_complex)', () => {
     const { mcu, ast } = loadCase('h755i', 'ecat_more_complex');

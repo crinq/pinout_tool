@@ -2,6 +2,7 @@ import { LayoutManager } from './core/layout-manager';
 import { HorizontalSplitter, VerticalSplitter } from './core/splitter';
 import { PackageViewer } from './ui/package-viewer';
 import { ConstraintEditor, highlightConstraintCode } from './ui/constraint-editor';
+import { createCodeEditor } from './ui/code-editor';
 import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
 import { compareSolutions, solutionCompareColor } from './solution-compare';
@@ -20,7 +21,7 @@ import { classifyProjectSolutions } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, isExportedProject, mergeImportedVersions, seedDefaultExports, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, isExportedProject, mergeImportedVersions, syncDefaults, applyDefaultUpdate, markSyncedWithDefault, type PendingUpdate, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
 import { DEFAULT_COMMON_ERRORS_LIBRARY } from './parser/lint-common-errors';
 import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
@@ -238,7 +239,7 @@ export class App {
         console.warn('[migration] failed:', err);
       }
       void this.restoreState();
-      void seedDefaultExports();
+      void this.refreshDefaultUpdates();
       void seedMacroLibrary();
       void seedPeripheralLibrary();
       // Seed + prime the common-error lint library.
@@ -2628,6 +2629,36 @@ export class App {
     })).then(list => list.sort((a, b) => a.refName.localeCompare(b.refName)));
   }
 
+  /** Bundled defaults the user has customised and that have a newer revision. */
+  private pendingUpdates: PendingUpdate[] = [];
+
+  /**
+   * Sync bundled libraries / export functions into storage and mark the Data
+   * button when something needs a decision. Untouched items update silently;
+   * only customised ones surface here.
+   */
+  private async refreshDefaultUpdates(): Promise<void> {
+    try {
+      this.pendingUpdates = await syncDefaults();
+    } catch {
+      this.pendingUpdates = [];
+    }
+    await primeStdlibSource();
+    await primePeripheralSource();
+    const btn = document.getElementById('btn-data-manager');
+    if (!btn) return;
+    btn.classList.toggle('has-update', this.pendingUpdates.length > 0);
+    btn.title = this.pendingUpdates.length > 0
+      ? `${this.pendingUpdates.length} library/export update(s) available — open Data to review`
+      : 'Manage stored MCUs, projects, exports, and the remote data source';
+  }
+
+  /** `Update` button markup for a library section, or '' when it is current. */
+  private updateButton(id: string): string {
+    const p = this.pendingUpdates.find(u => u.id === id);
+    return p ? `<button class="btn btn-small btn-update" data-action="update-default" data-id="${id}">Update</button>` : '';
+  }
+
   private showDataManager(): void {
     const result = createModal({ toggle: '.settings-overlay', modalClass: 'settings-modal dm-modal' });
     if (!result) return;
@@ -2772,6 +2803,7 @@ export class App {
                     <span class="dm-name">${fn.name}</span>
                     <span class="dm-size" style="min-width:auto">${fn.description}</span>
                     <button class="btn btn-small" data-action="edit-export" data-export-id="${fn.id}">Edit</button>
+                    ${this.updateButton(fn.id)}
                     <button class="btn btn-small dm-delete" data-action="delete-export" data-export-id="${fn.id}">Delete</button>
                   </div>
                 `).join('');
@@ -2786,6 +2818,7 @@ export class App {
             <div style="margin-top:6px">
               <button class="btn btn-small" data-action="edit-macro-lib">Edit</button>
               <button class="btn btn-small" data-action="reset-macro-lib">Reset to Default</button>
+              ${this.updateButton('macro-library')}
             </div>
           </section>
 
@@ -2795,6 +2828,7 @@ export class App {
             <div style="margin-top:6px">
               <button class="btn btn-small" data-action="edit-lint-lib">Edit</button>
               <button class="btn btn-small" data-action="reset-lint-lib">Reset to Default</button>
+              ${this.updateButton('common-errors-library')}
             </div>
           </section>
 
@@ -2804,6 +2838,7 @@ export class App {
             <div style="margin-top:6px">
               <button class="btn btn-small" data-action="edit-peripheral-lib">Edit</button>
               <button class="btn btn-small" data-action="reset-peripheral-lib">Reset to Default</button>
+              ${this.updateButton('peripheral-library')}
             </div>
           </section>
         </div>
@@ -2895,16 +2930,31 @@ export class App {
             case 'edit-macro-lib':
               this.showMacroLibEditor(result.overlay);
               break;
+            case 'update-default': {
+              const id = (btn as HTMLElement).dataset.id;
+              const pending = this.pendingUpdates.find(u => u.id === id);
+              if (!pending) break;
+              if (!confirm(`Update "${pending.label}" to the shipped version?\n\nYour changes to it will be replaced.`)) break;
+              await applyDefaultUpdate(pending);
+              await this.refreshDefaultUpdates();
+              this.showStatus(`${pending.label} updated`, 'success');
+              void renderContent();
+              break;
+            }
             case 'reset-macro-lib':
               await saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
+              await markSyncedWithDefault('macro-library', DEFAULT_MACRO_LIBRARY.trim());
               await primeStdlibSource();
+              await this.refreshDefaultUpdates();
               break;
             case 'edit-lint-lib':
               this.showLintLibEditor();
               break;
             case 'reset-lint-lib':
               await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
+              await markSyncedWithDefault('common-errors-library', DEFAULT_COMMON_ERRORS_LIBRARY.trim());
               primeCommonErrorsLib(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
+              await this.refreshDefaultUpdates();
               this.showStatus('Lint library reset to default', 'success');
               break;
             case 'edit-peripheral-lib':
@@ -2912,7 +2962,9 @@ export class App {
               break;
             case 'reset-peripheral-lib':
               await savePeripheralLibrary(DEFAULT_PERIPHERAL_LIBRARY.trim());
+              await markSyncedWithDefault('peripheral-library', DEFAULT_PERIPHERAL_LIBRARY.trim());
               await primePeripheralSource();
+              await this.refreshDefaultUpdates();
               this.showStatus('Peripheral library reset to default', 'success');
               break;
             case 'save-data-url': {
@@ -3169,10 +3221,7 @@ export class App {
             <input class="settings-input" style="width:300px" id="export-editor-desc" value="${current.description.replace(/"/g, '&quot;')}">
           </div>
           <div style="margin-bottom:4px;font-size:11px;color:var(--text-secondary)">JavaScript code (return a string to copy to clipboard, or {filename, content, mimeType} to download):</div>
-          <div class="code-editor-wrap">
-            <pre class="code-editor-highlight" id="export-editor-highlight" aria-hidden="true"></pre>
-            <textarea class="export-code-editor" id="export-editor-code" spellcheck="false">${current.code.replace(/</g, '&lt;')}</textarea>
-          </div>
+          <div id="export-editor-host" class="code-editor-wrap"></div>
           <div class="export-error" id="export-editor-error" style="display:none"></div>
           <div class="export-help" id="export-editor-help-panel" style="display:none">
             <strong>Available variables:</strong>
@@ -3204,30 +3253,11 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
 
       modal.querySelector('.settings-close')!.addEventListener('click', closeExport);
 
-      const codeEl = modal.querySelector('#export-editor-code') as HTMLTextAreaElement;
-      const highlightEl = modal.querySelector('#export-editor-highlight') as HTMLPreElement;
-
-      const syncHighlight = (): void => {
-        highlightEl.innerHTML = highlightJs(codeEl.value) + '\n';
-      };
-      const syncScroll = (): void => {
-        highlightEl.scrollTop = codeEl.scrollTop;
-        highlightEl.scrollLeft = codeEl.scrollLeft;
-      };
-      codeEl.addEventListener('input', syncHighlight);
-      codeEl.addEventListener('scroll', syncScroll);
-      syncHighlight();
-
-      codeEl.addEventListener('keydown', (e) => {
-        if (e.key === 'Tab') {
-          e.preventDefault();
-          const start = codeEl.selectionStart;
-          const end = codeEl.selectionEnd;
-          codeEl.value = codeEl.value.substring(0, start) + '  ' + codeEl.value.substring(end);
-          codeEl.selectionStart = codeEl.selectionEnd = start + 2;
-          syncHighlight();
-        }
-      });
+      const editor = createCodeEditor({ highlighter: highlightJs });
+      const codeEl = editor.textarea;
+      codeEl.value = current.code;
+      editor.refresh();
+      modal.querySelector('#export-editor-host')!.appendChild(editor.wrapper);
 
       modal.querySelector('#export-editor-help')!.addEventListener('click', () => {
         const panel = modal.querySelector('#export-editor-help-panel') as HTMLElement;
@@ -3300,13 +3330,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         </div>
       </div>
       <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
-        <div class="ce-editor-wrapper" style="flex:1;min-height:200px;border:1px solid var(--border);border-radius:3px">
-          <div class="ce-line-numbers" id="macro-lib-lines">1</div>
-          <div class="ce-code-area">
-            <textarea class="ce-textarea" id="macro-lib-code" spellcheck="false">${currentSource.replace(/</g, '&lt;')}</textarea>
-            <pre class="ce-highlight" id="macro-lib-highlight"></pre>
-          </div>
-        </div>
+        <div id="macro-lib-host" style="flex:1;min-height:200px;display:flex"></div>
         <div class="export-error" id="macro-lib-error" style="display:none"></div>
         <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
           <button class="btn btn-small btn-primary" id="macro-lib-save">Save</button>
@@ -3314,46 +3338,22 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       </div>
     `;
 
-    const codeEl = modal.querySelector('#macro-lib-code') as HTMLTextAreaElement;
-    const highlightEl = modal.querySelector('#macro-lib-highlight') as HTMLPreElement;
-    const lineNumEl = modal.querySelector('#macro-lib-lines') as HTMLElement;
+    const editor = createCodeEditor({ highlighter: highlightConstraintCode });
+    const codeEl = editor.textarea;
+    codeEl.value = currentSource;
+    editor.refresh();
+    const host = modal.querySelector('#macro-lib-host')!;
+    host.appendChild(editor.wrapper);
+    editor.wrapper.style.flex = '1';
+    editor.wrapper.style.border = '1px solid var(--border)';
+    editor.wrapper.style.borderRadius = '3px';
     const errorEl = modal.querySelector('#macro-lib-error') as HTMLElement;
-
-    const syncHighlight = (): void => {
-      highlightEl.innerHTML = highlightConstraintCode(codeEl.value) + '\n';
-    };
-    const syncLineNumbers = (): void => {
-      const lines = codeEl.value.split('\n');
-      lineNumEl.innerHTML = lines.map((_, i) => `<div class="ce-line-num">${i + 1}</div>`).join('');
-    };
-    const syncScroll = (): void => {
-      highlightEl.scrollTop = codeEl.scrollTop;
-      highlightEl.scrollLeft = codeEl.scrollLeft;
-      lineNumEl.scrollTop = codeEl.scrollTop;
-    };
-
-    codeEl.addEventListener('input', () => { syncHighlight(); syncLineNumbers(); });
-    codeEl.addEventListener('scroll', syncScroll);
-    syncHighlight();
-    syncLineNumbers();
-
-    codeEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        const start = codeEl.selectionStart;
-        const end = codeEl.selectionEnd;
-        codeEl.value = codeEl.value.substring(0, start) + '  ' + codeEl.value.substring(end);
-        codeEl.selectionStart = codeEl.selectionEnd = start + 2;
-        syncHighlight();
-      }
-    });
 
     modal.querySelector('.settings-close')!.addEventListener('click', closeMacro);
 
     modal.querySelector('#macro-lib-reset')!.addEventListener('click', () => {
       codeEl.value = DEFAULT_MACRO_LIBRARY.trim();
-      syncHighlight();
-      syncLineNumbers();
+      editor.refresh();
     });
 
     modal.querySelector('#macro-lib-save')!.addEventListener('click', async () => {

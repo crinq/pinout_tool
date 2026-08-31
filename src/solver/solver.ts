@@ -2486,6 +2486,16 @@ export function evaluateExpr(
     case 'binary_expr': {
       const left = evaluateExpr(expr.left, currentPort, channelInfo, dmaData, mcuInfo);
       const right = evaluateExpr(expr.right, currentPort, channelInfo, dmaData, mcuInfo);
+      // `instance(A) == TIM[1-5,8,20]` — a pattern on either side matches
+      // instead of comparing for string equality.
+      const pat = expr.left.type === 'pattern_literal' ? expr.left
+        : expr.right.type === 'pattern_literal' ? expr.right : null;
+      if (pat && (expr.operator === '==' || expr.operator === '!=')) {
+        const other = expr.left === pat ? right : left;
+        if (typeof other !== 'string') return false;
+        const hit = matchPatternToInstance(pat.pattern, other);
+        return expr.operator === '==' ? hit : !hit;
+      }
       switch (expr.operator) {
         case '==': return left === right;
         case '!=': return left !== right;
@@ -2516,6 +2526,11 @@ export function evaluateExpr(
 
     case 'number_literal':
       return expr.value;
+
+    case 'pattern_literal':
+      // Only meaningful next to == / != (handled there); on its own the text
+      // is the best value we can give.
+      return expr.text;
 
     case 'dot_access': {
       // Cross-port reference

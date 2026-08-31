@@ -9,6 +9,7 @@ import { escapeHtml, escapeRegex, createModal } from '../utils';
 import { showContextMenu, type ContextMenuItem } from '../../ts_lib/src/context-menu';
 import { getPeripherals, type Peripheral } from '../parser/peripheral-lib';
 import { ConstraintMinimap } from './constraint-minimap';
+import { createCodeEditor, type CodeEditor } from './code-editor';
 
 const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from', 'settings']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
@@ -260,8 +261,7 @@ export class ConstraintEditor implements Panel {
   private textarea!: HTMLTextAreaElement;
   private highlight!: HTMLPreElement;
   private highlightInner!: HTMLElement;
-  private lineNumbers!: HTMLDivElement;
-  private lineNumbersInner!: HTMLElement;
+  private codeEditor!: CodeEditor;
   private errorPanel!: HTMLDivElement;
   private solverStatusBar!: HTMLDivElement;
   private parseResult: ParseResult | null = null;
@@ -314,42 +314,21 @@ export class ConstraintEditor implements Panel {
     toolbar.appendChild(helpBtn);
     this.container.appendChild(toolbar);
 
-    // Editor wrapper (line numbers + code area)
-    const editorWrapper = document.createElement('div');
-    editorWrapper.className = 'ce-editor-wrapper';
-
-    // Line numbers
-    this.lineNumbers = document.createElement('div');
-    this.lineNumbers.className = 'ce-line-numbers';
-    this.lineNumbersInner = document.createElement('div');
-    this.lineNumbersInner.className = 'ce-line-nums-inner';
-    this.lineNumbersInner.innerHTML = '<div class="ce-line-num">1</div>';
-    this.lineNumbers.appendChild(this.lineNumbersInner);
-    editorWrapper.appendChild(this.lineNumbers);
-
-    // Code area (highlight + textarea overlay)
-    const codeArea = document.createElement('div');
-    codeArea.className = 'ce-code-area';
-
-    this.textarea = document.createElement('textarea');
-    this.textarea.className = 'ce-textarea';
-    this.textarea.spellcheck = false;
-    this.textarea.autocapitalize = 'off';
-    this.textarea.autocomplete = 'off';
+    // Editor shell (gutter + highlight overlay + scroll sync) is shared with
+    // the library / export dialogs — see createCodeEditor.
+    this.codeEditor = createCodeEditor({
+      highlighter: highlightConstraintCode,
+      onInput: () => this.onInput(),
+    });
+    const editorWrapper = this.codeEditor.wrapper;
+    this.textarea = this.codeEditor.textarea;
+    this.highlight = this.codeEditor.highlight;
+    this.highlightInner = this.codeEditor.highlightInner;
     this.textarea.placeholder = 'Enter constraints here...\n\n# Example:\nport CMD:\n  channel TX = USART*_TX\n  channel RX = USART*_RX\n  require same_instance(TX, RX)';
-    codeArea.appendChild(this.textarea);
 
-    this.highlight = document.createElement('pre');
-    this.highlight.className = 'ce-highlight';
-    this.highlightInner = document.createElement('span');
-    this.highlightInner.className = 'ce-highlight-inner';
-    this.highlight.appendChild(this.highlightInner);
-    codeArea.appendChild(this.highlight);
-
+    const codeArea = this.codeEditor.codeArea;
     this.setupKeywordTooltips(codeArea);
     this.setupDoubleClickHelper();
-
-    editorWrapper.appendChild(codeArea);
 
     // Minimap
     this.minimap = new ConstraintMinimap();
@@ -872,10 +851,7 @@ export class ConstraintEditor implements Panel {
   }
 
   private updateLineNumbers(): void {
-    const lines = this.textarea.value.split('\n');
-    this.lineNumbersInner.innerHTML = lines
-      .map((_, i) => `<div class="ce-line-num">${i + 1}</div>`)
-      .join('');
+    this.codeEditor.renumber();
   }
 
   /** Ensure line numbers scrollHeight matches textarea scrollHeight so they scroll in sync */
@@ -922,14 +898,7 @@ export class ConstraintEditor implements Panel {
   }
 
   private syncScroll(): void {
-    // Translate rather than scroll: the textarea's scroll range differs from
-    // the overlay layers' (its horizontal scrollbar shrinks its client height,
-    // and its huge bottom padding is not mirrored), so assigning scrollTop got
-    // clamped and drifted a line out near the bottom. A transform has no
-    // clamping, so the layers track the caret exactly at any scroll position.
-    const x = this.textarea.scrollLeft, y = this.textarea.scrollTop;
-    this.highlightInner.style.transform = `translate(${-x}px, ${-y}px)`;
-    this.lineNumbersInner.style.transform = `translateY(${-y}px)`;
+    this.codeEditor.syncScroll();
     this.syncMinimapViewport();
   }
 

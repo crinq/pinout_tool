@@ -1,3 +1,4 @@
+import DEFAULT_COMMON_ERRORS_LIBRARY_RAW from '../defaults/common-errors.txt?raw';
 // ============================================================
 // Common-error lint
 //
@@ -24,30 +25,7 @@ export interface LintWarning {
 }
 
 /** Default seed. Edit via the Data Manager. */
-export const DEFAULT_COMMON_ERRORS_LIBRARY = `\
-# Groups of signal names that are commonly swapped by mistake.
-# Format: one group per line, tokens space-separated, comments with #.
-# Match rule: channel name and signal name both contain tokens from
-# the same group (word-boundary substring, case-insensitive); if the
-# two tokens differ, a warning is raised.
-
-# SPI data lines
-miso mosi
-
-# UART / USART / LPUART direction
-tx rx
-cts rts
-
-# I2C
-sda scl
-
-# Timer channels (positive vs complementary output)
-ch1 ch2 ch3 ch4
-ch1n ch2n ch3n ch4n
-
-# CAN
-canrx cantx
-`;
+export const DEFAULT_COMMON_ERRORS_LIBRARY = DEFAULT_COMMON_ERRORS_LIBRARY_RAW;
 
 // ============================================================
 // Lib parsing

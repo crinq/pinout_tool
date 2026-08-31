@@ -1,3 +1,4 @@
+import DEFAULT_PERIPHERAL_LIBRARY_RAW from '../defaults/peripheral-library.txt?raw';
 // ============================================================
 // Peripheral snippet library
 //
@@ -25,30 +26,7 @@ export interface Peripheral {
   lines: string[];
 }
 
-export const DEFAULT_PERIPHERAL_LIBRARY = `\
-#USART
-TX = USART*_TX $u
-RX = USART*_RX $u
-require dma(TX, "USART_TX")
-require dma(RX, "USART_RX")
-
-#SPI master + NSS
-SCK = SPI*_SCK $s
-MISO = SPI*_MISO $s
-MOSI = SPI*_MOSI $s
-NSS = SPI*_NSS $s
-require dma(MISO, "SPI_RX")
-require dma(MOSI, "SPI_TX")
-
-#I2C
-SCL = I2C*_SCL $i
-SDA = I2C*_SDA $i
-
-#CAN
-TX = CAN*_TX $c
-RX = CAN*_RX $c
-
-`;
+export const DEFAULT_PERIPHERAL_LIBRARY = DEFAULT_PERIPHERAL_LIBRARY_RAW;
 
 /** Parse the library text into named peripheral snippets. */
 export function parsePeripheralLibrary(text: string): Peripheral[] {

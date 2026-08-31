@@ -1566,3 +1566,22 @@
 .context-menu-has-submenu:hover > .context-menu-submenu {
   display: block;
 }
+
+/* A bundled library / export function has a newer revision than the user's
+   customised copy — see syncDefaults. */
+.btn-update {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#btn-data-manager.has-update { position: relative; }
+#btn-data-manager.has-update::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+}

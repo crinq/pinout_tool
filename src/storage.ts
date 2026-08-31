@@ -1,4 +1,5 @@
 import type { Solution, SolverResult, Assignment, ConfigCombinationAssignment, CustomExportFunction } from './types';
+import { DEFAULT_LIBRARIES, DEFAULT_EXPORTS, contentHash } from './defaults';
 import { getKv } from './kv';
 
 // ============================================================
@@ -189,43 +190,100 @@ export async function deleteCustomExport(id: string): Promise<void> {
   await getKv().delete(CUSTOM_EXPORT_PREFIX + id);
 }
 
-export const DEFAULT_EXPORT_EXAMPLE: CustomExportFunction = {
-  id: 'example-pin-list',
-  name: 'Pin List',
-  description: 'List of used pins with port/signal mapping',
-  code: `const lines = [mcuName + '  ' + mcuPackage, ''];
 
-// Group signals per pin
-const pinMap = new Map();
-for (const a of assignments) {
-  const key = a.pinName + '\\0' + a.portName + '.' + a.channelName;
-  if (!pinMap.has(key)) pinMap.set(key, { pin: a.pinName, port: a.portName + '.' + a.channelName, signals: new Set() });
-  pinMap.get(key).signals.add(a.signalName);
+/**
+ * Hash of the bundled default a stored item was last synced with. Lets us tell
+ * "the user edited this" from "we shipped a new revision" — see syncDefaults.
+ */
+const BASE_HASH_PREFIX = 'default-base:';
+const baseHashKey = (id: string): string => BASE_HASH_PREFIX + id;
+
+export interface PendingUpdate {
+  kind: 'library' | 'export';
+  id: string;
+  label: string;
 }
 
-const rows = [...pinMap.values()].sort((a, b) => a.pin.localeCompare(b.pin, undefined, { numeric: true }));
+/**
+ * Bring stored libraries and built-in export functions up to date with the
+ * bundled defaults, and report what still needs the user to decide.
+ *
+ * - never stored yet        → seed it
+ * - stored, never edited    → update in place (nothing to lose)
+ * - stored and edited       → leave it, return it as a pending update
+ *
+ * "Edited" means the stored text differs from the default it was seeded with,
+ * which is why the seed hash is recorded alongside it.
+ */
+export async function syncDefaults(): Promise<PendingUpdate[]> {
+  const kv = getKv();
+  const pending: PendingUpdate[] = [];
 
-// Find column widths
-const hdr = ['Pin', 'Port.Channel', 'Signal'];
-const w = hdr.map((h, i) => Math.max(h.length, ...rows.map(r => [r.pin, r.port, [...r.signals].join(', ')][i].length)));
+  /**
+   * @param current  stored text to compare against, or null if nothing stored
+   * @param write    persists the default; only called when it is safe to do so
+   */
+  const sync = async (
+    kind: 'library' | 'export', id: string, label: string,
+    defaultText: string, current: string | null, write: () => Promise<void>,
+  ): Promise<void> => {
+    const wanted = contentHash(defaultText);
+    if (current == null) {                       // new install / new built-in
+      await write();
+      await kv.set(baseHashKey(id), wanted);
+      return;
+    }
+    const base = await kv.get(baseHashKey(id));
+    if (base === wanted) return;                 // already on this revision
+    if (base != null && contentHash(current) !== base) {
+      pending.push({ kind, id, label });         // customised — the user decides
+      return;
+    }
+    // Untouched, or a pre-existing install adopting the scheme: move forward.
+    await write();
+    await kv.set(baseHashKey(id), wanted);
+  };
 
-lines.push(hdr.map((h, i) => h.padEnd(w[i])).join('  '));
-lines.push(w.map(n => '-'.repeat(n)).join('  '));
-for (const r of rows) {
-  lines.push([r.pin.padEnd(w[0]), r.port.padEnd(w[1]), [...r.signals].join(', ')].join('  '));
+  for (const lib of DEFAULT_LIBRARIES) {
+    await sync('library', lib.id, lib.label, lib.text, await kv.get(lib.id),
+      () => kv.set(lib.id, lib.text));
+  }
+
+  for (const fn of DEFAULT_EXPORTS) {
+    const raw = await kv.get(CUSTOM_EXPORT_PREFIX + fn.id);
+    let currentCode: string | null = null;
+    if (raw != null) {
+      try { currentCode = (JSON.parse(raw) as CustomExportFunction).code; } catch { currentCode = null; }
+    }
+    await sync('export', fn.id, fn.name, fn.code, currentCode, () => saveCustomExport(fn));
+  }
+
+  return pending;
 }
 
-return lines.join('\\n');`,
-};
+/** Apply a pending update, discarding the user's edits to that item. */
+export async function applyDefaultUpdate(update: PendingUpdate): Promise<void> {
+  const kv = getKv();
+  if (update.kind === 'library') {
+    const lib = DEFAULT_LIBRARIES.find(l => l.id === update.id);
+    if (!lib) return;
+    await kv.set(lib.id, lib.text);
+    await kv.set(baseHashKey(lib.id), contentHash(lib.text));
+    return;
+  }
+  const fn = DEFAULT_EXPORTS.find(f => f.id === update.id);
+  if (!fn) return;
+  await saveCustomExport(fn);
+  await kv.set(baseHashKey(fn.id), contentHash(fn.code));
+}
+
+/** Record a default as the current baseline (used after an explicit Reset). */
+export async function markSyncedWithDefault(id: string, defaultText: string): Promise<void> {
+  try { await getKv().set(baseHashKey(id), contentHash(defaultText)); } catch { /* storage unavailable */ }
+}
 
 export async function seedDefaultExports(): Promise<void> {
-  // `custom-export-seeded` stays on localStorage (sync-friendly) so we
-  // can short-circuit cheaply on every boot. The actual export blob
-  // moved to the async kv.
-  if (localStorage.getItem('custom-export-seeded')) return;
-  const existing = await getKv().get(CUSTOM_EXPORT_PREFIX + DEFAULT_EXPORT_EXAMPLE.id);
-  if (existing == null) await saveCustomExport(DEFAULT_EXPORT_EXAMPLE);
-  localStorage.setItem('custom-export-seeded', '1');
+  await syncDefaults();
 }
 
 // ============================================================

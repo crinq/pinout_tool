@@ -635,6 +635,9 @@ function evaluateExprPhase1(
     case 'boolean_literal':
       return expr.value;
 
+    case 'pattern_literal':
+      return expr.text;
+
     case 'number_literal':
       return expr.value;
 

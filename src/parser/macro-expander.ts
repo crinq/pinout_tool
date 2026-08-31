@@ -416,5 +416,7 @@ function substituteExpr(expr: ConstraintExprNode, paramMap: Map<string, string>)
       return expr;
     case 'boolean_literal':
       return expr;
+    case 'pattern_literal':
+      return expr;
   }
 }

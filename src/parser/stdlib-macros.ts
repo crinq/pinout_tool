@@ -1,3 +1,4 @@
+import DEFAULT_MACRO_LIBRARY_RAW from '../defaults/macro-library.txt?raw';
 // ============================================================
 // Standard Library Macros
 // Pre-defined macros for common peripheral configurations.
@@ -10,67 +11,7 @@ import { extractMacros } from './macro-expander';
 import type { MacroDeclNode, PortDeclNode } from './constraint-ast';
 import { loadMacroLibrary, saveMacroLibrary } from '../storage';
 
-export const DEFAULT_MACRO_LIBRARY = `\
-# UART / USART full-duplex
-macro uart_port(TX, RX):
-  TX = USART*_TX
-  RX = USART*_RX
-  require same_instance(TX, RX, "USART")
-
-# UART half-duplex (single wire)
-macro uart_half_duplex(TX):
-  TX = USART*_TX
-
-# SPI master (3-wire)
-macro spi_port(MOSI, MISO, SCK):
-  MOSI = SPI*_MOSI
-  MISO = SPI*_MISO
-  SCK = SPI*_SCK
-  require same_instance(MOSI, MISO, SCK, "SPI")
-
-# SPI master with chip select (overload)
-macro spi_port(MOSI, MISO, SCK, NSS):
-  spi_port(MOSI, MISO, SCK)
-  NSS = SPI*_NSS
-  require same_instance(MOSI, NSS, "SPI")
-
-# I2C port
-macro i2c_port(SDA, SCL):
-  SDA = I2C*_SDA
-  SCL = I2C*_SCL
-  require same_instance(SDA, SCL, "I2C")
-
-# Timer encoder (2-channel quadrature)
-macro encoder(A, B):
-  A = TIM*_CH[1,2]
-  B = TIM*_CH[1,2]
-  require same_instance(A, B, "TIM")
-  require instance(A, "TIM") == TIM[1-5,8,20]
-
-# Timer encoder with index (overload)
-macro encoder(A, B, Z):
-  encoder(A, B)
-  Z = TIM*_CH[3,4]
-  require same_instance(A, Z, "TIM")
-
-# PWM output on a single timer channel
-macro pwm(CH):
-  CH = TIM*_CH[1-4]
-
-# DAC output
-macro dac(OUT):
-  OUT = DAC*_OUT[1-2]
-
-# ADC input
-macro adc(IN):
-  IN = ADC*_IN[0-15]
-
-# CAN bus
-macro can_port(TX, RX):
-  TX = CAN*_TX
-  RX = CAN*_RX
-  require same_instance(TX, RX, "CAN")
-`;
+export const DEFAULT_MACRO_LIBRARY = DEFAULT_MACRO_LIBRARY_RAW;
 
 let cachedStdlib: Map<string, MacroDeclNode> | null = null;
 let cachedTemplates: Map<string, PortDeclNode> | null = null;

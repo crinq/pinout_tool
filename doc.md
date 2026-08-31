@@ -620,6 +620,23 @@ require gpio_port(LED) == "GPIO2"
 
 Parentheses override precedence: `(A | B) & C`.
 
+#### Peripheral patterns as values
+
+The right side of `==` / `!=` may be a peripheral pattern instead of a plain
+value. It is then **matched** rather than compared for equality, which is how
+you restrict a channel to a set of instances:
+
+```
+require instance(A, "TIM") == TIM[1-5,8,20]   # only these timers
+require instance(A, "TIM") != TIM[15-17]      # anything but these
+require instance(A, "TIM") == TIM*            # any timer
+```
+
+The bracket or `*` is what marks it as a pattern — a bare identifier
+(`instance(A) == instance(B)`) is still a channel reference. Same bracket
+syntax as [signal patterns](#signal-patterns): `[1-5]` ranges, `[1,8]` lists,
+and combinations.
+
 #### Cross-port references
 
 Use dot notation to reference channels from other ports:

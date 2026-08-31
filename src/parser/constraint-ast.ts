@@ -246,6 +246,7 @@ export type ConstraintExprNode =
   | StringLiteralNode
   | NumberLiteralNode
   | BooleanLiteralNode
+  | PatternLiteralNode
   | DotAccessNode;
 
 // same_instance(TX, RX)
@@ -297,6 +298,17 @@ export interface StringLiteralNode {
 
 // true, false — a distinct node so they are never mistaken for a channel
 // reference (which would make a require look vacuous and get skipped).
+// A peripheral pattern used as a value, e.g. `TIM[1-5,8,20]` or `TIM*` in
+// `require instance(A, "TIM") == TIM[1-5,8,20]`. Compared by matching rather
+// than string equality — see matchPatternToInstance.
+export interface PatternLiteralNode {
+  type: 'pattern_literal';
+  pattern: PatternPart;
+  /** Source text, for error messages and the read-only viewer. */
+  text: string;
+  loc: SourceLocation;
+}
+
 export interface BooleanLiteralNode {
   type: 'boolean_literal';
   value: boolean;
