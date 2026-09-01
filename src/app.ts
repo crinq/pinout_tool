@@ -1851,6 +1851,16 @@ export class App {
       type: 'solver-complete',
       solverResult: { mcuRef: '', solutions: [], errors: [], statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 } },
     });
+    // Drop the outgoing project's solution from the viewer, the constraint
+    // viewer and the caret highlight. Without this, opening a project that has
+    // no stored solution left the previous one on screen and the caret kept
+    // ringing its pins.
+    this.currentSolution = null;
+    this.layout.broadcastStateChange({
+      type: 'solution-selected',
+      assignments: [],
+      portColors: new Map(),
+    });
 
     // Load MCU if version references one
     if (version.mcuRef && (!this.currentMcu || this.currentMcu.refName !== version.mcuRef)) {

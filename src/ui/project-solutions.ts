@@ -86,16 +86,21 @@ export class ProjectSolutions implements Panel {
     return this.solutions.filter(s => this.selectedIds.has(s.id));
   }
 
-  /** Populate from deserialized project data */
+  /**
+   * Populate from deserialized project data.
+   *
+   * Deliberately selects nothing: restoring a saved list is not the user
+   * picking a solution. Auto-selecting made a project open with a row
+   * highlighted and the viewer showing a different thing entirely (the MCU is
+   * still loading at that point, so the broadcast landed nowhere), and left the
+   * caret highlight keyed to a solution nobody had chosen.
+   */
   setSolutions(solutions: Solution[]): void {
     this.solutions = [...solutions];
-    this.focusedIndex = solutions.length > 0 ? 0 : -1;
+    this.focusedIndex = -1;
+    this.selectedIds.clear();
     this.render();
-
-    // Auto-select first solution if we have any
-    if (this.solutions.length > 0) {
-      this.activateItem(0);
-    }
+    this.emitSelectionChanged();
   }
 
   /** Append a solution (e.g. from Enter in solver list) */

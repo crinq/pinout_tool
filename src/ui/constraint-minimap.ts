@@ -7,6 +7,8 @@ import type {
   PortDeclNode,
   ConfigDeclNode,
   MappingNode,
+  SignalPatternNode,
+  ConstraintExprNode,
 } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
@@ -47,8 +49,8 @@ interface MinimapBlock {
 export interface LineHighlight {
   pins: Set<string>;
   color: string;
-  /** Port / group / config / channel — what the line resolved to, for debugging and tests. */
-  scope: 'port' | 'group' | 'config' | 'channel';
+  /** What the line resolved to, for debugging and tests. */
+  scope: 'port' | 'group' | 'config' | 'channel' | 'require';
   label: string;
 }
 
@@ -57,6 +59,43 @@ const DECL_TYPE_LABELS: Record<string, string> = {
   freq_decl: 'FREQ', temp_decl: 'TEMP', voltage_decl: 'VOLT', core_decl: 'CORE',
   reserve_decl: 'RESERVE', shared_decl: 'SHARED', pin_decl: 'PIN',
 };
+
+/**
+ * Channel names a require expression mentions, so putting the caret on a
+ * `require` line rings just the channels it talks about rather than everything
+ * around it. Only bare identifiers count: string literals are type filters,
+ * pattern literals are peripheral sets, and a `PORT.CH` cross-port reference
+ * belongs to another port than the one being collected for.
+ */
+function channelNamesIn(expr: ConstraintExprNode, out = new Set<string>()): Set<string> {
+  switch (expr.type) {
+    case 'ident':
+      out.add(expr.name);
+      break;
+    case 'function_call':
+      for (const a of expr.args) channelNamesIn(a, out);
+      break;
+    case 'binary_expr':
+      channelNamesIn(expr.left, out);
+      channelNamesIn(expr.right, out);
+      break;
+    case 'unary_expr':
+      channelNamesIn(expr.operand, out);
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+/**
+ * A bare `IN` / `OUT` mapping. The parser desugars both to the `GPIO*` wildcard
+ * but keeps the original word in `raw`, which is what tells them apart from a
+ * real signal filter like `USART*_TX`.
+ */
+function isBareGpioPattern(pattern: SignalPatternNode): boolean {
+  return pattern.raw === 'IN' || pattern.raw === 'OUT';
+}
 
 export class ConstraintMinimap {
   private canvas: HTMLCanvasElement;
@@ -113,7 +152,11 @@ export class ConstraintMinimap {
   }
 
   setAssignments(assignments: Assignment[] | null): void {
-    this.assignments = assignments;
+    // An empty array means "no solution", not "a solution that uses no pins" —
+    // clearing a selection broadcasts `assignments: []`, and an empty array is
+    // truthy, so without this the caret would ring nothing at all instead of
+    // falling back to the pattern candidates.
+    this.assignments = assignments && assignments.length > 0 ? assignments : null;
   }
 
   /** Update from parsed AST */
@@ -513,12 +556,6 @@ export class ConstraintMinimap {
       }
     }
 
-    // A bare `IN` / `OUT` matches nearly every pin on the package. Ringing them
-    // all says nothing except "unconstrained", and drowns out the pins that are
-    // actually pinned down, so say nothing instead.
-    const assignable = this.mcu?.logicalPins.filter(p => p.isAssignable).length ?? 0;
-    if (assignable > 0 && pins.size > assignable / 2) return new Set();
-
     return pins;
   }
 
@@ -550,6 +587,16 @@ export class ConstraintMinimap {
         if (item.type === 'mapping' && item.loc.line === line) {
           return make('channel', item.channelName, new Set([item.channelName]));
         }
+        if (item.type === 'require' && item.loc.line === line) {
+          // Ring only what the constraint names. Unknown identifiers (a type
+          // filter that parsed as a bare word, a cross-port reference) drop out
+          // here; if nothing local is left the line falls through to the
+          // enclosing scope below rather than ringing nothing.
+          const named = new Set(
+            [...channelNamesIn(item.expression)].filter(n => port.channels.some(c => c.name === n)),
+          );
+          if (named.size > 0) return make('require', [...named].join(', '), named);
+        }
       }
     }
 
@@ -578,6 +625,12 @@ export class ConstraintMinimap {
 
     for (const expr of mapping.signalExprs) {
       for (const pattern of expr.alternatives) {
+        // A bare IN/OUT carries no signal filter, so it matches nearly every
+        // assignable pin — ringing them all only says "unconstrained" and
+        // drowns out the channels that are actually pinned down. Ring it only
+        // when the constraints name the pins: a positive `@ PA1` placement.
+        // `@ !PB1` is not enough, it just subtracts one from everything.
+        if (isBareGpioPattern(pattern) && !allowedPins) continue;
         const candidates = expandPatternToCandidates(pattern, this.mcu, allowedPins, excludedPins);
         for (const c of candidates) {
           pins.add(c.pin.name);

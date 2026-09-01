@@ -512,7 +512,11 @@ export class ConstraintEditor implements Panel {
     if (!force && line === this.caretLine) return;
     this.caretLine = line;
 
-    const hit = this.minimap.pinsForLine(line);
+    // A blank line points at nothing. Falling back to the enclosing port would
+    // ring a whole block for a line the user is only passing through — and the
+    // blank line between two ports would still show the one above it.
+    const text = this.textarea.value.split('\n')[line - 1] ?? '';
+    const hit = text.trim() === '' ? null : this.minimap.pinsForLine(line);
     this.caretHighlight = hit && hit.pins.size > 0 ? { pins: hit.pins, color: hit.color } : null;
     this.emitCaretHighlight();
   }

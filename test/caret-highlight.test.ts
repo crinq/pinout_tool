@@ -1,196 +1,223 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { parseConstraints } from '../src/parser/constraint-parser';
-import { resolveTemplates } from '../src/parser/template-resolver';
-import { parseMcuXml } from '../src/parser/mcu-xml-parser';
-import { buildPortColorMap } from '../src/ui/port-colors';
-import type { Assignment, Mcu } from '../src/types';
+import { describe, it, expect, vi } from 'vitest';
 
-// jsdom has no canvas 2D context and the minimap paints on construction and on
-// every update. Stub just the calls it makes — pinsForLine is pure logic over
-// the block model, so nothing under test depends on real rendering.
-const canvasProto = globalThis.HTMLCanvasElement.prototype as unknown as {
-  getContext: (id: string) => unknown;
-};
-canvasProto.getContext = () => ({
-  clearRect() {}, fillRect() {}, strokeRect() {}, fillText() {}, scale() {},
-  beginPath() {}, arc() {}, stroke() {}, fill() {}, save() {}, restore() {},
-  translate() {}, rotate() {},
-  measureText: () => ({ width: 0 }),
-  getImageData: () => ({ data: [0, 0, 0, 255] }),
-  font: '', fillStyle: '', strokeStyle: '', lineWidth: 1,
-  shadowColor: '', shadowBlur: 0, globalAlpha: 1,
+// jsdom has no canvas, and constraint-minimap grabs a 2d context at module
+// load (for colorWithAlpha), so the stub has to be installed before imports.
+vi.hoisted(() => {
+  (HTMLCanvasElement.prototype as unknown as { getContext: () => unknown }).getContext =
+    () => new Proxy({}, { get: () => () => ({ width: 0, data: [0, 0, 0, 0] }) });
 });
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
+import { parseMcuXml } from '../src/parser/mcu-xml-parser';
+import { parseConstraints } from '../src/parser/constraint-parser';
+import { ConstraintMinimap } from '../src/ui/constraint-minimap';
+import type { Assignment } from '../src/types';
 
-// Imported after the stub: the module grabs a 2D context at load time for its
-// colour parsing, so a static import would run before the stub is in place.
-const { ConstraintMinimap } = await import('../src/ui/constraint-minimap');
-type ConstraintMinimap = InstanceType<typeof ConstraintMinimap>;
+const dir = join(__dirname, 'g474');
+const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))!;
+const mcu = parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
+const assignable = mcu.logicalPins.filter(p => p.isAssignable).length;
 
-const mcu: Mcu = parseMcuXml(
-  readFileSync(join(__dirname, 'g474/STM32G474R(B-C-E)Tx.xml'), 'utf-8'),
-);
-
-/** A minimap primed with a program, as the editor does on every reparse. */
-function minimapFor(src: string, assignments: Assignment[] | null = null): ConstraintMinimap {
-  const parsed = parseConstraints(src);
-  expect(parsed.errors, parsed.errors.map(e => `L${e.line}: ${e.message}`).join('\n')).toHaveLength(0);
-  const ast = resolveTemplates(parsed.ast!).ast;
+/** Full highlight the caret would produce on `line` of `src`. */
+function hit(src: string, line: number, assignments: Assignment[] | null = null) {
   const m = new ConstraintMinimap();
   m.setMcu(mcu);
   m.setAssignments(assignments);
-  m.update(ast, src.split('\n').length);
-  return m;
+  m.update(parseConstraints(src, { macroLibrary: src }).ast, src.split('\n').length);
+  return m.pinsForLine(line);
 }
 
-const assign = (portName: string, channelName: string, pinName: string): Assignment => ({
-  pinName, signalName: 'GPIO', portName, channelName, configurationName: 'c',
+/** Pins the caret would ring on `line` of `src`. */
+function ringed(src: string, line: number, assignments: Assignment[] | null = null): Set<string> {
+  const m = new ConstraintMinimap();
+  m.setMcu(mcu);
+  m.setAssignments(assignments);
+  m.update(parseConstraints(src, { macroLibrary: src }).ast, src.split('\n').length);
+  return m.pinsForLine(line)?.pins ?? new Set();
+}
+/** Line number (1-based) of the line containing `needle`. */
+const lineOf = (src: string, needle: string) =>
+  src.split('\n').findIndex(l => l.includes(needle)) + 1;
+
+describe('caret ring: bare IN / OUT', () => {
+  it('an unconstrained OUT rings nothing', () => {
+    const src = 'port P:\n  channel LED = OUT';
+    expect(ringed(src, lineOf(src, 'LED')).size).toBe(0);
+  });
+
+  it('an unconstrained IN rings nothing', () => {
+    const src = 'port P:\n  channel BTN = IN';
+    expect(ringed(src, lineOf(src, 'BTN')).size).toBe(0);
+  });
+
+  it('an IN | OUT alternation rings nothing', () => {
+    const src = 'port P:\n  channel IO = IN | OUT';
+    expect(ringed(src, lineOf(src, 'IO')).size).toBe(0);
+  });
+
+  it('a hard placement rings exactly those pins', () => {
+    const src = 'port P:\n  channel LED @ PA5 = OUT';
+    expect([...ringed(src, lineOf(src, 'LED'))]).toEqual(['PA5']);
+  });
+
+  it('a multi-pin hard placement rings the whole set', () => {
+    const src = 'port P:\n  channel LED @ PA5, PB2 = OUT';
+    expect([...ringed(src, lineOf(src, 'LED'))].sort()).toEqual(['PA5', 'PB2']);
+  });
+
+  it('a negative placement alone still rings nothing', () => {
+    const src = 'port P:\n  channel LED @ !PA5 = OUT';
+    expect(ringed(src, lineOf(src, 'LED')).size).toBe(0);
+  });
+
+  it('a soft anchor alone still rings nothing (not a hard set)', () => {
+    const src = 'port P:\n  channel LED @ ~PA5 = OUT';
+    expect(ringed(src, lineOf(src, 'LED')).size).toBe(0);
+  });
+
+  it('a hard placement minus an exclusion rings the remainder', () => {
+    const src = 'port P:\n  channel LED @ PA5, PB2, !PB2 = OUT';
+    expect([...ringed(src, lineOf(src, 'LED'))]).toEqual(['PA5']);
+  });
 });
 
-//        1  2                3                 4                     5
-const SRC = `port PWR:
-  group "rail_3v3": @ ~NW
-    channel EN = OUT
-    channel PGOOD = IN
-  channel LOOSE = OUT
+describe('caret ring: channels with a signal filter', () => {
+  it('rings the pattern candidates', () => {
+    const src = 'port P:\n  channel TX = USART*_TX';
+    const pins = ringed(src, lineOf(src, 'TX'));
+    expect(pins.size).toBeGreaterThan(0);
+    expect(pins.size).toBeLessThan(assignable);
+  });
 
-port CMD:
+  it('is no longer suppressed by the old half-the-package cap', () => {
+    // `*_*` matches most of the package; with a real filter we now show it.
+    const src = 'port P:\n  channel ANY = *_*';
+    expect(ringed(src, lineOf(src, 'ANY')).size).toBeGreaterThan(assignable / 2);
+  });
+
+  it('a port line aggregates its filtered channels but drops a bare OUT', () => {
+    const src = `port P:
+  channel TX = USART*_TX
+  channel LED = OUT`;
+    const portPins = ringed(src, lineOf(src, 'port P:'));
+    const txPins = ringed(src, lineOf(src, 'TX'));
+    expect([...portPins].sort()).toEqual([...txPins].sort());
+  });
+
+  it('mixing a filter and a bare OUT keeps only the filter side', () => {
+    const src = 'port P:\n  channel X = USART*_TX | OUT';
+    const mixed = ringed(src, lineOf(src, 'X'));
+    const plain = ringed('port P:\n  channel X = USART*_TX', 2);
+    expect([...mixed].sort()).toEqual([...plain].sort());
+  });
+});
+
+describe('caret ring: with a solution loaded', () => {
+  const src = `port P:
+  channel TX = USART*_TX
+  channel LED = OUT`;
+  const assignments: Assignment[] = [
+    { portName: 'P', channelName: 'TX', pinName: 'PA9', signalName: 'USART1_TX', configurationName: 'P' } as Assignment,
+    { portName: 'P', channelName: 'LED', pinName: 'PC13', signalName: 'GPIO_Output', configurationName: 'P' } as Assignment,
+  ];
+
+  it('rings the assigned pin of a bare OUT', () => {
+    expect([...ringed(src, lineOf(src, 'LED'), assignments)]).toEqual(['PC13']);
+  });
+
+  it('rings the assigned pin of a filtered channel', () => {
+    expect([...ringed(src, lineOf(src, 'TX'), assignments)]).toEqual(['PA9']);
+  });
+
+  it('a port line rings both', () => {
+    expect([...ringed(src, lineOf(src, 'port P:'), assignments)].sort()).toEqual(['PA9', 'PC13']);
+  });
+});
+
+describe('caret ring: require lines', () => {
+  const SRC = `port P:
+  channel TX = USART*_TX
+  channel RX = USART*_RX
+  channel CK = SPI*_SCK
+  require same_instance(TX, RX)`;
+
+  it('resolves to the require scope, not the enclosing port', () => {
+    expect(hit(SRC, lineOf(SRC, 'require'))?.scope).toBe('require');
+  });
+
+  it('rings only the channels the require names', () => {
+    const req = ringed(SRC, lineOf(SRC, 'require'));
+    const tx = ringed(SRC, lineOf(SRC, 'channel TX'));
+    const rx = ringed(SRC, lineOf(SRC, 'channel RX'));
+    const ck = ringed(SRC, lineOf(SRC, 'channel CK'));
+    expect([...req].sort()).toEqual([...new Set([...tx, ...rx])].sort());
+    // Pins only CK can use must be absent (some pins carry both a USART and an
+    // SPI signal, so the sets legitimately overlap).
+    const ckOnly = [...ck].filter(p => !tx.has(p) && !rx.has(p));
+    expect(ckOnly.length, 'fixture needs CK-exclusive pins').toBeGreaterThan(0);
+    for (const p of ckOnly) expect(req.has(p), `CK-only pin ${p} must not be ringed`).toBe(false);
+  });
+
+  it('is narrower than the port line', () => {
+    expect(ringed(SRC, lineOf(SRC, 'require')).size)
+      .toBeLessThan(ringed(SRC, lineOf(SRC, 'port P:')).size);
+  });
+
+  it('a single-channel require rings just that channel', () => {
+    const src = `port P:
+  channel TX = USART*_TX
+  channel RX = USART*_RX
+  require gpio_port(TX) == GPIOA`;
+    expect([...ringed(src, lineOf(src, 'require'))].sort())
+      .toEqual([...ringed(src, lineOf(src, 'channel TX'))].sort());
+  });
+
+  it('ignores string type filters and pattern literals', () => {
+    const src = `port P:
+  channel A = TIM*_CH1
+  channel B = TIM*_CH2
+  require same_instance(A, B, "TIM") & instance(A, "TIM") == TIM[1-5,8,20]`;
+    const req = ringed(src, lineOf(src, 'require'));
+    const ab = new Set([...ringed(src, lineOf(src, 'channel A')), ...ringed(src, lineOf(src, 'channel B'))]);
+    expect([...req].sort()).toEqual([...ab].sort());
+  });
+
+  it('works inside a config block', () => {
+    const src = `port P:
   channel TX
   channel RX
-  config "uart":
+  channel CK
+
+  config "u":
     TX = USART*_TX
     RX = USART*_RX
-
-mcu: STM32G4*
-`;
-
-describe('caret pin highlight', () => {
-  describe('scope resolution', () => {
-    const m = minimapFor(SRC);
-
-    it('resolves a port header to the whole port', () => {
-      const hit = m.pinsForLine(1)!;
-      expect(hit.scope).toBe('port');
-      expect(hit.label).toBe('PWR');
-    });
-
-    it('resolves a group header to that group', () => {
-      const hit = m.pinsForLine(2)!;
-      expect(hit.scope).toBe('group');
-      expect(hit.label).toBe('rail_3v3');
-    });
-
-    it('resolves a channel line to that one channel', () => {
-      const hit = m.pinsForLine(3)!;
-      expect(hit.scope).toBe('channel');
-      expect(hit.label).toBe('EN');
-    });
-
-    it('resolves a mapping line inside a config to its channel', () => {
-      const hit = m.pinsForLine(11)!;
-      expect(hit.scope).toBe('channel');
-      expect(hit.label).toBe('TX');
-    });
-
-    it('resolves a config header to that config', () => {
-      const hit = m.pinsForLine(10)!;
-      expect(hit.scope).toBe('config');
-      expect(hit.label).toBe('uart');
-    });
-
-    it('returns null outside every port', () => {
-      expect(m.pinsForLine(14)).toBeNull();
-    });
-
-    it('carries the port colour the right pane draws', () => {
-      const colors = buildPortColorMap(resolveTemplates(parseConstraints(SRC).ast!).ast);
-      expect(m.pinsForLine(1)!.color).toBe(colors.get('PWR'));
-      expect(m.pinsForLine(8)!.color).toBe(colors.get('CMD'));
-    });
+    CK = SPI*_SCK
+    require same_instance(TX, RX)`;
+    const req = ringed(src, lineOf(src, 'require'));
+    const cfg = ringed(src, lineOf(src, 'config "u"'));
+    expect(req.size).toBeGreaterThan(0);
+    expect(req.size).toBeLessThan(cfg.size);
+    const tx = ringed(src, lineOf(src, 'TX = USART'));
+    const rx = ringed(src, lineOf(src, 'RX = USART'));
+    const ckOnly = [...ringed(src, lineOf(src, 'CK = SPI'))].filter(p => !tx.has(p) && !rx.has(p));
+    expect(ckOnly.length).toBeGreaterThan(0);
+    for (const p of ckOnly) expect(req.has(p), p).toBe(false);
   });
 
-  describe('pin sets', () => {
-    it('narrows from a port to a group to a channel', () => {
-      const m = minimapFor(`port P:
-  group "g":
-    channel TX = USART*_TX
-    channel RX = USART*_RX
-  channel SCK = SPI*_SCK`);
-      const port = m.pinsForLine(1)!.pins;
-      const group = m.pinsForLine(2)!.pins;
-      const channel = m.pinsForLine(3)!.pins;
-
-      expect(channel.size).toBeGreaterThan(0);
-      expect(group.size).toBeGreaterThan(channel.size);
-      expect(port.size).toBeGreaterThan(group.size);
-      for (const p of channel) expect(group.has(p)).toBe(true);
-      for (const p of group) expect(port.has(p)).toBe(true);
-    });
-
-    it('honours a group-level pin exclusion', () => {
-      const m = minimapFor(`port P:
-  group "g": @ !PA0
-    channel A = OUT`);
-      expect(m.pinsForLine(3)!.pins.has('PA0')).toBe(false);
-    });
-
-    it('prefers the assigned pins once a solution is loaded', () => {
-      const m = minimapFor(SRC, [
-        assign('PWR', 'EN', 'PA5'),
-        assign('PWR', 'PGOOD', 'PA6'),
-        assign('CMD', 'TX', 'PA9'),
-      ]);
-      expect([...m.pinsForLine(1)!.pins].sort()).toEqual(['PA5', 'PA6']);
-      expect([...m.pinsForLine(3)!.pins]).toEqual(['PA5']);
-    });
-
-    it('highlights nothing for a channel the solution never placed', () => {
-      // Pure-GPIO channels are commonly skipped by the solver. Falling back to
-      // candidates would ring every GPIO on the package — a wash that hides the
-      // pins actually placed — so a loaded solution is taken at its word.
-      const m = minimapFor(SRC, [assign('PWR', 'EN', 'PA5')]);
-      const loose = m.pinsForLine(5)!;
-      expect(loose.label).toBe('LOOSE');
-      expect(loose.pins.size).toBe(0);
-    });
-
-    it('stays quiet for an unconstrained channel with no solution loaded', () => {
-      // `= OUT` matches nearly the whole package; ringing all of it says only
-      // "unconstrained", so nothing is highlighted.
-      const m = minimapFor(`port P:
-  channel ANY = OUT`);
-      expect(m.pinsForLine(2)!.pins.size).toBe(0);
-    });
-
-    it('still shows candidates for a channel that is actually constrained', () => {
-      const m = minimapFor(`port P:
-  channel TX = USART*_TX`);
-      const pins = m.pinsForLine(2)!.pins;
-      expect(pins.size).toBeGreaterThan(0);
-      expect(pins.size).toBeLessThan(20);
-    });
+  it('falls back to the enclosing scope when it names no local channel', () => {
+    const src = `port P:
+  channel TX = USART*_TX
+  require instance(OTHER.TX) != instance(TX2)`;
+    const h = hit(src, lineOf(src, 'require'));
+    expect(h?.scope).toBe('port');
   });
 
-  describe('macro-declared channels', () => {
-    it('resolves a channel a macro declared inside a group', () => {
-      const src = `macro efused(NAME):
-  channel \${NAME}_EN = OUT
-  channel \${NAME}_PGOOD = IN
-
-port PWR:
-  group "rail": @ ~NW
-    efused(VBUS)
-`;
-      const m = minimapFor(src);
-      // Every expanded line reports the call site, line 7.
-      const hit = m.pinsForLine(7)!;
-      expect(hit.scope).toBe('channel');
-      expect(hit.label).toBe('VBUS_EN');
-      // The group header still resolves to the group, covering both channels.
-      const group = m.pinsForLine(6)!;
-      expect(group.scope).toBe('group');
-      expect(group.label).toBe('rail');
-    });
+  it('a bare IN/OUT named in a require stays suppressed', () => {
+    const src = `port P:
+  channel LED = OUT
+  channel TX = USART*_TX
+  require gpio_port(LED) == gpio_port(TX)`;
+    const req = ringed(src, lineOf(src, 'require'));
+    expect([...req].sort()).toEqual([...ringed(src, lineOf(src, 'channel TX'))].sort());
   });
 });

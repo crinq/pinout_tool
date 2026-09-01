@@ -1241,7 +1241,16 @@ The Peripherals panel shows the port-to-peripheral mapping for the currently sel
 
 **Pin group highlighting:** Hover over a port name or peripheral instance to highlight the corresponding pins on the package viewer with a pulsating glow. Click to toggle a persistent highlight that stays active until clicked again or a different solution is selected.
 
-**Editor caret highlight:** Put the cursor on a line in the constraints editor and the pins that line covers get a quiet, static ring in the port's colour -- the whole port on a `port` line, one group on a `group` line, one config on a `config` line, and a single channel on a `channel` or mapping line. It follows the caret however you move it, and clears when the caret leaves every port. Deliberately calmer than the pulsing hover and search highlights so it can stay up while you work; hovering a minimap block takes over until you move away.
+**Editor caret highlight:** Put the cursor on a line in the constraints editor and the pins that line covers get a quiet, static ring in the port's colour -- the whole port on a `port` line, one group on a `group` line, one config on a `config` line, a single channel on a `channel` or mapping line, and on a `require` line just the channels that constraint names. It follows the caret however you move it, and clears when the caret leaves every port or sits on a blank line -- a blank line points at nothing, so it does not fall back to the block around it. Deliberately calmer than the pulsing hover and search highlights so it can stay up while you work; hovering a minimap block takes over until you move away.
+
+Bare `IN` / `OUT` channels are skipped while no solution is loaded: they carry
+no signal filter, so they match nearly every assignable pin and ringing them
+would say only "unconstrained". They *are* ringed when the constraints name the
+pins with a positive placement (`@ PA5`, `@ PA5, PB2`) -- an exclusion
+(`@ !PA5`) or a soft anchor (`@ ~PA5`) still leaves too many candidates to be
+worth drawing. Channels with a signal filter (`USART*_TX`, `ADC*_IN[0-7]`, ...)
+are always ringed. Once a solution is selected every channel rings its actual
+assigned pin, `IN` / `OUT` included.
 
 With a solution loaded the ring marks where the channels actually landed, so a channel the solver never placed (a GPIO it skipped, say) shows nothing. Before solving it marks every pin the mapping could take instead -- unless that is most of the package, as a bare `IN` / `OUT` would be, in which case nothing is drawn rather than washing the whole chip.
 
