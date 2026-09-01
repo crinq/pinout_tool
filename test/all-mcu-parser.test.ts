@@ -19,7 +19,10 @@ interface McuFailure {
   detail: string;
 }
 
-const mcuFiles = readdirSync(MCU_DIR).filter(f => f.endsWith('.xml'));
+// A real CubeMX db/mcu/ folder also holds a few non-MCU descriptors alongside
+// the per-part files; they carry no <Mcu> element and are not ours to parse.
+const NON_MCU_XML = new Set(['compatibility.xml', 'rules.xml', 'families.xml']);
+const mcuFiles = readdirSync(MCU_DIR).filter(f => f.endsWith('.xml') && !NON_MCU_XML.has(f));
 const dmaFiles = new Set(readdirSync(DMA_DIR).filter(f => f.endsWith('.xml')));
 
 describe('All STM32 MCU + DMA parser sweep', () => {
