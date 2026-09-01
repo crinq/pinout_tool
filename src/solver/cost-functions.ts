@@ -35,6 +35,10 @@ export interface SolutionAnchors {
   hardPortPins: { portName: string; pins: string[] }[];
   /** Hard: some channel mapped in the config must land on each listed pin. */
   hardConfigPins: { portName: string; configName: string; pins: string[] }[];
+  /** `portName\0channelName` → the `group` block the channel was declared in. */
+  groupOfChannel: Map<string, string>;
+  /** Hard: some channel of the group must land on each listed pin. */
+  hardGroupPins: { portName: string; channels: string[]; pins: string[] }[];
 }
 
 let activeAnchors: SolutionAnchors | null = null;
@@ -477,6 +481,65 @@ registerCostFunction({
           cost += dist(Math.sqrt(dx * dx + dy * dy) * geom.scale);
         }
       }
+    }
+    return cost;
+  },
+});
+
+registerCostFunction({
+  id: 'pin_group_clustering',
+  name: 'Pin Group Clustering',
+  description: 'Physical spread of the pins within each `group` block of a port (lower = tighter grouping)',
+  compute(solution: Solution, mcu: Mcu): number {
+    const anchors = getActiveAnchors();
+    if (!anchors || anchors.groupOfChannel.size === 0) return 0;
+    const { groupOfChannel } = anchors;
+
+    const isBGA = /BGA|WLCSP/i.test(mcu.package);
+    const totalPins = parsePackagePinCount(mcu.package);
+
+    // Positions per `port\0group`, across every config — like pin_clustering,
+    // but scoped to a declared group instead of the whole port. Channels with
+    // no group contribute nothing, so an ungrouped port costs zero here.
+    const groupPositions = new Map<string, string[]>();
+    for (const ca of solution.configAssignments) {
+      for (const a of ca.assignments) {
+        if (a.portName === '<pinned>') continue;
+        const group = groupOfChannel.get(`${a.portName}\0${a.channelName}`);
+        if (!group) continue;
+        const pin = mcu.logicalPinByName.get(a.pinName);
+        if (!pin) continue;
+        const key = `${a.portName}\0${group}`;
+        let positions = groupPositions.get(key);
+        if (!positions) {
+          positions = [];
+          groupPositions.set(key, positions);
+        }
+        if (!positions.includes(pin.physical.position)) positions.push(pin.physical.position);
+      }
+    }
+
+    let cost = 0;
+    for (const positions of groupPositions.values()) {
+      if (positions.length < 2) continue;
+      let maxDist = 0;
+      if (isBGA) {
+        const parsed = positions.map(parseBgaPosition).filter((b): b is { row: number; col: number } => b !== null);
+        for (let i = 0; i < parsed.length; i++)
+          for (let j = i + 1; j < parsed.length; j++) {
+            const dr = parsed[i].row - parsed[j].row;
+            const dc = parsed[i].col - parsed[j].col;
+            maxDist = Math.max(maxDist, Math.sqrt(dr * dr + dc * dc));
+          }
+      } else if (totalPins > 0) {
+        const nums = positions.map(pos => parseInt(pos, 10)).filter(n => !isNaN(n));
+        for (let i = 0; i < nums.length; i++)
+          for (let j = i + 1; j < nums.length; j++) {
+            const diff = Math.abs(nums[i] - nums[j]);
+            maxDist = Math.max(maxDist, Math.min(diff, totalPins - diff));
+          }
+      }
+      cost += dist(maxDist);
     }
     return cost;
   },

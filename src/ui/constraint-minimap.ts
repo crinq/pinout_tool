@@ -11,11 +11,7 @@ import type {
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
 import { channelExcludedPins } from './constraint-viewer';
-
-const DEFAULT_PORT_COLORS = [
-  '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
-  '#ec4899', '#06b6d8', '#f97316', '#6366f1', '#14b8a6',
-];
+import { buildPortColorMap } from './port-colors';
 
 const LINE_HEIGHT = 18; // must match CSS line-height
 const MINIMAP_WIDTH = 80;
@@ -44,6 +40,16 @@ interface MinimapBlock {
   label: string;
   port: PortDeclNode | null;
   configs: { name: string; startLine: number; endLine: number; configNode: ConfigDeclNode }[];
+  groups: { name: string; startLine: number; endLine: number; channels: string[] }[];
+}
+
+/** What a source line points at, for the caret-driven pin highlight. */
+export interface LineHighlight {
+  pins: Set<string>;
+  color: string;
+  /** Port / group / config / channel — what the line resolved to, for debugging and tests. */
+  scope: 'port' | 'group' | 'config' | 'channel';
+  label: string;
 }
 
 const DECL_TYPE_LABELS: Record<string, string> = {
@@ -166,6 +172,7 @@ export class ConstraintMinimap {
         label: [...declTypes].join(', '),
         port: null,
         configs: [],
+        groups: [],
       });
     }
 
@@ -174,9 +181,9 @@ export class ConstraintMinimap {
       (s): s is PortDeclNode => s.type === 'port_decl'
     );
 
-    let autoIdx = 0;
+    const portColors = buildPortColorMap(this.ast);
     for (const port of ports) {
-      const color = port.color || DEFAULT_PORT_COLORS[autoIdx++ % DEFAULT_PORT_COLORS.length];
+      const color = portColors.get(port.name) ?? '#6b7280';
 
       const startLine = port.loc.line;
       const endLine = this.getBlockEndLine(port, ports);
@@ -191,7 +198,21 @@ export class ConstraintMinimap {
         configs.push({ name: config.name, startLine: cStart, endLine: cEnd, configNode: config });
       }
 
-      this.blocks.push({ startLine, endLine, color, label, port, configs });
+      // A group runs from its header to the last channel declared in it. That
+      // holds even when a macro declared those channels, since every expanded
+      // line carries its call site's line number.
+      const groups: MinimapBlock['groups'] = [];
+      for (const group of port.groups ?? []) {
+        const members = port.channels.filter(c => c.group === group.name);
+        groups.push({
+          name: group.name,
+          startLine: group.loc.line,
+          endLine: members.reduce((max, c) => Math.max(max, c.loc.line), group.loc.line),
+          channels: members.map(c => c.name),
+        });
+      }
+
+      this.blocks.push({ startLine, endLine, color, label, port, configs, groups });
     }
   }
 
@@ -460,27 +481,93 @@ export class ConstraintMinimap {
     const port = this.hoveredBlock.port;
     if (!port) return; // declarations block — no pins to highlight
 
+    this.highlightCallback(this.collectPinsFor(port), this.hoveredBlock.color);
+  }
+
+  /**
+   * Pins belonging to a port, optionally narrowed to some of its channels.
+   *
+   * A loaded solution is taken at its word: those are the pins that actually
+   * matter, and a channel it never placed (a GPIO the solver skipped, say)
+   * highlights nothing rather than falling back to every pin it might have
+   * taken. Only without a solution — while still exploring — are candidates
+   * shown.
+   */
+  private collectPinsFor(port: PortDeclNode, channelNames?: Set<string>): Set<string> {
     const pins = new Set<string>();
 
-    // If we have a solution, show assigned pins for this port
     if (this.assignments) {
       for (const a of this.assignments) {
-        if (a.portName === port.name) {
-          pins.add(a.pinName);
-        }
+        if (a.portName !== port.name) continue;
+        if (channelNames && !channelNames.has(a.channelName)) continue;
+        pins.add(a.pinName);
       }
-    } else {
-      // Show all candidate pins for this port's mappings
-      for (const config of port.configs) {
-        for (const item of config.body) {
-          if (item.type === 'mapping') {
-            this.collectMappingPins(item as MappingNode, port, pins);
-          }
+      return pins;
+    }
+
+    for (const config of port.configs) {
+      for (const item of config.body) {
+        if (item.type !== 'mapping') continue;
+        if (channelNames && !channelNames.has(item.channelName)) continue;
+        this.collectMappingPins(item as MappingNode, port, pins);
+      }
+    }
+
+    // A bare `IN` / `OUT` matches nearly every pin on the package. Ringing them
+    // all says nothing except "unconstrained", and drowns out the pins that are
+    // actually pinned down, so say nothing instead.
+    const assignable = this.mcu?.logicalPins.filter(p => p.isAssignable).length ?? 0;
+    if (assignable > 0 && pins.size > assignable / 2) return new Set();
+
+    return pins;
+  }
+
+  /**
+   * What a source line points at, most specific first: a channel or its mapping
+   * on that exact line, then the group or config whose body it falls in, then
+   * the port itself. Returns null for a line outside every port.
+   *
+   * Shared with the hover path above so the caret highlight and the minimap
+   * highlight can never disagree about what a port covers.
+   */
+  pinsForLine(line: number): LineHighlight | null {
+    if (!this.mcu) return null;
+
+    const block = this.blocks.find(
+      b => b.port && line >= b.startLine && line <= b.endLine,
+    );
+    if (!block || !block.port) return null;
+
+    const port = block.port;
+    const make = (scope: LineHighlight['scope'], label: string, channels?: Set<string>) =>
+      ({ pins: this.collectPinsFor(port, channels), color: block.color, scope, label });
+
+    const channel = port.channels.find(c => c.loc.line === line);
+    if (channel) return make('channel', channel.name, new Set([channel.name]));
+
+    for (const config of port.configs) {
+      for (const item of config.body) {
+        if (item.type === 'mapping' && item.loc.line === line) {
+          return make('channel', item.channelName, new Set([item.channelName]));
         }
       }
     }
 
-    this.highlightCallback(pins, this.hoveredBlock.color);
+    const group = block.groups.find(g => line >= g.startLine && line <= g.endLine);
+    if (group) return make('group', group.name, new Set(group.channels));
+
+    const config = block.configs.find(c => line >= c.startLine && line <= c.endLine);
+    if (config) {
+      const mapped = new Set(
+        config.configNode.body
+          .filter((b): b is MappingNode => b.type === 'mapping')
+          .map(b => b.channelName),
+      );
+      // An inline config carries the port's name and covers all of it.
+      if (config.name !== port.name) return make('config', config.name, mapped);
+    }
+
+    return make('port', port.name);
   }
 
   private collectMappingPins(mapping: MappingNode, port: PortDeclNode, pins: Set<string>): void {

@@ -112,6 +112,8 @@ export function buildAnchors(ast: ProgramNode, mcu: Mcu): SolutionAnchors {
   const byChannel = new Map<string, XY[]>();
   const hardPortPins: SolutionAnchors['hardPortPins'] = [];
   const hardConfigPins: SolutionAnchors['hardConfigPins'] = [];
+  const hardGroupPins: SolutionAnchors['hardGroupPins'] = [];
+  const groupOfChannel = new Map<string, string>();
   const add = (portName: string, channelName: string, t: XY | null) => {
     if (!t) return;
     const key = `${portName}\0${channelName}`;
@@ -125,6 +127,21 @@ export function buildAnchors(ast: ProgramNode, mcu: Mcu): SolutionAnchors {
     for (const ch of stmt.channels) {
       if (portTarget) add(stmt.name, ch.name, portTarget);         // port anchor → every channel
       if (ch.anchor) add(stmt.name, ch.name, resolve(ch.anchor));  // channel anchor
+      if (ch.group) groupOfChannel.set(`${stmt.name}\0${ch.name}`, ch.group);
+    }
+
+    // A group's `@` clause reaches its members: the soft target joins their
+    // anchors, the hard pins become a group-scoped coverage requirement.
+    for (const group of stmt.groups ?? []) {
+      const members = stmt.channels.filter(ch => ch.group === group.name).map(ch => ch.name);
+      if (members.length === 0) continue;
+      if (group.anchor) {
+        const t = resolve(group.anchor);
+        for (const name of members) add(stmt.name, name, t);
+      }
+      if (group.anchorFixedPins?.length) {
+        hardGroupPins.push({ portName: stmt.name, channels: members, pins: group.anchorFixedPins });
+      }
     }
 
     for (const cfg of stmt.configs) {
@@ -144,21 +161,23 @@ export function buildAnchors(ast: ProgramNode, mcu: Mcu): SolutionAnchors {
     }
   }
 
-  return { byChannel, geom, hardPortPins, hardConfigPins };
+  return { byChannel, geom, hardPortPins, hardConfigPins, groupOfChannel, hardGroupPins };
 }
 
-/** Drop solutions that fail a hard fixed anchor (`port/config @ PA1`). */
+/** Drop solutions that fail a hard fixed anchor (`port/config/group @ PA1`). */
 export function filterByHardAnchors(solutions: Solution[], anchors: SolutionAnchors): Solution[] {
-  const { hardPortPins, hardConfigPins } = anchors;
-  if (hardPortPins.length === 0 && hardConfigPins.length === 0) return solutions;
+  const { hardPortPins, hardConfigPins, hardGroupPins } = anchors;
+  if (hardPortPins.length === 0 && hardConfigPins.length === 0 && hardGroupPins.length === 0) return solutions;
 
   return solutions.filter(sol => {
     const portPins = new Set<string>();          // `${port}\0${pin}`
     const configPins = new Set<string>();        // `${port}\0${config}\0${pin}`
+    const channelPins = new Set<string>();       // `${port}\0${channel}\0${pin}`
     for (const ca of sol.configAssignments) {
       for (const a of ca.assignments) {
         portPins.add(`${a.portName}\0${a.pinName}`);
         configPins.add(`${a.portName}\0${a.configurationName}\0${a.pinName}`);
+        channelPins.add(`${a.portName}\0${a.channelName}\0${a.pinName}`);
       }
     }
     for (const { portName, pins } of hardPortPins) {
@@ -166,6 +185,10 @@ export function filterByHardAnchors(solutions: Solution[], anchors: SolutionAnch
     }
     for (const { portName, configName, pins } of hardConfigPins) {
       if (!pins.every(p => configPins.has(`${portName}\0${configName}\0${p}`))) return false;
+    }
+    for (const { portName, channels, pins } of hardGroupPins) {
+      const covered = (pin: string) => channels.some(ch => channelPins.has(`${portName}\0${ch}\0${pin}`));
+      if (!pins.every(covered)) return false;
     }
     return true;
   });

@@ -65,7 +65,7 @@ describe('filterByHardAnchors', () => {
 
   const anchors = (over: Partial<SolutionAnchors>): SolutionAnchors => ({
     byChannel: new Map(), geom: { norm: () => null, scale: 1 },
-    hardPortPins: [], hardConfigPins: [], ...over,
+    hardPortPins: [], hardConfigPins: [], hardGroupPins: [], groupOfChannel: new Map(), ...over,
   });
 
   it('keeps solutions that cover the required port pin, drops the rest', () => {
@@ -112,7 +112,7 @@ describe('pin_anchor soft cost biases ranking', () => {
     const target = geom.norm('1')!; // anchor a channel toward package position 1
     const anchors: SolutionAnchors = {
       byChannel: new Map([['P\0A', [target]]]),
-      geom, hardPortPins: [], hardConfigPins: [],
+      geom, hardPortPins: [], hardConfigPins: [], hardGroupPins: [], groupOfChannel: new Map(),
     };
     setActiveAnchors(anchors);
     try {

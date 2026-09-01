@@ -18,6 +18,7 @@ import type {
 import type { ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
+import { buildPortColorMap } from './port-colors';
 import { escapeHtml } from '../utils';
 
 /** Render a `@` clause (fixed pins, `!` exclusions, and/or a soft anchor) as badge text. */
@@ -31,15 +32,16 @@ export function anchorBadgeText(fixedPins?: string[], anchor?: PinAnchor, exclud
 
 /** Pins barred for a channel: its own `@ !pin` plus the port's. */
 export function channelExcludedPins(port: PortDeclNode, ch?: ChannelDeclNode): Set<string> | undefined {
-  const all = [...(port.anchorExcludedPins ?? []), ...(ch?.excludedPins ?? [])];
+  // Same union the solver applies in extractPorts: the channel's own `@ !pin`,
+  // its port's, and — when it was declared inside one — its group's.
+  const group = ch?.group ? port.groups?.find(g => g.name === ch.group) : undefined;
+  const all = [
+    ...(port.anchorExcludedPins ?? []),
+    ...(group?.anchorExcludedPins ?? []),
+    ...(ch?.excludedPins ?? []),
+  ];
   return all.length > 0 ? new Set(all) : undefined;
 }
-
-// Auto-assigned pastel colors for ports without explicit color
-const DEFAULT_PORT_COLORS = [
-  '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
-  '#ec4899', '#06b6d8', '#f97316', '#6366f1', '#14b8a6',
-];
 
 export class ConstraintViewer implements Panel {
   readonly id = 'constraint-viewer';
@@ -127,16 +129,7 @@ export class ConstraintViewer implements Panel {
     }
 
     // Build port color map from AST (explicit colors) + auto-assign
-    const colorMap = new Map<string, string>();
-    let autoIdx = 0;
-    for (const port of ports) {
-      if (port.color) {
-        colorMap.set(port.name, port.color);
-      } else {
-        colorMap.set(port.name, DEFAULT_PORT_COLORS[autoIdx % DEFAULT_PORT_COLORS.length]);
-        autoIdx++;
-      }
-    }
+    const colorMap = buildPortColorMap(this.currentAst);
 
     // Override with solution port colors if available
     for (const [name, color] of this.portColors) {
@@ -448,20 +441,6 @@ export class ConstraintViewer implements Panel {
 
   private getPortColor(portName: string): string {
     if (this.portColors.has(portName)) return this.portColors.get(portName)!;
-    if (!this.currentAst) return '#888';
-
-    const ports = this.currentAst.statements.filter(
-      (s): s is PortDeclNode => s.type === 'port_decl'
-    );
-    let autoIdx = 0;
-    for (const p of ports) {
-      if (p.color) {
-        if (p.name === portName) return p.color;
-      } else {
-        if (p.name === portName) return DEFAULT_PORT_COLORS[autoIdx % DEFAULT_PORT_COLORS.length];
-        autoIdx++;
-      }
-    }
-    return '#888';
+    return buildPortColorMap(this.currentAst).get(portName) ?? '#888';
   }
 }

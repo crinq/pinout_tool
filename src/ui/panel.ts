@@ -13,6 +13,8 @@ export type StateChangeType =
   | 'theme-changed'
   | 'highlight-pins';
 
+export type HighlightStyle = 'pulse' | 'subtle';
+
 export interface StateChange {
   type: StateChangeType;
   mcu?: Mcu;
@@ -29,6 +31,12 @@ export interface StateChange {
   highlightPins?: Set<string>;
   /** Color for the highlighted pins */
   highlightColor?: string;
+  /**
+   * How to draw them. 'pulse' is the animated glow used by hover and search;
+   * 'subtle' is a static thin ring, quiet enough to leave on screen while
+   * working (the constraint editor's caret highlight). Defaults to 'pulse'.
+   */
+  highlightStyle?: HighlightStyle;
   /** Compare-mode payload */
   solutions?: Solution[];
   solutionColors?: string[];

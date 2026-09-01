@@ -21,8 +21,8 @@
 
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
 import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
-import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { resolveTemplates } from '../parser/template-resolver';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
@@ -74,7 +74,7 @@ export function solveCegar(
   const deadline = () => performance.now() - startTime > config.timeoutMs;
 
   // ---------- Setup (mirrors the other two-phase solvers) ----------
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }

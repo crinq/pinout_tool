@@ -71,8 +71,7 @@ console.log(`Errors: ${r1.errors.map(e => e.message).join('; ')}`);
 dumpGroups('priority-backtracking', r1.solutions);
 
 // Dump Phase 1 groups from two-phase solver
-import { expandAllMacros } from '../src/parser/macro-expander';
-import { getStdlibMacros } from '../src/parser/stdlib-macros';
+import { resolveTemplates } from '../src/parser/template-resolver';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
   extractSharedPatterns, resolveAllVariables,
@@ -88,7 +87,7 @@ import type { RequireNode } from '../src/parser/constraint-ast';
 
 {
   console.log('\n--- Phase 1 diagnostic (two-phase internals) ---');
-  const { ast: expandedAst } = expandAllMacros(ast!, getStdlibMacros());
+  const { ast: expandedAst } = resolveTemplates(ast!);
   const ports = extractPorts(expandedAst);
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const pinnedAssignments = extractPinnedAssignments(expandedAst);

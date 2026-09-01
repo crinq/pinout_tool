@@ -21,8 +21,8 @@ import type {
   RequireNode, SignalPatternNode,
   ConstraintExprNode, PatternPart,
 } from '../parser/constraint-ast';
-import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { resolveTemplates } from '../parser/template-resolver';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import { expandPatternToCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
 import { hasPerfectMatching } from './bipartite';
 import {
@@ -770,12 +770,23 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
   for (const stmt of ast.statements) {
     if (stmt.type !== 'port_decl') continue;
 
+    // `group "g": @ !PB1` bars the pin from the group's members, so fold it
+    // into their own exclusions — resolveAllVariables already unions those
+    // with the port's and the active config's.
+    const groupExclusions = new Map<string, Set<string>>();
+    for (const g of stmt.groups ?? []) {
+      if (g.anchorExcludedPins?.length) groupExclusions.set(g.name, new Set(g.anchorExcludedPins));
+    }
+
     const channels = new Map<string, ChannelSpec>();
     for (const ch of stmt.channels) {
       channels.set(ch.name, {
         name: ch.name,
         allowedPins: ch.allowedPins ? new Set(ch.allowedPins) : undefined,
-        excludedPins: ch.excludedPins ? new Set(ch.excludedPins) : undefined,
+        excludedPins: unionPinSets(
+          ch.excludedPins ? new Set(ch.excludedPins) : undefined,
+          ch.group ? groupExclusions.get(ch.group) : undefined,
+        ),
       });
     }
 
@@ -1065,7 +1076,7 @@ export interface GpioPartitionResult {
 // ============================================================
 
 export function estimateComplexity(ast: ProgramNode, mcu: Mcu): 'easy' | 'medium' | 'hard' | 'very-hard' {
-  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst } = resolveTemplates(ast, getStdlibTemplates());
   const ports = extractPorts(expandedAst);
   const reserved = resolveReservePatterns(expandedAst, mcu);
   const reservedPinSet = new Set(reserved.pins);
@@ -1777,7 +1788,7 @@ function validateSignalExclusivity(
  */
 export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   const errors: SolverError[] = [];
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -1845,7 +1856,7 @@ export interface SolverContext {
  * anchors available for the pin_anchor cost and the hard-anchor filter.
  */
 export function setActiveAnchorsFor(ast: ProgramNode, mcu: Mcu): void {
-  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst } = resolveTemplates(ast, getStdlibTemplates());
   setActiveAnchors(buildAnchors(expandedAst, mcu));
 }
 
@@ -1853,7 +1864,7 @@ export function prepareSolverContext(
   ast: ProgramNode, mcu: Mcu, errors: SolverError[],
   skipGpioMapping?: boolean
 ): SolverContext | null {
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -1970,7 +1981,7 @@ export function solveConstraints(
 
 
   // Expand macros (including stdlib) before extracting ports
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -3177,7 +3188,7 @@ export function lookupDmaStream(signalName: string, dmaMap: Map<string, string>)
  * app uses it to fetch missing DMA data before pre-solve validation runs).
  */
 export function constraintsNeedDma(ast: ProgramNode): boolean {
-  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expanded } = resolveTemplates(ast, getStdlibTemplates());
   return configsHaveDma(extractPorts(expanded));
 }
 

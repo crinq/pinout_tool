@@ -17,8 +17,8 @@
 
 import type { Mcu } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
-import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { resolveTemplates } from '../parser/template-resolver';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import {
   extractPorts, extractSharedPatterns, isSharedInstance, extractPinnedAssignments,
   resolveAllVariables, resolveReservePatterns, type PortSpec, type SolverVariable, pinnedOccupiedPins } from './solver';
@@ -141,7 +141,7 @@ export function analyzeSolverInputs(
   mcu: Mcu,
   pinnedAssignmentsArg?: ExportedPinnedAssignment[],
 ): SolverDiagnosticsReport {
-  const expanded = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates()).ast;
+  const expanded = resolveTemplates(ast, getStdlibTemplates()).ast;
   const ports = extractPorts(expanded);
   const reserved = resolveReservePatterns(expanded, mcu);
   const sharedPatterns = extractSharedPatterns(expanded);

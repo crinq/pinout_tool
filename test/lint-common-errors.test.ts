@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { parseCommonErrorsLibrary, lintForCommonErrors, DEFAULT_COMMON_ERRORS_LIBRARY } from '../src/parser/lint-common-errors';
 import { parseConstraints } from '../src/parser/constraint-parser';
-import { expandAllMacros } from '../src/parser/macro-expander';
+import { resolveTemplates } from '../src/parser/template-resolver';
 
 function expand(src: string) {
   const { ast } = parseConstraints(src);
-  return expandAllMacros(ast, new Map(), new Map()).ast;
+  return resolveTemplates(ast).ast;
 }
 
 describe('lint-common-errors', () => {

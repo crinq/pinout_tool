@@ -1,11 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { parseConstraints } from '../src/parser/constraint-parser';
-import { expandAllMacros } from '../src/parser/macro-expander';
-import { getStdlibMacros, getStdlibTemplates } from '../src/parser/stdlib-macros';
+import { resolveTemplates } from '../src/parser/template-resolver';
+import { getStdlibTemplates } from '../src/parser/stdlib-macros';
 import type { PortDeclNode, MappingNode, ConfigBodyNode } from '../src/parser/constraint-ast';
 
-const expand = (src: string) =>
-  expandAllMacros(parseConstraints(src).ast!, getStdlibMacros(), getStdlibTemplates());
+/**
+ * Full front end: macros expand during parsing (preprocessor), templates and
+ * `$var` bindings resolve afterwards on the AST. Errors can come from either,
+ * so both are collected.
+ */
+const expand = (src: string) => {
+  const parsed = parseConstraints(src);
+  const resolved = resolveTemplates(parsed.ast!, getStdlibTemplates());
+  return {
+    ast: resolved.ast,
+    errors: [...parsed.errors, ...resolved.errors].map(e => ({ message: e.message })),
+  };
+};
 const bodyOf = (r: ReturnType<typeof expand>): ConfigBodyNode[] =>
   (r.ast.statements.find(s => s.type === 'port_decl') as PortDeclNode).configs[0].body;
 const mapped = (b: ConfigBodyNode[]) =>
@@ -24,7 +35,9 @@ describe('macro overloads are not recursion', () => {
     encoder(A, B, Z)`);
     expect(r.errors).toEqual([]);
     expect(mapped(bodyOf(r))).toEqual(['A', 'B', 'Z']);
-    expect(bodyOf(r).filter(i => i.type === 'require')).toHaveLength(3);
+    // same_instance(A, Z, "TIM") from the 3-arg body, plus the same_instance(A, B)
+    // that the inner 2-arg overload's `$t` bindings desugar to.
+    expect(bodyOf(r).filter(i => i.type === 'require')).toHaveLength(2);
   });
 
   it('still catches real self-recursion', () => {

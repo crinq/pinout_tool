@@ -11,8 +11,7 @@ import { solveCostGuided } from '../src/solver/cost-guided-solver';
 import { solveDiverseInstances } from '../src/solver/diverse-solver';
 import { solveAC3 } from '../src/solver/ac3-solver';
 import { solveDynamicMRV } from '../src/solver/dynamic-mrv-solver';
-import { expandAllMacros } from '../src/parser/macro-expander';
-import { getStdlibMacros } from '../src/parser/stdlib-macros';
+import { resolveTemplates } from '../src/parser/template-resolver';
 import type { Solution, SolverResult, Mcu, Assignment } from '../src/types';
 import type { ProgramNode, PatternPart, PortDeclNode, ConfigDeclNode, MappingNode, RequireNode } from '../src/parser/constraint-ast';
 
@@ -80,7 +79,7 @@ function discoverTestCases(): TestCase[] {
 // ============================================================
 
 function getSharedPatterns(ast: ProgramNode): PatternPart[] {
-  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expanded } = resolveTemplates(ast);
   return extractSharedPatterns(expanded);
 }
 
@@ -250,7 +249,7 @@ function checkSameInstanceConstraints(
   ast: ProgramNode,
 ): string[] {
   const errors: string[] = [];
-  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expanded } = resolveTemplates(ast);
 
   for (const ca of solution.configAssignments) {
     // Build lookup: (portName, channelName) -> assignment
@@ -316,7 +315,7 @@ function checkDiffInstanceConstraints(
   ast: ProgramNode,
 ): string[] {
   const errors: string[] = [];
-  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expanded } = resolveTemplates(ast);
 
   for (const ca of solution.configAssignments) {
     const assignmentMap = new Map<string, Assignment>();
@@ -375,7 +374,7 @@ function checkDiffInstanceConstraints(
  * Returns a set of "portName\0channelName" keys that have dma() constraints.
  */
 function collectDmaRequiredChannels(ast: ProgramNode): Set<string> {
-  const { ast: expanded } = expandAllMacros(ast, getStdlibMacros());
+  const { ast: expanded } = resolveTemplates(ast);
   const result = new Set<string>();
 
   function walkExpr(expr: import('../src/parser/constraint-ast').ConstraintExprNode, portName: string): void {
@@ -753,7 +752,7 @@ port CMD:
     require dma(TX)
 `;
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const ports = extractPorts(expanded);
     const errors: { type: string; message: string }[] = [];
     validateDmaAvailability(ports, mcu, errors);
@@ -771,7 +770,7 @@ port CMD:
     TX = USART*_TX
 `;
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const ports = extractPorts(expanded);
     const errors: { type: string; message: string }[] = [];
     validateDmaAvailability(ports, mcu, errors);
@@ -797,7 +796,7 @@ port P${i}:
     }
     const src = portDefs.join('\n');
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const ports = extractPorts(expanded);
     const errors: { type: string; message: string }[] = [];
     validateDmaAvailability(ports, mcu, errors);
@@ -829,7 +828,7 @@ port SPI_PORT:
     require dma(MOSI)
 `;
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const ports = extractPorts(expanded);
     const errors: { type: string; message: string }[] = [];
     validateDmaAvailability(ports, mcu, errors);
@@ -855,7 +854,7 @@ port CMD:
     require same_instance(TX, RX)
 `;
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const result = solveConstraints(expanded, mcu, { maxSolutions: 10 });
     expect(result.solutions.length).toBeGreaterThan(0);
 
@@ -879,7 +878,7 @@ port CMD:
     require same_instance(TX, RX)
 `;
     const { ast } = parseConstraints(src);
-    const { ast: expanded } = expandAllMacros(ast!, getStdlibMacros());
+    const { ast: expanded } = resolveTemplates(ast!);
     const result = solveConstraints(expanded, mcu, { maxSolutions: 5 });
     expect(result.solutions.length).toBeGreaterThan(0);
 

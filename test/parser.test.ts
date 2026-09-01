@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseConstraints, parseSearchPattern, parseExpressionString } from '../src/parser/constraint-parser';
-import { expandAllMacros } from '../src/parser/macro-expander';
+import { resolveTemplates } from '../src/parser/template-resolver';
 import type {
   ProgramNode,
   McuDeclNode,
@@ -14,11 +14,9 @@ import type {
   SharedDeclNode,
   PinDeclNode,
   PortDeclNode,
-  MacroDeclNode,
   ConfigDeclNode,
   MappingNode,
   RequireNode,
-  MacroCallNode,
   SignalPatternNode,
 } from '../src/parser/constraint-ast';
 
@@ -501,10 +499,12 @@ port COMM:
   channel RX
   uart_base(TX, RX)`;
       const ast = parseOk(src);
-      const port = ast.statements[1] as PortDeclNode;
+      // The definition is consumed by the preprocessor, so COMM is statement 0.
+      const port = ast.statements[0] as PortDeclNode;
       expect(port.configs).toHaveLength(1);
       expect(port.configs[0].name).toBe('COMM');
-      expect((port.configs[0].body[0] as MacroCallNode).type).toBe('macro_call');
+      expect(port.configs[0].body.map(b => b.type))
+        .toEqual(['mapping', 'mapping', 'require']);
     });
 
     it('should parse inline mapping with color', () => {
@@ -807,26 +807,21 @@ port COMM:
 
   // ========== macro declaration ==========
 
+  // Definitions are consumed by the preprocessor and never reach the parser —
+  // see test/preprocessor.test.ts for what they expand to.
   describe('macro declaration', () => {
-    it('should parse macro with params and body', () => {
+    it('leaves no statement behind for a definition', () => {
       const src = `macro uart_port(TX, RX):
   TX = USART*_TX
   RX = USART*_RX
   require same_instance(TX, RX, "USART")`;
-      const ast = parseOk(src);
-      const macro = ast.statements[0] as MacroDeclNode;
-      expect(macro.type).toBe('macro_decl');
-      expect(macro.name).toBe('uart_port');
-      expect(macro.params).toEqual(['TX', 'RX']);
-      expect(macro.body).toHaveLength(3);
+      expect(parseOk(src).statements).toHaveLength(0);
     });
 
-    it('should parse macro with no params', () => {
+    it('leaves no statement behind for a parameterless definition', () => {
       const src = `macro my_macro():
   require same_instance(A, B)`;
-      const ast = parseOk(src);
-      const macro = ast.statements[0] as MacroDeclNode;
-      expect(macro.params).toHaveLength(0);
+      expect(parseOk(src).statements).toHaveLength(0);
     });
   });
 
@@ -841,10 +836,9 @@ port COMM:
     uart_port(TX, RX)`;
       const ast = parseOk(src);
       const config = (ast.statements[0] as PortDeclNode).configs[0];
-      const call = config.body[0] as MacroCallNode;
-      expect(call.type).toBe('macro_call');
-      expect(call.name).toBe('uart_port');
-      expect(call.args).toEqual(['TX', 'RX']);
+      // The stdlib uart_port(TX, RX) expanded in place.
+      const mappings = config.body.filter((b): b is MappingNode => b.type === 'mapping');
+      expect(mappings.map(m => m.channelName)).toEqual(['TX', 'RX']);
     });
   });
 
@@ -1017,10 +1011,9 @@ reserve: PA0`;
 macro spi_port(MOSI, MISO, SCK, NSS):
   spi_port(MOSI, MISO, SCK)
   NSS = SPI*_NSS`);
-      const macros = ast.statements.filter(s => s.type === 'macro_decl') as MacroDeclNode[];
-      expect(macros).toHaveLength(2);
-      expect(macros[0].params).toHaveLength(3);
-      expect(macros[1].params).toHaveLength(4);
+      // Both definitions are consumed; nothing calls them here, so the program
+      // is empty. Arity selection itself is covered in preprocessor.test.ts.
+      expect(ast.statements).toHaveLength(0);
     });
   });
 
@@ -1028,7 +1021,7 @@ macro spi_port(MOSI, MISO, SCK, NSS):
 
   describe('macro expansion', () => {
     it('should expand macros with overloading by arity', () => {
-      // expandAllMacros imported at top
+      // resolveTemplates imported at top
       const ast = parseOk(`macro test(A):
   A = USART*_TX
 
@@ -1043,9 +1036,7 @@ port P:
     test(X)
   config "2arg":
     test(X, Y)`);
-      const result = expandAllMacros(ast);
-      expect(result.errors).toHaveLength(0);
-      const port = result.ast.statements.find((s: any) => s.type === 'port_decl') as PortDeclNode;
+      const port = ast.statements.find((s: any) => s.type === 'port_decl') as PortDeclNode;
       const cfg1 = port.configs.find(c => c.name === '1arg')!;
       const cfg2 = port.configs.find(c => c.name === '2arg')!;
       // 1-arg version: 1 mapping
@@ -1055,7 +1046,7 @@ port P:
     });
 
     it('should apply port template and merge channels/configs', () => {
-      // expandAllMacros imported at top
+      // resolveTemplates imported at top
       // Template port (has no "from")
       const ast = parseOk(`port encoder_port:
   channel A
@@ -1068,7 +1059,7 @@ port ENC0 from encoder_port:
   channel Z
   config "with_index":
     Z = TIM*_CH3`);
-      const result = expandAllMacros(ast);
+      const result = resolveTemplates(ast);
       expect(result.errors).toHaveLength(0);
       const enc0 = result.ast.statements.find(
         (s: any) => s.type === 'port_decl' && s.name === 'ENC0'
@@ -1081,8 +1072,8 @@ port ENC0 from encoder_port:
     });
 
     it('should report error for arity mismatch', () => {
-      // expandAllMacros imported at top
-      const ast = parseOk(`macro foo(A, B):
+      // Raised while preprocessing, so it surfaces as a parse error.
+      const result = parseConstraints(`macro foo(A, B):
   A = USART*_TX
   B = USART*_RX
 
@@ -1090,7 +1081,6 @@ port P:
   channel X
   config "default":
     foo(X)`);
-      const result = expandAllMacros(ast);
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors[0].message).toContain('1 arguments not found');
     });
@@ -1123,7 +1113,7 @@ port P:
     TX = USART*_TX $u
     RX = USART*_RX $u
     CTS = USART*_CTS $u`);
-      const result = expandAllMacros(ast);
+      const result = resolveTemplates(ast);
       expect(result.errors).toHaveLength(0);
       const port = result.ast.statements[0] as PortDeclNode;
       const cfg = port.configs[0];
@@ -1143,7 +1133,7 @@ port P:
   channel TX
   config "UART":
     TX = USART*_TX $u`);
-      const result = expandAllMacros(ast);
+      const result = resolveTemplates(ast);
       const port = result.ast.statements[0] as PortDeclNode;
       const cfg = port.configs[0];
       const requires = cfg.body.filter((b: any) => b.type === 'require');

@@ -41,6 +41,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     peripheral_count: 0.5,
     debug_pin_penalty: 0.0,
     pin_clustering: 0.0,
+    pin_group_clustering: 1,
     pin_proximity: 1,
     pin_anchor: 1,
     optional_fulfillment: 5,

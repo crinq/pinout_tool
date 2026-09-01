@@ -15,9 +15,9 @@ import { normalizePeripheralType } from '../parser/mcu-xml-parser';
 import type {
   ProgramNode, RequireNode, PatternPart, ConstraintExprNode,
 } from '../parser/constraint-ast';
-import { expandAllMacros } from '../parser/macro-expander';
+import { resolveTemplates } from '../parser/template-resolver';
 import { checkGroupPinFeasibility } from './matching-oracle';
-import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
@@ -92,7 +92,7 @@ export function solveTwoPhase(
   const solutions: Solution[] = [];
 
   // Expand macros
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }
@@ -1032,7 +1032,7 @@ export function runSharedPhase1(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
   for (const me of macroErrors) {
     errors.push({ type: 'error', message: me.message, source: me.macroName });
   }

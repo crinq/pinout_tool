@@ -2,6 +2,7 @@ import { LayoutManager } from './core/layout-manager';
 import { HorizontalSplitter, VerticalSplitter } from './core/splitter';
 import { PackageViewer } from './ui/package-viewer';
 import { ConstraintEditor, highlightConstraintCode } from './ui/constraint-editor';
+import { buildPortColorMap } from './ui/port-colors';
 import { createCodeEditor } from './ui/code-editor';
 import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
@@ -193,8 +194,10 @@ export class App {
     this.peripheralSummary.onHighlightPins((pins, color) => {
       this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: pins, highlightColor: color });
     });
-    this.constraintEditor.onHighlightPins((pins, color) => {
-      this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: pins, highlightColor: color });
+    this.constraintEditor.onHighlightPins((pins, color, style) => {
+      this.layout.broadcastStateChange({
+        type: 'highlight-pins', highlightPins: pins, highlightColor: color, highlightStyle: style,
+      });
     });
 
     const bottomSplitter = HorizontalSplitter();
@@ -2151,18 +2154,9 @@ export class App {
   }
 
   private getPortColors(): Map<string, string> {
-    const colors = new Map<string, string>();
     // Always parse current text - the cached parseResult may be stale
     // (e.g. during project load before the debounced parse fires)
-    const ast = parseConstraints(this.constraintEditor.getText()).ast;
-    if (ast) {
-      for (const stmt of ast.statements) {
-        if (stmt.type === 'port_decl' && stmt.color) {
-          colors.set(stmt.name, stmt.color);
-        }
-      }
-    }
-    return colors;
+    return buildPortColorMap(parseConstraints(this.constraintEditor.getText()).ast);
   }
 
   private getChannelComments(): Map<string, string> {

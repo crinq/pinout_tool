@@ -17,6 +17,7 @@
    - [Shared Peripherals](#shared-peripherals)
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
+   - [Groups](#groups)
    - [Pin Placement (@)](#pin-placement)
    - [Solver Settings](#solver-settings-settings)
    - [Signal Patterns](#signal-patterns)
@@ -304,6 +305,10 @@ port MOTOR:
 [Pin Placement (`@`)](#pin-placement) below for the full syntax, including soft
 proximity anchors (`@ ~PA1`, `@ ~NW`) and port/config-level placement.
 
+Channels that belong together physically can be wrapped in a
+[`group`](#groups) block, which scopes a placement clause to them and keeps
+their pins clustered.
+
 **Port colors** add visual distinction in the package viewer:
 
 ```
@@ -361,6 +366,59 @@ port debug:
 Pin restrictions work with inline mappings: `channel TX @ PA9, PA2 = USART*_TX`
 
 You cannot mix inline mappings with explicit `config` blocks in the same port.
+
+### Groups
+
+A `group` block marks channels within a port as belonging together
+**physically**. Grouping does not change what a channel is or how it is
+referenced — members stay in the port's flat channel list under their own
+names, so mappings, `require`s and cross-port references address them exactly as
+before. What a group adds is a placement scope and a clustering preference:
+
+```
+port PWR:
+  group "rail_3v3": @ ~NW
+    channel EN     = OUT
+    channel PGOOD  = IN
+    channel SNS    = ADC*_IN[0-15]
+
+  group "rail_1v8": @ ~SE
+    channel EN2    = OUT
+    channel PGOOD2 = IN
+```
+
+- The **Pin Group Clustering** [cost function](#cost-functions) pulls each
+  group's pins toward each other, scored per group rather than across the whole
+  port. Two tight clusters at opposite corners of the package therefore rank
+  better than the same pins interleaved — a distinction Pin Clustering, which
+  measures a port's entire footprint, cannot make. Set its weight to 0 to
+  ignore groups when ranking.
+- The group header takes the full [`@` placement clause](#pin-placement):
+  `@ ~NW` (soft, pulls every member), `@ PA1` (hard: some member must land on
+  PA1), `@ !PB1` (hard: no member may use PB1). Exclusions compose with the
+  channel's, the port's and the active config's.
+
+Grouped and ungrouped channels can be mixed freely in one port; ungrouped
+channels are simply not scored by the group cost.
+
+A group body takes `channel` declarations (including the
+`channel name(args)` [macro shorthand](#macros)), and — like a port body — any
+mapping or `require` lines it carries go to the port's implicit config. This composes
+with [macros](#macros): a macro that declares channels can be called inside a
+group, and its channels join that group.
+
+```
+macro efused(NAME):
+  channel ${NAME}_EN    = OUT
+  channel ${NAME}_PGOOD = IN
+
+port PWR:
+  group "rail_3v3": @ ~NW
+    efused(VBUS)
+```
+
+Ports derived [from a template](#port-templates) inherit its groups; redeclaring
+a group of the same name replaces it.
 
 ### Pin Placement (`@`)
 
@@ -453,7 +511,7 @@ settings:
 | `max_groups`, `max_solutions_per_group` | Two-phase search limits |
 | `num_restarts` | Restarts for the randomized solvers |
 | `skip_gpio_mapping`, `post_optimize`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
-| *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
+| *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_group_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
 
 **Presets.** `settings from "<name>":` restarts from a named preset instead of
 your current settings, then applies the block on top:
@@ -750,7 +808,10 @@ does the solver report an error and stop.
 
 ### Macros
 
-Macros allow reusable constraint templates.
+Macros are a **text-level preprocessor**, in the spirit of C's. A macro body is
+expanded into the source before it is parsed, so it may contain any construct
+the language allows — including `channel` declarations and whole `config`
+blocks, not just mappings and requires.
 
 #### Defining macros
 
@@ -759,14 +820,9 @@ macro uart_port(TX, RX):
   TX = USART*_TX
   RX = USART*_RX
   require same_instance(TX, RX)
-
-macro spi_master(MOSI, MISO, SCK):
-  MOSI = SPI*_MOSI
-  MISO = SPI*_MISO
-  SCK = SPI*_SCK
-  require same_instance(MOSI, MISO)
-  require same_instance(MOSI, SCK)
 ```
+
+A definition is consumed by the preprocessor and produces nothing on its own.
 
 #### Using macros
 
@@ -779,11 +835,76 @@ port CMD:
     uart_port(TX, RX)
 ```
 
-Parameters are textually substituted. Macros expand before constraint evaluation.
+A macro call is a line consisting of just `name(args)`. It expands wherever it
+stands — in a config body, a port body, or a [group](#groups) — and the body is
+re-indented to the call's level, so the same macro works at any depth.
+
+#### Parameter substitution
+
+A parameter is replaced in two forms:
+
+| Form | Replaces | Use |
+|------|----------|-----|
+| `NAME` | the parameter as a **whole word** | `TX = USART*_TX` -> only the leading `TX` is a parameter; the `_TX` inside the signal pattern is left alone |
+| `${NAME}` | the parameter **anywhere**, including mid-identifier | `channel ${NAME}_EN` -> `channel VBUS_EN` |
+
+Use `${...}` whenever the parameter is glued to other text, since a bare
+`NAME_EN` gives no way to tell where the parameter ends.
+
+All parameters are substituted in a single pass, so an argument that happens to
+spell another parameter is never substituted again.
+
+A `${...}` whose contents are **not** a parameter of the enclosing macro is left
+untouched — which is what lets
+[comment interpolation](#string-interpolation-in-comments) live inside a macro
+body:
+
+```
+macro uart_port(TX, RX):
+  TX = USART*_TX    # ${instance(TX)} on ${gpio_pin(TX)}
+  RX = USART*_RX
+```
+
+#### Declaring structure
+
+Because expansion happens on the text, a macro can declare the channels it
+needs. This is the idiomatic way to stamp out a repeated board block:
+
+```
+macro efused(NAME):
+  channel ${NAME}_EN    = OUT
+  channel ${NAME}_PGOOD = IN
+  channel adc(${NAME}_SNS)
+
+port PWR:
+  efused(VBUS)
+  efused(VDDA)
+```
+
+`channel name(args)` is shorthand for declaring the argument channels and then
+applying the macro to them, so the `_SNS` line above is the same as writing:
+
+```
+  channel ${NAME}_SNS
+  adc(${NAME}_SNS)
+```
+
+It works for any arity — `channel i2c_port(SDA, SCL)` declares both channels and
+applies `i2c_port` to them. Only arguments that are bare names become channels,
+so a macro taking a `"TYPE"` string or a pattern contributes no channel for it.
+
+That yields six channels — `VBUS_EN`, `VBUS_PGOOD`, `VBUS_SNS`, `VDDA_EN`,
+`VDDA_PGOOD`, `VDDA_SNS` — with the two `_SNS` channels mapped by the standard
+library's `adc` macro.
+
+Note the nested call: `adc(${NAME}_SNS)` has its argument built by substitution
+first, then expands in turn.
 
 #### Macro overloading
 
-Macros can be overloaded by argument count. The correct version is selected based on the number of arguments at each call site:
+Macros are keyed by name **and argument count**, so the same name may take
+different numbers of arguments. An overload calling a shorter overload of the
+same name is not recursion:
 
 ```
 macro spi_port(MOSI, MISO, SCK):
@@ -793,10 +914,17 @@ macro spi_port(MOSI, MISO, SCK):
   require same_instance(MOSI, MISO, SCK, "SPI")
 
 macro spi_port(MOSI, MISO, SCK, NSS):
-  spi_port(MOSI, MISO, SCK)        # calls 3-arg version
+  spi_port(MOSI, MISO, SCK)        # calls the 3-arg version
   NSS = SPI*_NSS
   require same_instance(MOSI, NSS, "SPI")
 ```
+
+A macro defined in your constraints shadows a
+[standard library](#standard-library) macro of the same name and arity.
+
+Genuine recursion, and nesting deeper than 10 levels, are reported as errors.
+An error inside an expansion is reported on the **call site's** line.
+
 
 ### Port Templates
 
@@ -1089,8 +1217,12 @@ explicitly.
 ### Pin Colors
 
 - **Gray** -- unassigned
-- **Blue** -- assigned by solver or `pin` declaration
-- **Port color** -- uses the color defined in the constraint (`color "..."`)
+- **Port color** -- every assigned pin takes the colour of the port that owns
+  it, matching the block colours in the editor's minimap and the Peripherals
+  list. A port's colour is its `color "..."` when it declares one, otherwise an
+  automatic one derived from the port's **name** -- so it stays put as you edit
+  ports around it.
+- **Blue** -- assigned by a `pin` declaration (no owning port)
 - **Orange** -- selected pin
 - **Yellow** -- hovered pin
 - **Red** -- conflict (pin assigned to multiple signals)
@@ -1201,6 +1333,7 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 | **peripheral_count** | Fewer distinct peripheral instances is better |
 | **debug_pin_penalty** | Penalize using debug pins (PA13/PA14/PA15/PB3/PB4) |
 | **pin_clustering** | Prefer numerically adjacent pins |
+| **pin_group_clustering** | Prefer a tight pin cluster within each [`group`](#groups) block, scored per group |
 | **pin_proximity** | Prefer pins that are physically close on the package |
 | **pin_anchor** | Pull each pin toward its `@ ~...` placement hint (see [Pin Placement](#pin-placement)) |
 | **optional_fulfillment** | Prefer solutions with more optional mappings (`?=`) and requires (`require?`) satisfied |
@@ -1248,6 +1381,20 @@ Solutions are displayed in a grouped table. Solutions with the same peripheral-t
 The Peripherals panel shows the port-to-peripheral mapping for the currently selected solution, along with the total number of used pins and peripherals.
 
 **Pin group highlighting:** Hover over a port name or peripheral instance to highlight the corresponding pins on the package viewer with a pulsating glow. Click to toggle a persistent highlight that stays active until clicked again or a different solution is selected.
+
+**Editor caret highlight:** Put the cursor on a line in the constraints editor
+and the pins that line covers get a quiet, static ring in the port's colour --
+the whole port on a `port` line, one group on a `group` line, one config on a
+`config` line, and a single channel on a `channel` or mapping line. It follows
+the caret however you move it, and clears when the caret leaves every port.
+Deliberately calmer than the pulsing hover and search highlights so it can stay
+up while you work; hovering a minimap block takes over until you move away.
+
+With a solution loaded the ring marks where the channels actually landed, so a
+channel the solver never placed (a GPIO it skipped, say) shows nothing. Before
+solving it marks every pin the mapping could take instead -- unless that is most
+of the package, as a bare `IN` / `OUT` would be, in which case nothing is drawn
+rather than washing the whole chip.
 
 ### Navigation
 

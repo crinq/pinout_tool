@@ -1,7 +1,7 @@
 import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
 import type { DivergentPin } from '../solution-compare';
 import { escapeHtml, isGeneralPurposePin } from '../utils';
-import type { Panel, StateChange } from './panel';
+import type { Panel, StateChange, HighlightStyle } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
 import { lookupDmaStream } from '../solver/solver';
@@ -102,7 +102,7 @@ export class PackageViewer implements Panel {
   private editControlsHost!: HTMLElement;
   /** Foreground layer for pulse rings so they stay visible over the tooltip. */
   private overlay!: HTMLCanvasElement;
-  private pendingRings: Array<{ kind: 'rect' | 'arc'; x: number; y: number; a: number; b: number; color: string }> = [];
+  private pendingRings: Array<{ kind: 'rect' | 'arc'; x: number; y: number; a: number; b: number; color: string; style: HighlightStyle }> = [];
   private popup: HTMLElement | null = null;
   private popupCloseHandler: ((ev: MouseEvent) => void) | null = null;
   private pinAssignCallbacks: Array<(pinName: string, signalName: string) => void> = [];
@@ -136,6 +136,7 @@ export class PackageViewer implements Panel {
   // Group highlight state (from peripheral summary hover/click)
   private groupHighlightPins: Set<string> = new Set();
   private groupHighlightColor: string = '#a78bfa';
+  private groupHighlightStyle: HighlightStyle = 'pulse';
 
   // Compare mode (divergent pins across N selected solutions)
   private compareSolutions: Solution[] = [];
@@ -302,6 +303,7 @@ export class PackageViewer implements Panel {
     if (change.type === 'highlight-pins') {
       this.groupHighlightPins = change.highlightPins ?? new Set();
       this.groupHighlightColor = change.highlightColor ?? '#a78bfa';
+      this.groupHighlightStyle = change.highlightStyle ?? 'pulse';
       this.updateAnimation();
       this.render();
     }
@@ -881,16 +883,19 @@ export class PackageViewer implements Panel {
 
     const intensity = this.getPulseIntensity();
     for (const r of this.pendingRings) {
+      // 'subtle' rings are static and thin: they stay on screen while the user
+      // works, so they must not compete with the pulsing hover/search glow.
+      const subtle = r.style === 'subtle';
       ctx.save();
-      ctx.globalAlpha = intensity;
+      ctx.globalAlpha = subtle ? 0.55 : intensity;
       ctx.shadowColor = r.color;
       ctx.strokeStyle = r.color;
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = subtle ? 1.5 : 2.5;
       if (r.kind === 'rect') {
-        ctx.shadowBlur = 6 + 6 * intensity;
+        ctx.shadowBlur = subtle ? 3 : 6 + 6 * intensity;
         ctx.strokeRect(r.x, r.y, r.a, r.b);
       } else {
-        ctx.shadowBlur = 8 + 8 * intensity;
+        ctx.shadowBlur = subtle ? 3 : 8 + 8 * intensity;
         ctx.beginPath();
         ctx.arc(r.x, r.y, r.a, 0, Math.PI * 2);
         ctx.stroke();
@@ -1060,9 +1065,10 @@ export class PackageViewer implements Panel {
       const isSelected = this.selectedPhys === phys;
       const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
 
-      const hlColor = phys.logicals
-        .map(l => this.getPinHighlightColor(l.name))
-        .find(c => c) ?? null;
+      const hl = phys.logicals
+        .map(l => this.getPinHighlight(l.name))
+        .find(h => h) ?? null;
+      const hlColor = hl?.color ?? null;
 
       let fillColor: string;
       if (isHovered) {
@@ -1086,7 +1092,7 @@ export class PackageViewer implements Panel {
 
       if (hlColor) {
         // Deferred to the foreground overlay so it stays visible over the tooltip.
-        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor });
+        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor, style: hl!.style });
       } else {
         ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
         ctx.lineWidth = 0.5;
@@ -1111,7 +1117,7 @@ export class PackageViewer implements Panel {
       const fontSize = Math.min(9, pinSpacing * 0.65);
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
       ctx.font = `${fontSize}px monospace`;
-      if (hlColor) {
+      if (hlColor && hl!.style === 'pulse') {
         ctx.globalAlpha = this.getPulseIntensity();
       }
       ctx.textBaseline = 'middle';
@@ -1249,7 +1255,8 @@ export class PackageViewer implements Panel {
       const isHovered = this.hoveredPhys === phys;
       const isSelected = this.selectedPhys === phys;
       const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
-      const hlColor = phys.logicals.map(l => this.getPinHighlightColor(l.name)).find(c => c) ?? null;
+      const hl = phys.logicals.map(l => this.getPinHighlight(l.name)).find(h => h) ?? null;
+      const hlColor = hl?.color ?? null;
 
       let fillColor: string;
       if (isHovered) {
@@ -1272,7 +1279,7 @@ export class PackageViewer implements Panel {
       ctx.fillRect(x, y, pw, ph);
 
       if (hlColor) {
-        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor });
+        this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor, style: hl!.style });
       } else {
         ctx.strokeStyle = textPri;
         ctx.lineWidth = 0.5;
@@ -1293,7 +1300,7 @@ export class PackageViewer implements Panel {
       const fontSize = Math.min(9, pinSpacing * 0.65);
       ctx.fillStyle = textPri;
       ctx.font = `${fontSize}px monospace`;
-      if (hlColor) ctx.globalAlpha = this.getPulseIntensity();
+      if (hlColor && hl!.style === 'pulse') ctx.globalAlpha = this.getPulseIntensity();
       ctx.textBaseline = 'middle';
       ctx.textAlign = screenSide === 'left' ? 'right'
         : screenSide === 'right' ? 'left'
@@ -1481,7 +1488,8 @@ export class PackageViewer implements Panel {
       const isHovered = this.hoveredPhys === phys;
       const isSelected = this.selectedPhys === phys;
       const isIncompat = pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name));
-      const hlColor = phys.logicals.map(l => this.getPinHighlightColor(l.name)).find(c => c) ?? null;
+      const hl = phys.logicals.map(l => this.getPinHighlight(l.name)).find(h => h) ?? null;
+      const hlColor = hl?.color ?? null;
 
       let fillColor: string;
       if (isHovered) {
@@ -1506,7 +1514,7 @@ export class PackageViewer implements Panel {
       ctx.fill();
 
       if (hlColor) {
-        this.pendingRings.push({ kind: 'arc', x: cx, y: cy, a: ballRadius + 1, b: 0, color: hlColor });
+        this.pendingRings.push({ kind: 'arc', x: cx, y: cy, a: ballRadius + 1, b: 0, color: hlColor, style: hl!.style });
       } else {
         ctx.strokeStyle = textColor;
         ctx.lineWidth = 0.5;
@@ -1526,7 +1534,7 @@ export class PackageViewer implements Panel {
         ctx.rotate(counterAngle);
         ctx.fillStyle = isHovered || isSelected || pinAssignments.length > 0 ? '#fff' : textColor;
         ctx.font = `${fontSize}px monospace`;
-        if (hlColor) {
+        if (hlColor && hl!.style === 'pulse') {
           ctx.globalAlpha = this.getPulseIntensity();
         }
         ctx.textAlign = 'center';
@@ -1972,7 +1980,7 @@ export class PackageViewer implements Panel {
     const needsAnimation =
       this.searchMatchPins.size > 0 ||
       this.hoverMatchPins.size > 0 ||
-      this.groupHighlightPins.size > 0 ||
+      (this.groupHighlightPins.size > 0 && this.groupHighlightStyle === 'pulse') ||
       this.divergentByPin.size > 0;
     if (needsAnimation) {
       this.startPulseAnimation();
@@ -2029,26 +2037,27 @@ export class PackageViewer implements Panel {
   }
 
   /**
-   * Returns the highlight color for a pin, or null if not highlighted.
-   * Search/hover highlights use amber; group highlights use the port color.
+   * Returns the highlight colour and draw style for a pin, or null if it is not
+   * highlighted. Search/hover highlights use amber; group and caret highlights
+   * use the port colour, the latter drawn statically.
    */
-  private getPinHighlightColor(pinName: string): string | null {
+  private getPinHighlight(pinName: string): { color: string; style: HighlightStyle } | null {
     // Hover / peripheral / search win over compare so those interactions
     // remain readable while browsing.
     if (this.searchMatchPins.has(pinName) || this.hoverMatchPins.has(pinName)) {
-      return '#fbbf24'; // amber
+      return { color: '#fbbf24', style: 'pulse' }; // amber
     }
     if (this.groupHighlightPins.has(pinName)) {
-      return this.groupHighlightColor;
+      return { color: this.groupHighlightColor, style: this.groupHighlightStyle };
     }
     if (this.divergentByPin.has(pinName) && this.compareColors.length > 0) {
       const div = this.divergentByPin.get(pinName)!;
       const slice = div.slices[this.compareStep];
       if (!slice || !slice.assignment) {
         // Solution doesn't touch this pin — dim grey slice indicates "gap".
-        return '#6b7280';
+        return { color: '#6b7280', style: 'pulse' };
       }
-      return this.compareColors[this.compareStep];
+      return { color: this.compareColors[this.compareStep], style: 'pulse' };
     }
     return null;
   }

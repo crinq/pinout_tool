@@ -146,6 +146,27 @@ export type PinAnchor =
   | { kind: 'near_pos'; target: string }
   | { kind: 'near_region'; target: string };
 
+// group "rail_3v3": @ ~NW      — a physical grouping of channels within a port
+//   channel EN = OUT
+//   channel PGOOD = IN
+//
+// Groups only affect placement: their channels stay in the port's flat
+// `channels` list under their own names, so mappings, requires and cross-port
+// references address them exactly as before. What a group adds is a placement
+// scope (its `@` clause) and a clustering cost that pulls its members together
+// independently of the rest of the port.
+export interface GroupDeclNode {
+  type: 'group_decl';
+  name: string;
+  /** `group "g": @ ~NW` — soft, applies to every channel of the group. */
+  anchor?: PinAnchor;
+  /** `group "g": @ PA1` — hard: some channel of the group must use each pin. */
+  anchorFixedPins?: string[];
+  /** `group "g": @ !PB1` — hard: no channel of the group may use these pins. */
+  anchorExcludedPins?: string[];
+  loc: SourceLocation;
+}
+
 // port CMD: ...
 // port ENC0 from encoder_port:
 export interface PortDeclNode {
@@ -156,6 +177,8 @@ export interface PortDeclNode {
   comment?: string;
   channels: ChannelDeclNode[];
   configs: ConfigDeclNode[];
+  /** Declared `group` blocks; members carry the name in `ChannelDeclNode.group`. */
+  groups?: GroupDeclNode[];
   // `port CMD: @ ~NW`  — soft, applies to every channel of the port.
   anchor?: PinAnchor;
   // `port CMD: @ PA1`  — hard: some channel of the port must use each listed pin.
@@ -171,6 +194,8 @@ export interface PortDeclNode {
 export interface ChannelDeclNode {
   type: 'channel_decl';
   name: string;
+  /** Name of the enclosing `group` block, when the channel was declared in one. */
+  group?: string;
   allowedPins?: string[];
   /** `@ !PA1` — this channel may not use these pins. */
   excludedPins?: string[];

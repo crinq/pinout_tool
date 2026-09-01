@@ -20,6 +20,7 @@ import type {
   PortDeclNode,
   ChannelDeclNode,
   ConfigDeclNode,
+  GroupDeclNode,
   SettingsDeclNode,
   SettingsEntryNode,
   SettingValue,
@@ -39,6 +40,7 @@ import type {
   ParseWarning,
   ParseResult,
 } from './constraint-ast';
+import { preprocess } from './preprocessor';
 
 // ============================================================
 // Token Types
@@ -87,22 +89,28 @@ interface Token {
 }
 
 const KEYWORDS = new Set([
-  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings',
+  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings', 'group',
 ]);
 
 // ============================================================
 // Lexer
 // ============================================================
 
-function tokenize(source: string): { tokens: Token[]; errors: ParseError[] } {
+/**
+ * `lineMap` maps an index in `source` back to the line it should report as.
+ * The macro preprocessor supplies one so tokens produced by an expansion carry
+ * the call site's line instead of a position in the expanded text.
+ */
+function tokenize(source: string, lineMap?: number[]): { tokens: Token[]; errors: ParseError[] } {
   const tokens: Token[] = [];
   const errors: ParseError[] = [];
   const lines = source.split('\n');
   const indentStack: number[] = [0];
+  const srcLine = (idx: number): number => lineMap?.[idx] ?? idx + 1;
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
-    const lineNum = lineIdx + 1;
+    const lineNum = srcLine(lineIdx);
 
     // Skip blank lines and comment-only lines
     const trimmed = line.trimStart();
@@ -245,12 +253,13 @@ function tokenize(source: string): { tokens: Token[]; errors: ParseError[] } {
   }
 
   // Close remaining indents
+  const lastLine = srcLine(lines.length - 1);
   while (indentStack.length > 1) {
     indentStack.pop();
-    tokens.push({ type: 'DEDENT', value: '', line: lines.length, column: 1 });
+    tokens.push({ type: 'DEDENT', value: '', line: lastLine, column: 1 });
   }
 
-  tokens.push({ type: 'EOF', value: '', line: lines.length + 1, column: 1 });
+  tokens.push({ type: 'EOF', value: '', line: lastLine + 1, column: 1 });
   return { tokens, errors };
 }
 
@@ -802,6 +811,7 @@ class Parser {
 
     const channels: ChannelDeclNode[] = [];
     const configs: ConfigDeclNode[] = [];
+    const groups: GroupDeclNode[] = [];
     let color: string | undefined;
     let comment: string | undefined;
     let anchor: PinAnchor | undefined;
@@ -860,6 +870,8 @@ class Parser {
         if (mapping) inlineConfigBody.push(mapping);
       } else if (tok.type === 'KEYWORD' && tok.value === 'config') {
         configs.push(this.parseConfigDecl());
+      } else if (tok.type === 'KEYWORD' && tok.value === 'group') {
+        groups.push(this.parseGroupDecl(channels, inlineConfigBody));
       } else if (tok.type === 'KEYWORD' && tok.value === 'color') {
         this.advance();
         color = this.expectString();
@@ -875,11 +887,11 @@ class Parser {
         } else if (lookAhead === 'LPAREN') {
           inlineConfigBody.push(this.parseMacroCall());
         } else {
-          this.error(`Expected 'channel', 'config', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
+          this.error(`Expected 'channel', 'config', 'group', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
           this.skipToNextLine();
         }
       } else {
-        this.error(`Expected 'channel', 'config', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
+        this.error(`Expected 'channel', 'config', 'group', 'color', mapping, or require inside port, got '${tok.value || tok.type}'`, tok);
         this.skipToNextLine();
       }
     }
@@ -902,7 +914,75 @@ class Parser {
       });
     }
 
-    return { type: 'port_decl', name, template, channels, configs, color, comment, anchor, anchorFixedPins, anchorExcludedPins, loc };
+    return {
+      type: 'port_decl', name, template, channels, configs, color, comment,
+      groups: groups.length > 0 ? groups : undefined,
+      anchor, anchorFixedPins, anchorExcludedPins, loc,
+    };
+  }
+
+  // group "NAME": (@ ...)? NEWLINE INDENT channel_decl* DEDENT
+  //
+  // A grouping of channels within a port, for placement only. Members are
+  // appended to the port's flat channel list tagged with the group name; any
+  // mapping or require the body carries (a channel's inline `= …`, or lines a
+  // macro expanded into the group) flows to the port's implicit config exactly
+  // as it would one level up.
+  private parseGroupDecl(
+    channels: ChannelDeclNode[],
+    inlineConfigBody: ConfigBodyNode[],
+  ): GroupDeclNode {
+    const loc = this.loc();
+    this.expectKeyword('group');
+    const name = this.expectString();
+    this.expect('COLON');
+
+    let anchor: PinAnchor | undefined;
+    let anchorFixedPins: string[] | undefined;
+    let anchorExcludedPins: string[] | undefined;
+    if (this.check('AT')) {
+      const at = this.parseAtClause();
+      anchor = at.anchor;
+      anchorFixedPins = at.fixedPins;
+      anchorExcludedPins = at.excludedPins;
+    }
+    this.skipComment();
+    this.expectNewline();
+
+    if (!this.check('INDENT')) {
+      this.error('Expected indented block after group declaration', this.peek());
+      return { type: 'group_decl', name, anchor, anchorFixedPins, anchorExcludedPins, loc };
+    }
+    this.expect('INDENT');
+
+    while (!this.check('DEDENT') && !this.isAtEnd()) {
+      this.skipNewlines();
+      if (this.check('DEDENT') || this.isAtEnd()) break;
+
+      const tok = this.peek();
+      if (tok.type === 'KEYWORD' && tok.value === 'channel') {
+        const [ch, mapping] = this.parseChannelDecl();
+        channels.push({ ...ch, group: name });
+        if (mapping) inlineConfigBody.push(mapping);
+      } else if (tok.type === 'KEYWORD' && tok.value === 'require') {
+        inlineConfigBody.push(this.parseRequireStmt());
+      } else if (tok.type === 'IDENT' || tok.type === 'KEYWORD') {
+        const lookAhead = this.peekPastCompoundIdent();
+        if (lookAhead === 'EQUALS' || lookAhead === 'QUESTION') {
+          inlineConfigBody.push(this.parseMapping());
+        } else {
+          this.error(`Expected 'channel', mapping, or require inside group "${name}", got '${tok.value || tok.type}'`, tok);
+          this.skipToNextLine();
+        }
+      } else {
+        this.error(`Expected 'channel', mapping, or require inside group "${name}", got '${tok.value || tok.type}'`, tok);
+        this.skipToNextLine();
+      }
+    }
+
+    if (this.check('DEDENT')) this.advance();
+
+    return { type: 'group_decl', name, anchor, anchorFixedPins, anchorExcludedPins, loc };
   }
 
   // Parse a `@` placement clause (AT already at current token).
@@ -1741,9 +1821,21 @@ class Parser {
 // Public API
 // ============================================================
 
-export function parseConstraints(source: string): ParseResult {
-  const { tokens, errors: lexErrors } = tokenize(source);
-  const parser = new Parser(tokens, lexErrors);
+export interface ParseOptions {
+  /**
+   * Macro library to draw definitions from. Defaults to the active library
+   * (the user's edited one once primed, the bundled default before that).
+   * Pass `''` to parse a program in isolation — the library itself is parsed
+   * that way, so its own definitions are not expanded into it.
+   */
+  macroLibrary?: string;
+}
+
+export function parseConstraints(source: string, opts?: ParseOptions): ParseResult {
+  // Macros expand on the text, before tokenizing — see parser/preprocessor.ts.
+  const pre = preprocess(source, opts?.macroLibrary);
+  const { tokens, errors: lexErrors } = tokenize(pre.text, pre.lineMap);
+  const parser = new Parser(tokens, [...pre.errors, ...lexErrors]);
   return parser.parse();
 }
 

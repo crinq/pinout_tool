@@ -7,15 +7,13 @@ import DEFAULT_MACRO_LIBRARY_RAW from '../defaults/macro-library.txt?raw';
 // ============================================================
 
 import { parseConstraints } from './constraint-parser';
-import { extractMacros } from './macro-expander';
-import type { MacroDeclNode, PortDeclNode } from './constraint-ast';
+import { collectMacros, setMacroLibrary, getMacroLibrary } from './preprocessor';
+import type { PortDeclNode } from './constraint-ast';
 import { loadMacroLibrary, saveMacroLibrary } from '../storage';
 
 export const DEFAULT_MACRO_LIBRARY = DEFAULT_MACRO_LIBRARY_RAW;
 
-let cachedStdlib: Map<string, MacroDeclNode> | null = null;
 let cachedTemplates: Map<string, PortDeclNode> | null = null;
-let cachedSource: string | null = null;
 
 /**
  * Seed the macro library in storage if not present.
@@ -24,52 +22,27 @@ export async function seedMacroLibrary(): Promise<void> {
   if ((await loadMacroLibrary()) === null) {
     await saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
   }
-  // Pre-populate the cached source so synchronous getStdlibSource() works
-  // from solver hot paths without touching async storage.
-  cachedSource = (await loadMacroLibrary()) ?? DEFAULT_MACRO_LIBRARY.trim();
+  // Publish the source synchronously so the preprocessor — which runs inside
+  // parseConstraints, on hot paths that cannot await storage — sees it.
+  await primeStdlibSource();
 }
 
 /**
- * Invalidate the cached macros so they are re-parsed on next access.
- * Call this after the user edits the macro library — and then call
- * primeStdlibSource() to refresh `cachedSource` from storage.
- */
-export function invalidateStdlibCache(): void {
-  cachedStdlib = null;
-  cachedTemplates = null;
-  cachedSource = null;
-}
-
-/**
- * Pull the macro source from storage and cache it for sync access.
- * Called at boot (via seedMacroLibrary) and after the user saves an
- * edited library so subsequent getStdlibSource() calls see the change
- * without re-reading IDB.
+ * Pull the macro library from storage and publish it to the preprocessor.
+ * Called at boot (via seedMacroLibrary) and after the user saves an edited
+ * library, so the next parse expands macros from the edited source.
  */
 export async function primeStdlibSource(): Promise<void> {
-  cachedSource = (await loadMacroLibrary()) ?? DEFAULT_MACRO_LIBRARY.trim();
-  cachedStdlib = null;
+  setMacroLibrary((await loadMacroLibrary()) ?? DEFAULT_MACRO_LIBRARY.trim());
   cachedTemplates = null;
 }
 
 /**
- * Get the current macro library source. Returns the cached value
- * populated at boot — callers in the solver hot path can stay sync.
- * Falls back to the default if priming was somehow skipped.
+ * The macro library the preprocessor is currently expanding from — the user's
+ * edited one once primed, the bundled default before that.
  */
 export function getStdlibSource(): string {
-  if (cachedSource !== null) return cachedSource;
-  cachedSource = DEFAULT_MACRO_LIBRARY.trim();
-  return cachedSource;
-}
-
-/**
- * Get the stdlib macro definitions (parsed once, cached).
- */
-export function getStdlibMacros(): Map<string, MacroDeclNode> {
-  if (cachedStdlib) return cachedStdlib;
-  parseStdlib();
-  return cachedStdlib!;
+  return getMacroLibrary();
 }
 
 /**
@@ -83,18 +56,13 @@ export function getStdlibTemplates(): Map<string, PortDeclNode> {
 
 function parseStdlib(): void {
   const source = getStdlibSource();
-  const result = parseConstraints(source);
-  if (result.ast) {
-    cachedStdlib = extractMacros(result.ast);
-    cachedTemplates = new Map();
-    for (const stmt of result.ast.statements) {
-      if (stmt.type === 'port_decl') {
-        cachedTemplates.set(stmt.name, stmt);
-      }
-    }
-  } else {
-    cachedStdlib = new Map();
-    cachedTemplates = new Map();
+  // The library supplies its own macros: a port template declared in it may
+  // call one, and those calls have to expand before the template is merged
+  // into a user's port.
+  const result = parseConstraints(source, { macroLibrary: source });
+  cachedTemplates = new Map();
+  for (const stmt of result.ast?.statements ?? []) {
+    if (stmt.type === 'port_decl') cachedTemplates.set(stmt.name, stmt);
   }
 }
 
@@ -102,9 +70,5 @@ function parseStdlib(): void {
  * Get the names of all macros in the current library (without arity suffix).
  */
 export function getStdlibMacroNames(): Set<string> {
-  const names = new Set<string>();
-  for (const key of getStdlibMacros().keys()) {
-    names.add(key.split('/')[0]);
-  }
-  return names;
+  return new Set(collectMacros(getStdlibSource()).map(m => m.name));
 }

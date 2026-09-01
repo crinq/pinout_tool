@@ -26,8 +26,8 @@
 import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import { estimateComplexity, resolveAllVariables, extractPorts, resolveReservePatterns, extractSharedPatterns, partitionGpioVariables, isGpioVariable } from './solver';
-import { expandAllMacros } from '../parser/macro-expander';
-import { getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
+import { resolveTemplates } from '../parser/template-resolver';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import { buildInstanceVariables, type InstanceGroup } from './two-phase-solver';
 import { solveTwoPhase } from './two-phase-solver';
@@ -100,7 +100,7 @@ function extractSeedGroups(
   const solutions = labeled.flatMap(l => l.result.solutions);
   if (solutions.length === 0) return [];
 
-  const { ast: expandedAst } = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+  const { ast: expandedAst } = resolveTemplates(ast, getStdlibTemplates());
   const ports = extractPorts(expandedAst);
   const reserved = resolveReservePatterns(expandedAst, mcu);
   extractSharedPatterns(expandedAst);

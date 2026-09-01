@@ -1,9 +1,9 @@
-import type { Panel } from './panel';
+import type { Panel, HighlightStyle } from './panel';
 import { parseConstraints } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
-import { getStdlibMacroNames, getStdlibMacros, getStdlibTemplates } from '../parser/stdlib-macros';
-import { expandAllMacros } from '../parser/macro-expander';
+import { getStdlibMacroNames, getStdlibTemplates } from '../parser/stdlib-macros';
+import { resolveTemplates } from '../parser/template-resolver';
 import { lintForCommonErrors, getCachedLintLib, type LintWarning } from '../parser/lint-common-errors';
 import { escapeHtml, escapeRegex, createModal } from '../utils';
 import { showContextMenu, type ContextMenuItem } from '../../ts_lib/src/context-menu';
@@ -11,7 +11,7 @@ import { getPeripherals, type Peripheral } from '../parser/peripheral-lib';
 import { ConstraintMinimap } from './constraint-minimap';
 import { createCodeEditor, type CodeEditor } from './code-editor';
 
-const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'from', 'settings']);
+const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'group', 'require', 'macro', 'color', 'from', 'settings']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
@@ -31,6 +31,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   port: 'A group of related channels. Optional: from <template>, color, @ placement.',
   channel: 'One signal that needs a pin. Optional @ placement (pin, !pin, ~anchor) and inline = <signal> mapping.',
   config: 'An alternative wiring of a port; the solver tries every config combination.',
+  group: 'A physical grouping of channels inside a port. Takes an @ placement clause and pulls its members together. e.g. group "rail_3v3": @ ~NW',
   require: 'A constraint the solution must satisfy. require? makes it soft (best-effort).',
   macro: 'A reusable block of mappings/requires. Declare with params, then call by name.',
   color: 'Port colour in the package viewer. e.g. color "#2563eb"',
@@ -273,7 +274,13 @@ export class ConstraintEditor implements Panel {
 
   // Minimap
   private minimap!: ConstraintMinimap;
-  private highlightPinCallbacks: Array<(pins: Set<string>, color?: string) => void> = [];
+  private highlightPinCallbacks: Array<(pins: Set<string>, color?: string, style?: HighlightStyle) => void> = [];
+  /** Pins under the caret. The base highlight; minimap hover overrides it while hovering. */
+  private caretHighlight: { pins: Set<string>; color: string } | null = null;
+  /** Line the caret highlight was computed for, so we only recompute on a real move. */
+  private caretLine = -1;
+  /** Set while compare mode owns the viewer — the caret stands down (see doc.md, Comparing Solutions). */
+  private compareActive = false;
 
   // Undo/redo
   private undoStack: string[] = [''];
@@ -340,7 +347,14 @@ export class ConstraintEditor implements Panel {
       this.setCursorToLine(line);
     });
     this.minimap.onHighlightPins((pins, color) => {
-      for (const cb of this.highlightPinCallbacks) cb(pins, color);
+      // Hover and caret share one highlight slot downstream, so the editor
+      // arbitrates: hovering a block takes over with the louder pulse, and
+      // leaving it falls back to whatever the caret is on rather than clearing.
+      if (pins.size > 0) {
+        this.emitHighlight(pins, color, 'pulse');
+      } else {
+        this.emitCaretHighlight();
+      }
     });
     editorWrapper.appendChild(this.minimap.element);
 
@@ -386,6 +400,12 @@ export class ConstraintEditor implements Panel {
     this.textarea.addEventListener('input', () => this.onInput());
     this.textarea.addEventListener('scroll', () => this.syncScroll());
     this.textarea.addEventListener('keydown', (e) => this.onKeyDown(e));
+    // Caret pin highlight. keyup covers arrow keys and typing, click and focus
+    // cover the mouse; each is cheap because refreshCaretHighlight bails unless
+    // the caret actually changed line.
+    for (const ev of ['click', 'keyup', 'focus', 'select'] as const) {
+      this.textarea.addEventListener(ev, () => this.refreshCaretHighlight());
+    }
 
     // Resize observer for minimap
     const resizeObserver = new ResizeObserver(() => {
@@ -407,8 +427,18 @@ export class ConstraintEditor implements Panel {
     if (change['type'] === 'theme-changed') {
       this.minimap.paint();
     }
+    if (change['type'] === 'compare-selected') {
+      // Compare owns the viewer's highlight slot; the caret stands down until a
+      // single solution is selected again (which clears compare mode below).
+      this.compareActive = true;
+      this.emitHighlight(new Set());
+    }
     if (change['type'] === 'solution-selected') {
+      this.compareActive = false;
       this.minimap.setAssignments((change['assignments'] as Assignment[]) || null);
+      // Assignments changed what a line points at.
+      this.caretLine = -1;
+      this.refreshCaretHighlight();
       // Repaint minimap to reflect solution state
       if (this.parseResult) {
         const totalLines = this.textarea.value.split('\n').length;
@@ -422,8 +452,8 @@ export class ConstraintEditor implements Panel {
     this.changeCallbacks.push(callback);
   }
 
-  /** Register callback for minimap pin highlighting */
-  onHighlightPins(callback: (pins: Set<string>, color?: string) => void): void {
+  /** Register callback for pin highlighting (minimap hover and caret position) */
+  onHighlightPins(callback: (pins: Set<string>, color?: string, style?: HighlightStyle) => void): void {
     this.highlightPinCallbacks.push(callback);
   }
 
@@ -455,6 +485,47 @@ export class ConstraintEditor implements Panel {
     const allErrors = [...new Set([...parserErrors, ...lines])];
     const totalLines = this.textarea.value.split('\n').length;
     this.minimap.update(this.parseResult.ast, totalLines, allErrors, [...this.lintWarningLines]);
+    // The AST just changed, so the caret's line may resolve differently now.
+    this.refreshCaretHighlight(true);
+  }
+
+  // ====================
+  // Caret pin highlight
+  //
+  // Put the caret on a port / group / config / channel line and that scope's
+  // pins are ringed in the package viewer, so you can point at a line and see
+  // where it lands. Deliberately static and quiet — it stays up while you work,
+  // unlike the pulsing hover and search highlights.
+  // ====================
+
+  /** 1-based line the caret sits on. */
+  private currentCaretLine(): number {
+    const upto = this.textarea.value.slice(0, this.textarea.selectionStart);
+    return upto.split('\n').length;
+  }
+
+  /** Recompute the caret highlight if the caret moved to a different line. */
+  private refreshCaretHighlight(force = false): void {
+    const line = this.currentCaretLine();
+    if (!force && line === this.caretLine) return;
+    this.caretLine = line;
+
+    const hit = this.minimap.pinsForLine(line);
+    this.caretHighlight = hit && hit.pins.size > 0 ? { pins: hit.pins, color: hit.color } : null;
+    this.emitCaretHighlight();
+  }
+
+  /** Broadcast the caret highlight (or clear, when the caret is outside every port). */
+  private emitCaretHighlight(): void {
+    if (this.compareActive || !this.caretHighlight) {
+      this.emitHighlight(new Set());
+      return;
+    }
+    this.emitHighlight(this.caretHighlight.pins, this.caretHighlight.color, 'subtle');
+  }
+
+  private emitHighlight(pins: Set<string>, color?: string, style?: HighlightStyle): void {
+    for (const cb of this.highlightPinCallbacks) cb(pins, color, style);
   }
 
   /** Move cursor to the start of a given line (1-based) and scroll into view */
@@ -472,6 +543,7 @@ export class ConstraintEditor implements Panel {
     const targetScroll = (line - 1) * lineHeight - this.textarea.clientHeight / 3;
     this.textarea.scrollTop = Math.max(0, targetScroll);
     this.syncScroll();
+    this.refreshCaretHighlight();
   }
 
   getPinDeclarationSignal(pinName: string): string | null {
@@ -1280,7 +1352,7 @@ function computeLintWarnings(parseResult: ParseResult): LintWarning[] {
 
   let ast = parseResult.ast;
   try {
-    const expanded = expandAllMacros(ast, getStdlibMacros(), getStdlibTemplates());
+    const expanded = resolveTemplates(ast, getStdlibTemplates());
     if (expanded.ast) ast = expanded.ast;
   } catch {
     // Fall back to raw AST — direct mappings still get linted.
