@@ -15,7 +15,7 @@ import type { Assignment, Solution, SolverResult } from '../src/types';
 
 function loadF405(): ReturnType<typeof parseMcuXml> {
   const dir = join(__dirname, 'f405v');
-  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.startsWith('DMA-'))!;
+  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))!;
   const mcu = parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
   const per = mcu.peripherals.find(p => p.originalType === 'DMA');
   const dma = readdirSync(dir).find(f => f.startsWith('DMA-') && (!per || f.includes(per.version)));

@@ -16,7 +16,7 @@ const QSPI_CONSTRAINT = `port QSPI:
 
 function loadMcu(folder: string): Mcu {
   const dir = join(__dirname, folder);
-  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.startsWith('DMA-'))!;
+  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))!;
   return parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
 }
 

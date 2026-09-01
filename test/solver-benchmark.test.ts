@@ -67,7 +67,7 @@ function discoverPassCases(): TestCase[] {
 
   for (const folder of folders) {
     const folderPath = join(TEST_DIR, folder.name);
-    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
+    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'));
     if (xmlFiles.length === 0) continue;
     const mcuFile = join(folderPath, xmlFiles[0]);
 

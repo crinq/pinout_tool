@@ -18,7 +18,7 @@ const TEST_DIR = __dirname;
 
 function loadMcu(folder: string): Mcu {
   const folderPath = join(TEST_DIR, folder);
-  const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
+  const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'));
   const mcu = parseMcuXml(readFileSync(join(folderPath, xmlFiles[0]), 'utf-8'));
   const dmaFiles = readdirSync(folderPath).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'));
   if (dmaFiles.length > 0) {
@@ -137,19 +137,22 @@ describe('cegar solver', () => {
     validateSolutions(result);
   });
 
+  // Budget stays generous on purpose. These assert `> 0` with no inconclusive
+  // escape, and the solve is CPU-bound: cut to 2s it still returns ~1200
+  // solutions when run alone, but starves to 0 under full-suite parallelism.
   it('solves the hard case with structural diversity (h755i/ecat_complex)', () => {
     const { mcu, ast } = loadCase('h755i', 'ecat_complex');
     const result = solveCegar(ast, mcu, { ...TP(10000), skipGpioMapping: true });
     expect(result.solutions.length).toBeGreaterThan(0);
     validateSolutions(result);
-  }, 30000);   // solver budget is 10s; wall clock needs slack under parallel test load
+  }, 30000);   // 10s solve + validating ~1300 solutions; needs slack under load
 
   it('solves the very hard case (h755i/ecat_more_complex)', () => {
     const { mcu, ast } = loadCase('h755i', 'ecat_more_complex');
     const result = solveCegar(ast, mcu, { ...TP(10000), skipGpioMapping: true });
     expect(result.solutions.length).toBeGreaterThan(0);
     validateSolutions(result);
-  }, 15000);
+  }, 30000);
 });
 
 // ============================================================

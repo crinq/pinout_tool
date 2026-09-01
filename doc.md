@@ -62,42 +62,16 @@ You can open this documentation any time with the **Docs** button in the header;
 
 ## Getting Started
 
-### Loading MCU Data: remote catalogue (optional)
+The tool needs MCU pin/peripheral data.
 
-If you have a hosted vendor JSON catalogue (the layout produced by the
-companion `mcu_data` project — `index.json` plus per-die files under
-`mcu/<die>.json`), open the **Data Manager**, paste the URL into the
-**Remote Data Source** field, and click **Save**. Local `file://` paths
-work for testing, GitHub raw / Pages URLs work for production.
-A remote repo with most of the STM32 lineup is set as default.
+### Loading MCU Data: remote catalogue
 
-- **Browse…** opens a search overlay listing every die in the index.
-  Type to filter by name. Click a die to fetch + parse it. Multi-package
-  dies present a variant picker before loading.
-- The fetched MCU becomes the **current MCU** and is held in an
-  in-memory cache (10 dies / 500 KB, whichever fills first). This remote
-  cache is transient — cleared on page reload. (MCUs you **Import** from
-  XML are stored persistently; see [Loading MCU Data](#loading-mcu-data).)
-  Opening a saved project whose MCU isn't stored locally will also
-  auto-fetch it from this remote source — see
-  [Project Management](#saving-and-loading).
+If you have a hosted vendor JSON catalogue (the layout produced by the companion `mcu_data` project — `index.json` plus per-die files under `mcu/<die>.json`), open the **Data Manager**, paste the URL into the **Remote Data Source** field, and click **Save**. Local `file://` paths work for testing, GitHub raw / Pages URLs work for production. A remote repo with most of the STM32 lineup is set as default.
 
-### Multi-MCU Solving with `mcu:` filters
+- **Browse…** opens a search overlay listing every die in the index. Type to filter by name. Click a die to fetch + parse it. Multi-package dies present a variant picker before loading.
+- The fetched MCU becomes the **current MCU** and is held in an in-memory cache (10 dies / 500 KB, whichever fills first). This remote cache is transient — cleared on page reload. (MCUs you **Import** from XML are stored persistently; see [Loading MCU Data](#loading-mcu-data).) Opening a saved project whose MCU isn't stored locally will also auto-fetch it from this remote source — see [Project Management](#saving-and-loading).
 
-When a constraint contains an `mcu:` filter (or `package:` / `ram:` /
-`rom:` / `freq:` filter), the solver iterates every MCU that matches.
-Sources are unioned:
-
-1. MCUs already imported via XML drag-drop (live in `localStorage`).
-2. MCUs fetched from the remote data source. The index is filtered by
-   die name and package, then matching dies are fetched in parallel,
-   parsed, and re-filtered at the variant level. Progress shows in the
-   status bar; the **Abort** button cancels in-flight fetches.
-
-If neither source produces any matches, the solver reports an error so
-you can adjust the filter or import data.
-
-### Loading MCU Data
+### Loading MCU Data: STM32CubeMX
 
 The tool needs MCU pin/peripheral data from STM32CubeMX XML files:
 
@@ -108,11 +82,7 @@ The tool needs MCU pin/peripheral data from STM32CubeMX XML files:
 
 Imported MCUs are stored in localStorage and can be reloaded from the **Data** manager.
 
-### Importing CubeMX .ioc Projects (optional)
-
-You can import `.ioc` project files from STM32CubeMX. The tool extracts the MCU name and pin-to-signal assignments, adding them as `pin` declarations to the constraint editor. This lets you use an existing CubeMX project as a starting point. Drag and drop the `.ioc` file or use the **Import** button.
-
-### Loading DMA Data (optional)
+### Loading DMA Data: STM32CubeMX
 
 To enable DMA stream constraints, load the corresponding DMA modes XML file:
 
@@ -121,6 +91,23 @@ To enable DMA stream constraints, load the corresponding DMA modes XML file:
 3. Drag and drop the DMA file onto the app (it will be auto-detected)
 
 The tool matches DMA files to MCUs automatically via the DMA IP version tag. Once loaded, a **DMA** tag appears in the Data manager next to the MCU. DMA data persists in localStorage alongside MCU data.
+
+### Multi-MCU Solving with `mcu:` filters
+
+When a constraint contains an `mcu:` filter (or `package:` / `ram:` /
+`rom:` / `freq:` filter), the solver iterates every MCU that matches.
+Sources are unioned:
+
+1. MCUs already imported via XML drag-drop (live in `localStorage`).
+2. MCUs fetched from the remote data source. The index is filtered by die name and package, then matching dies are fetched in parallel, parsed, and re-filtered at the variant level. Progress shows in the status bar; the **Abort** button cancels in-flight fetches.
+
+If neither source produces any matches, the solver reports an error so
+you can adjust the filter or import data.
+
+### Importing CubeMX .ioc Projects
+
+You can import `.ioc` project files from STM32CubeMX. The tool extracts the MCU name and pin-to-signal assignments, adding them as `pin` declarations to the constraint editor. This lets you use an existing CubeMX project as a starting point. Drag and drop the `.ioc` file or use the **Import** button.
+
 
 ### First Constraint
 
@@ -239,15 +226,9 @@ reserve: A1, B12                # by package position (BGA / WLCSP)
 reserve: ADC*, SPI[1,3]         # patterns also match peripheral instances
 ```
 
-Excludes pins from the solver. Use for crystal oscillator pins, debug pins,
-non-routed package pads, etc.
+Excludes pins from the solver. Use for non-routed package pads, etc.
 
-Reserving by **position** locks the package pad — every logical pin bonded
-to it (PINREMAP variants on small C0/G0 parts, multi-bond pads on
-UFQFPN20/WLCSP, `_C` analog-switch siblings on H7) becomes unavailable as
-well. Use this when you need to keep a physical pin clear of any
-peripheral signal regardless of which alternate the chip would otherwise
-expose.
+Reserving by **position** locks the package pad — every logical pin bonded to it (PINREMAP variants on small C0/G0 parts, multi-bond pads on UFQFPN20/WLCSP, `_C` analog-switch siblings on H7) becomes unavailable as well. Use this when you need to keep a physical pin clear of any peripheral signal regardless of which alternate the chip would otherwise expose.
 
 ### Fixed Pin Assignments
 
@@ -370,10 +351,7 @@ You cannot mix inline mappings with explicit `config` blocks in the same port.
 ### Groups
 
 A `group` block marks channels within a port as belonging together
-**physically**. Grouping does not change what a channel is or how it is
-referenced — members stay in the port's flat channel list under their own
-names, so mappings, `require`s and cross-port references address them exactly as
-before. What a group adds is a placement scope and a clustering preference:
+**physically**. Grouping does not change what a channel is or how it is referenced — members stay in the port's flat channel list under their own names, so mappings, `require`s and cross-port references address them exactly as before. What a group adds is a placement scope and a clustering preference:
 
 ```
 port PWR:
@@ -387,25 +365,15 @@ port PWR:
     channel PGOOD2 = IN
 ```
 
-- The **Pin Group Clustering** [cost function](#cost-functions) pulls each
-  group's pins toward each other, scored per group rather than across the whole
-  port. Two tight clusters at opposite corners of the package therefore rank
-  better than the same pins interleaved — a distinction Pin Clustering, which
-  measures a port's entire footprint, cannot make. Set its weight to 0 to
-  ignore groups when ranking.
+- The **Pin Group Clustering** [cost function](#cost-functions) pulls each group's pins toward each other, scored per group rather than across the whole port. Two tight clusters at opposite corners of the package therefore rank better than the same pins interleaved — a distinction Pin Clustering, which measures a port's entire footprint, cannot make. Set its weight to 0 to ignore groups when ranking.
 - The group header takes the full [`@` placement clause](#pin-placement):
   `@ ~NW` (soft, pulls every member), `@ PA1` (hard: some member must land on
   PA1), `@ !PB1` (hard: no member may use PB1). Exclusions compose with the
   channel's, the port's and the active config's.
 
-Grouped and ungrouped channels can be mixed freely in one port; ungrouped
-channels are simply not scored by the group cost.
+Grouped and ungrouped channels can be mixed freely in one port; ungrouped channels are simply not scored by the group cost.
 
-A group body takes `channel` declarations (including the
-`channel name(args)` [macro shorthand](#macros)), and — like a port body — any
-mapping or `require` lines it carries go to the port's implicit config. This composes
-with [macros](#macros): a macro that declares channels can be called inside a
-group, and its channels join that group.
+A group body takes `channel` declarations (including the `channel name(args)` [macro shorthand](#macros)), and — like a port body — any mapping or `require` lines it carries go to the port's implicit config. This composes with [macros](#macros): a macro that declares channels can be called inside a group, and its channels join that group.
 
 ```
 macro efused(NAME):
@@ -417,15 +385,11 @@ port PWR:
     efused(VBUS)
 ```
 
-Ports derived [from a template](#port-templates) inherit its groups; redeclaring
-a group of the same name replaces it.
+Ports derived [from a template](#port-templates) inherit its groups; redeclaring a group of the same name replaces it.
 
 ### Pin Placement (`@`)
 
-The `@` clause controls *where* a channel's pin ends up. It has **hard** forms
-(a fixed pin list or a `!` exclusion, which filter the candidate pins) and
-**soft** forms (a `~` anchor, which only nudges the
-[cost ranking](#cost-functions) — it never removes a candidate).
+The `@` clause controls *where* a channel's pin ends up. It has **hard** forms (a fixed pin list or a `!` exclusion, which filter the candidate pins) and **soft** forms (a `~` anchor, which only nudges the [cost ranking](#cost-functions) — it never removes a candidate).
 
 ```
 channel TX @ PA1              # hard: TX must use PA1
@@ -437,9 +401,7 @@ channel TX @ ~1               # soft: prefer pins near package position 1 (or ~A
 channel TX @ ~NW              # soft: prefer pins in the north-west of the package
 ```
 
-**Excluding pins** with `!` removes them from the channel's candidate pins
-before the search starts. Combine exclusions freely with required pins in one
-comma-separated list.
+**Excluding pins** with `!` removes them from the channel's candidate pins before the search starts. Combine exclusions freely with required pins in one comma-separated list.
 
 **Soft anchor targets:**
 
@@ -449,12 +411,8 @@ comma-separated list.
 | `~1` / `~A1` | proximity to a package position (LQFP number or BGA cell) |
 | `~NW` | proximity to a compass region of the package |
 
-**Compass regions** use the package as drawn (north = top, west = left, so the
-compass rotates with the package). Letters `N`, `S`, `E`, `W`, and `C` (center,
-useful on BGAs) combine: `NW` is the top-left corner, `NNW` leans north with a
-slight west bias, `NC` is halfway between the north edge and the center. The
-target is the point a ray from the center hits the package boundary in that
-direction; `C` pulls it back toward the center.
+**Compass regions** use the package as drawn (north = top, west = left, so the compass rotates with the package). Letters `N`, `S`, `E`, `W`, and `C` (center, useful on BGAs) combine: `NW` is the top-left corner, `NNW` leans north with a slight west bias, `NC` is halfway between the north edge and the center. The
+target is the point a ray from the center hits the package boundary in that direction; `C` pulls it back toward the center.
 
 **On ports and configs.** The same clause after the `:` applies to a whole port
 or config:
@@ -468,29 +426,22 @@ config "UART": @ !PB1    # hard: no channel mapped in this config may use PB1
 config "UART": @ ~NW     # soft: applies only to channels mapped in this config
 ```
 
-A hard `@ PA1` on a port/config requires *some* channel to land on that pin
-(each pin in a list must be covered); solutions that don't are discarded. A hard
-`@ !PB1` bars the pin from *every* channel of the port (or, on a config, from
-every channel mapped in it). A soft `@ ~...` applies to every affected channel.
+A hard `@ PA1` on a port/config requires *some* channel to land on that pin (each pin in a list must be covered); solutions that don't are discarded. A hard `@ !PB1` bars the pin from *every* channel of the port (or, on a config, from every channel mapped in it). A soft `@ ~...` applies to every affected channel.
 
-Exclusions compose: a channel may not use the union of its own, its port's, and
-its active config's excluded pins.
+Exclusions compose: a channel may not use the union of its own, its port's, and its active config's excluded pins.
 
-Ports from [templates](#port-templates) inherit the template's placement clause
-unless they declare their own, which overrides it:
+Ports from [templates](#port-templates) inherit the template's placement clause unless they declare their own, which overrides it:
 
 ```
 port enc1 from enc0: @ ~NW    # overrides enc0's placement, keeps its channels
 ```
 
-The soft-anchor pull is weighted by the **Pin Anchor** [cost function](#cost-functions);
+The soft-anchor pull is weighted by the **Pin Anchor** [cost function](#cost-functions); 
 set its weight to 0 in Settings to ignore anchors entirely.
 
 ### Solver Settings (`settings:`)
 
-A `settings:` block overrides solver settings **for that solve only** — your
-saved Settings are left untouched. Handy for committing a hard board's tuning
-alongside its constraints.
+A `settings:` block overrides solver settings **for that solve only** — your saved Settings are left untouched. Handy for committing a hard board's tuning alongside its constraints.
 
 ```
 settings:
@@ -513,8 +464,7 @@ settings:
 | `skip_gpio_mapping`, `post_optimize`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
 | *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_group_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
 
-**Presets.** `settings from "<name>":` restarts from a named preset instead of
-your current settings, then applies the block on top:
+**Presets.** `settings from "<name>":` restarts from a named preset instead of your current settings, then applies the block on top:
 
 ```
 settings from "default":     # factory defaults, then override
@@ -523,13 +473,9 @@ settings from "default":     # factory defaults, then override
 settings from "complex":     # tuned for hard problems; body is optional
 ```
 
-Available presets are `"default"` (the factory configuration) and `"complex"`
-(longer timeout, the heavier solver set, larger group limits). Edit them in
-`src/settings.ts` → `SETTINGS_PRESETS`.
+Available presets are `"default"` (the factory configuration) and `"complex"` (longer timeout, the heavier solver set, larger group limits). Edit them in `src/settings.ts` → `SETTINGS_PRESETS`.
 
-Several blocks may appear; later ones fold onto earlier ones. Unknown keys,
-unknown presets and wrong value types are reported in the status bar and
-otherwise ignored.
+Several blocks may appear; later ones fold onto earlier ones. Unknown keys, unknown presets and wrong value types are reported in the status bar and otherwise ignored.
 
 ### Signal Patterns
 
@@ -680,9 +626,7 @@ Parentheses override precedence: `(A | B) & C`.
 
 #### Peripheral patterns as values
 
-The right side of `==` / `!=` may be a peripheral pattern instead of a plain
-value. It is then **matched** rather than compared for equality, which is how
-you restrict a channel to a set of instances:
+The right side of `==` / `!=` may be a peripheral pattern instead of a plain value. It is then **matched** rather than compared for equality, which is how you restrict a channel to a set of instances:
 
 ```
 require instance(A, "TIM") == TIM[1-5,8,20]   # only these timers
@@ -690,10 +634,7 @@ require instance(A, "TIM") != TIM[15-17]      # anything but these
 require instance(A, "TIM") == TIM*            # any timer
 ```
 
-The bracket or `*` is what marks it as a pattern — a bare identifier
-(`instance(A) == instance(B)`) is still a channel reference. Same bracket
-syntax as [signal patterns](#signal-patterns): `[1-5]` ranges, `[1,8]` lists,
-and combinations.
+The bracket or `*` is what marks it as a pattern — a bare identifier (`instance(A) == instance(B)`) is still a channel reference. Same bracket syntax as [signal patterns](#signal-patterns): `[1-5]` ranges, `[1,8]` lists, and combinations.
 
 #### Cross-port references
 
@@ -754,18 +695,14 @@ require pin_distance(MOSI, MISO) < 5
 
 #### Pin flags
 
-Vendor JSON data may attach per-pin flags (e.g. 5 V tolerance). `flag()` requires
-**every pin the channel occupies** to carry that flag with that value:
+Vendor JSON data may attach per-pin flags (e.g. 5 V tolerance). `flag()` requires **every pin the channel occupies** to carry that flag with that value:
 
 ```
 channel TX = USART*_TX
 require flag(TX, "5V_tolerant", true)
 ```
 
-The value may be `true`/`false`, a number, or a quoted string. A pin whose data
-does not carry the flag at all **fails** the condition — so a channel is only
-accepted when the data explicitly says so. For a multi-pin channel
-(`CH = A + B`) every pin must match.
+The value may be `true`/`false`, a number, or a quoted string. A pin whose data does not carry the flag at all **fails** the condition — so a channel is only accepted when the data explicitly says so. For a multi-pin channel (`CH = A + B`) every pin must match.
 
 Flags come from the remote JSON catalogue's optional `flags` dict per GPIO:
 
@@ -799,19 +736,11 @@ Without a filter, `dma()` uses the channel's assigned signal name directly.
 
 The solver automatically verifies that a consistent DMA stream assignment exists across all channels that require DMA.
 
-**Note:** Using `dma()` requires DMA data for the MCU. For XML-imported MCUs
-that means also importing the matching DMA modes XML (separate from the pinout
-XML). If it is missing and a [remote data source](#loading-mcu-data-remote-catalogue-optional)
-is configured, the tool looks the same MCU up there and borrows its DMA data
-automatically — remote JSON MCUs always carry it. Only when neither is available
-does the solver report an error and stop.
+**Note:** Using `dma()` requires DMA data for the MCU. For XML-imported MCUs that means also importing the matching DMA modes XML (separate from the pinout XML). If it is missing and a [remote data source](#loading-mcu-data-remote-catalogue-optional) is configured, the tool looks the same MCU up there and borrows its DMA data automatically — remote JSON MCUs always carry it. Only when neither is available does the solver report an error and stop.
 
 ### Macros
 
-Macros are a **text-level preprocessor**, in the spirit of C's. A macro body is
-expanded into the source before it is parsed, so it may contain any construct
-the language allows — including `channel` declarations and whole `config`
-blocks, not just mappings and requires.
+Macros are a **text-level preprocessor**, in the spirit of C's. A macro body is expanded into the source before it is parsed, so it may contain any construct the language allows — including `channel` declarations and whole `config` blocks, not just mappings and requires.
 
 #### Defining macros
 
@@ -835,9 +764,7 @@ port CMD:
     uart_port(TX, RX)
 ```
 
-A macro call is a line consisting of just `name(args)`. It expands wherever it
-stands — in a config body, a port body, or a [group](#groups) — and the body is
-re-indented to the call's level, so the same macro works at any depth.
+A macro call is a line consisting of just `name(args)`. It expands wherever it stands — in a config body, a port body, or a [group](#groups) — and the body is re-indented to the call's level, so the same macro works at any depth.
 
 #### Parameter substitution
 
@@ -848,16 +775,11 @@ A parameter is replaced in two forms:
 | `NAME` | the parameter as a **whole word** | `TX = USART*_TX` -> only the leading `TX` is a parameter; the `_TX` inside the signal pattern is left alone |
 | `${NAME}` | the parameter **anywhere**, including mid-identifier | `channel ${NAME}_EN` -> `channel VBUS_EN` |
 
-Use `${...}` whenever the parameter is glued to other text, since a bare
-`NAME_EN` gives no way to tell where the parameter ends.
+Use `${...}` whenever the parameter is glued to other text, since a bare `NAME_EN` gives no way to tell where the parameter ends.
 
-All parameters are substituted in a single pass, so an argument that happens to
-spell another parameter is never substituted again.
+All parameters are substituted in a single pass, so an argument that happens to spell another parameter is never substituted again.
 
-A `${...}` whose contents are **not** a parameter of the enclosing macro is left
-untouched — which is what lets
-[comment interpolation](#string-interpolation-in-comments) live inside a macro
-body:
+A `${...}` whose contents are **not** a parameter of the enclosing macro is left untouched — which is what lets [comment interpolation](#string-interpolation-in-comments) live inside a macro body:
 
 ```
 macro uart_port(TX, RX):
@@ -867,8 +789,7 @@ macro uart_port(TX, RX):
 
 #### Declaring structure
 
-Because expansion happens on the text, a macro can declare the channels it
-needs. This is the idiomatic way to stamp out a repeated board block:
+Because expansion happens on the text, a macro can declare the channels it needs. This is the idiomatic way to stamp out a repeated board block:
 
 ```
 macro efused(NAME):
@@ -881,30 +802,22 @@ port PWR:
   efused(VDDA)
 ```
 
-`channel name(args)` is shorthand for declaring the argument channels and then
-applying the macro to them, so the `_SNS` line above is the same as writing:
+`channel name(args)` is shorthand for declaring the argument channels and then applying the macro to them, so the `_SNS` line above is the same as writing:
 
 ```
   channel ${NAME}_SNS
   adc(${NAME}_SNS)
 ```
 
-It works for any arity — `channel i2c_port(SDA, SCL)` declares both channels and
-applies `i2c_port` to them. Only arguments that are bare names become channels,
-so a macro taking a `"TYPE"` string or a pattern contributes no channel for it.
+It works for any arity — `channel i2c_port(SDA, SCL)` declares both channels and applies `i2c_port` to them. Only arguments that are bare names become channels, so a macro taking a `"TYPE"` string or a pattern contributes no channel for it.
 
-That yields six channels — `VBUS_EN`, `VBUS_PGOOD`, `VBUS_SNS`, `VDDA_EN`,
-`VDDA_PGOOD`, `VDDA_SNS` — with the two `_SNS` channels mapped by the standard
-library's `adc` macro.
+That yields six channels — `VBUS_EN`, `VBUS_PGOOD`, `VBUS_SNS`, `VDDA_EN`, `VDDA_PGOOD`, `VDDA_SNS` — with the two `_SNS` channels mapped by the standard library's `adc` macro.
 
-Note the nested call: `adc(${NAME}_SNS)` has its argument built by substitution
-first, then expands in turn.
+Note the nested call: `adc(${NAME}_SNS)` has its argument built by substitution first, then expands in turn.
 
 #### Macro overloading
 
-Macros are keyed by name **and argument count**, so the same name may take
-different numbers of arguments. An overload calling a shorter overload of the
-same name is not recursion:
+Macros are keyed by name **and argument count**, so the same name may take different numbers of arguments. An overload calling a shorter overload of the same name is not recursion:
 
 ```
 macro spi_port(MOSI, MISO, SCK):
@@ -919,11 +832,9 @@ macro spi_port(MOSI, MISO, SCK, NSS):
   require same_instance(MOSI, NSS, "SPI")
 ```
 
-A macro defined in your constraints shadows a
-[standard library](#standard-library) macro of the same name and arity.
+A macro defined in your constraints shadows a [standard library](#standard-library) macro of the same name and arity.
 
-Genuine recursion, and nesting deeper than 10 levels, are reported as errors.
-An error inside an expansion is reported on the **call site's** line.
+Genuine recursion, and nesting deeper than 10 levels, are reported as errors. An error inside an expansion is reported on the **call site's** line.
 
 
 ### Port Templates
@@ -959,8 +870,7 @@ Body-less ports (no colon, no body) simply clone the template as-is:
 port ENC0 from encoder_port color "orange"
 ```
 
-**Chained templates:** A derived port can itself be used as a template. Cycles
-are detected and reported as errors.
+**Chained templates:** A derived port can itself be used as a template. Cycles are detected and reported as errors.
 
 ```
 port encoder_port:
@@ -994,19 +904,13 @@ Pre-defined macros available in all projects. The macro library can be edited vi
 
 ### Common-Error Lint
 
-The editor runs a lint pass over the parsed AST that warns when a channel name and its
-signal pattern reference different tokens from the same "confusable" group. Classic case:
-a channel called `miso` mapped to `SPI*_MOSI`.
+The editor runs a lint pass over the parsed AST that warns when a channel name and its signal pattern reference different tokens from the same "confusable" group. Classic case: a channel called `miso` mapped to `SPI*_MOSI`.
 
 - Warning lines get a yellow wavy underline and a matching marker in the editor minimap.
-- Details show below the editor alongside parser errors (parser errors have priority
-  when both appear on the same line).
-- The library is empty by default until seeded from **Data Manager > Common-error Lint
-  Library**; use **Reset** to restore the shipped defaults.
+- Details show below the editor alongside parser errors (parser errors have priority when both appear on the same line).
+- The library is empty by default until seeded from **Data Manager > Common-error Lint Library**; use **Reset** to restore the shipped defaults.
 
-Library syntax: one group per line, tokens space-separated, `#` for comments. Every pair
-of tokens in a group is treated as a "swap": if a channel name contains token A and the
-signal pattern contains token B (or vice versa), a warning is raised.
+Library syntax: one group per line, tokens space-separated, `#` for comments. Every pair of tokens in a group is treated as a "swap": if a channel name contains token A and the signal pattern contains token B (or vice versa), a warning is raised.
 
 ```
 # Groups of signal names commonly swapped by mistake.
@@ -1016,9 +920,7 @@ cts rts
 ch1 ch2 ch3 ch4
 ```
 
-Token matching is case-insensitive with word-boundary matching (a token surrounded by
-non-alphanumerics or the string edge), so `enc_miso` matches `miso` but `context` does
-not match `tx`.
+Token matching is case-insensitive with word-boundary matching (a token surrounded by non-alphanumerics or the string edge), so `enc_miso` matches `miso` but `context` does not match `tx`.
 
 ---
 
@@ -1159,18 +1061,9 @@ The package viewer renders the MCU package with interactive pin display.
 - **Pan:** two-finger scroll / drag
 - **Rotate:** Rotate buttons (90° per click), or twist with two fingers — rotation snaps to 90° steps
 - **Reset:** Reset zoom, rotation and pan to defaults
-- **DATA / MAN / ERR:** open the datasheet, reference manual and errata sheet
-  for the current MCU in a new tab. These links come from the
-  [remote JSON catalogue](#loading-mcu-data-remote-catalogue-optional); a button
-  is greyed out when the data has no link for that document (CubeMX XML carries
-  none, and a few dies are missing one)
+- **DATA / MAN / ERR:** open the datasheet, reference manual and errata sheet for the current MCU in a new tab. These links come from the [remote JSON catalogue](#loading-mcu-data-remote-catalogue-optional); a button is greyed out when the data has no link for that document (CubeMX  XML carries none, and a few dies are missing one)
 
-**Touch gestures** (Settings → Viewer, on by default): two fingers on a touchpad
-or touchscreen pan, pinch to zoom (anchored on the cursor/pinch centre) and
-twist to rotate in 90° steps. Turn the setting off to restore the classic mouse
-behaviour, where the wheel zooms. Trackpad rotation needs gesture events, so it
-is available in Safari and on touchscreens; pan and pinch-zoom work in every
-browser.
+**Touch gestures** (Settings → Viewer, on by default): two fingers on a touchpad or touchscreen pan, pinch to zoom (anchored on the cursor/pinch centre) and twist to rotate in 90° steps. Turn the setting off to restore the classic mouse behaviour, where the wheel zooms. Trackpad rotation needs gesture events, so it is available in Safari and on touchscreens; pan and pinch-zoom work in every browser.
 - **Search:** Type signal patterns to highlight matching pins with a pulsing glow
 - **Export:** Click to open the export modal with format options:
   - **PNG** -- raster image of the current canvas view
@@ -1188,40 +1081,18 @@ browser.
 
 #### Shared / variant package pins
 
-Some package pads bond more than one die-side GPIO net to the same solder
-point. The viewer renders these as a single cell with a `+N` suffix on the
-label (e.g. `PA9+1` means PA9 plus one bonded sibling) and the tooltip
-lists every logical pin and its signals separately. Three common cases:
+Some package pads bond more than one die-side GPIO net to the same solder point. The viewer renders these as a single cell with a `+N` suffix on the label (e.g. `PA9+1` means PA9 plus one bonded sibling) and the tooltip lists every logical pin and its signals separately. Three common cases:
 
-- **PINREMAP variants** on small C0/F0/G0/U0 parts (e.g. `PA9 [PA11]`):
-  the chip can present either GPIO at the pad, controlled by a register.
-- **Multi-bond pads** on UFQFPN20 / WLCSP packages: multiple GPIOs are
-  permanently tied together inside the package — only one can drive the pad
-  at runtime.
-- **`_C` dual-pad analog pins** on H7 (`PC2` / `PC2_C`): two *separate*
-  package pads joined by a configurable analog switch. The `_C` pad has its own
-  dedicated ADC channels, reachable with the switch open — so `PC2_C` doing ADC
-  and `PC2` doing something else at the same time is legitimate. Its digital
-  functions, however, belong to the base pin and need the switch closed, which
-  shorts the two pads: the tool therefore offers **only the analog channels** on
-  a `_C` pad, and a switch-through assignment (e.g. a forced
-  `pin PC2_C = SPI2_MISO`) also consumes `PC2`. You can name `_C` pads anywhere
-  a pin name is accepted (`@ PC2_C`, `@ !PC2_C`, `pin PC2_C = …`,
-  `reserve: PC2_C`).
+- **PINREMAP variants** on small C0/F0/G0/U0 parts (e.g. `PA9 [PA11]`): the chip can present either GPIO at the pad, controlled by a register.
+- **Multi-bond pads** on UFQFPN20 / WLCSP packages: multiple GPIOs are permanently tied together inside the package — only one can drive the pad at runtime.
+- **`_C` dual-pad analog pins** on H7 (`PC2` / `PC2_C`): two *separate* package pads joined by a configurable analog switch. The `_C` pad has its own dedicated ADC channels, reachable with the switch open — so `PC2_C` doing ADC and `PC2` doing something else at the same time is legitimate. Its digital functions, however, belong to the base pin and need the switch closed, which shorts the two pads: the tool therefore offers **only the analog channels** on a `_C` pad, and a switch-through assignment (e.g. a forced `pin PC2_C = SPI2_MISO`) also consumes `PC2`. You can name `_C` pads anywhere a pin name is accepted (`@ PC2_C`, `@ !PC2_C`, `pin PC2_C = …`, `reserve: PC2_C`).
 
-The solver enforces mutual exclusion: assigning a signal to one logical
-locks the physical and every co-bonded sibling for other ports. The
-assignment popup groups signals by logical pin so you can pick the variant
-explicitly.
+The solver enforces mutual exclusion: assigning a signal to one logical locks the physical and every co-bonded sibling for other ports. The assignment popup groups signals by logical pin so you can pick the variant explicitly.
 
 ### Pin Colors
 
 - **Gray** -- unassigned
-- **Port color** -- every assigned pin takes the colour of the port that owns
-  it, matching the block colours in the editor's minimap and the Peripherals
-  list. A port's colour is its `color "..."` when it declares one, otherwise an
-  automatic one derived from the port's **name** -- so it stays put as you edit
-  ports around it.
+- **Port color** -- every assigned pin takes the colour of the port that owns it, matching the block colours in the editor's minimap and the Peripherals list. A port's colour is its `color "..."` when it declares one, otherwise an automatic one derived from the port's **name** -- so it stays put as you edit ports around it.
 - **Blue** -- assigned by a `pin` declaration (no owning port)
 - **Orange** -- selected pin
 - **Yellow** -- hovered pin
@@ -1239,22 +1110,14 @@ Matching pins pulse with an amber glow animation. Press **Escape** to clear the 
 
 ### Comparing Solutions
 
-Ctrl/Cmd-click multiple rows in the **Project Solutions** list to switch the package
-viewer into compare mode. It highlights how the selected solutions differ:
+Ctrl/Cmd-click multiple rows in the **Project Solutions** list to switch the package viewer into compare mode. It highlights how the selected solutions differ:
 
-- Pins with an identical mapping in every selected solution render normally (port
-  color).
-- Pins that differ pulse through one solution color per cycle (~1.2 s per solution).
-  Each selected solution gets a distinct color assigned by selection order.
-- A grey slice in the cycle means that solution doesn't assign the pin at all,
-  making "assigned in some, empty in others" visually obvious.
-- Hovering a divergent pin shows a **Compare** section in the tooltip with one row
-  per selected solution: a colored dot, the solution name, and its mapping
-  (or `—` when unassigned).
+- Pins with an identical mapping in every selected solution render normally (port color).
+- Pins that differ pulse through one solution color per cycle (~1.2 s per solution). Each selected solution gets a distinct color assigned by selection order.
+- A grey slice in the cycle means that solution doesn't assign the pin at all, making "assigned in some, empty in others" visually obvious.
+- Hovering a divergent pin shows a **Compare** section in the tooltip with one row per selected solution: a colored dot, the solution name, and its mapping (or `—` when unassigned).
 
-Compare mode is exclusive with normal peripheral / hover / search highlights, which
-temporarily override the compare pulse on the pins they touch. Click a single row
-(no modifier) to leave compare mode.
+Compare mode is exclusive with normal peripheral / hover / search highlights, which temporarily override the compare pulse on the pins they touch. Click a single row (no modifier) to leave compare mode.
 
 ---
 
@@ -1340,11 +1203,7 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 
 Weights are configurable: `0` = disabled, `1` = normal, higher values = more impact.
 
-**Square distance costs** (Settings) changes how the three distance-based
-functions — **pin_clustering**, **pin_proximity** and **pin_anchor** — accumulate:
-they sum *squared* distances instead of raw ones. A single far-away pin is then
-punished much harder than several slightly-spread pins, which is usually what
-matters for routing. Off by default.
+**Square distance costs** (Settings) changes how the three distance-based functions — **pin_clustering**, **pin_proximity** and **pin_anchor** — accumulate: they sum *squared* distances instead of raw ones. A single far-away pin is then punished much harder than several slightly-spread pins, which is usually what matters for routing. Off by default.
 
 ```
 port pin distances 1, 1, 10
@@ -1382,19 +1241,9 @@ The Peripherals panel shows the port-to-peripheral mapping for the currently sel
 
 **Pin group highlighting:** Hover over a port name or peripheral instance to highlight the corresponding pins on the package viewer with a pulsating glow. Click to toggle a persistent highlight that stays active until clicked again or a different solution is selected.
 
-**Editor caret highlight:** Put the cursor on a line in the constraints editor
-and the pins that line covers get a quiet, static ring in the port's colour --
-the whole port on a `port` line, one group on a `group` line, one config on a
-`config` line, and a single channel on a `channel` or mapping line. It follows
-the caret however you move it, and clears when the caret leaves every port.
-Deliberately calmer than the pulsing hover and search highlights so it can stay
-up while you work; hovering a minimap block takes over until you move away.
+**Editor caret highlight:** Put the cursor on a line in the constraints editor and the pins that line covers get a quiet, static ring in the port's colour -- the whole port on a `port` line, one group on a `group` line, one config on a `config` line, and a single channel on a `channel` or mapping line. It follows the caret however you move it, and clears when the caret leaves every port. Deliberately calmer than the pulsing hover and search highlights so it can stay up while you work; hovering a minimap block takes over until you move away.
 
-With a solution loaded the ring marks where the channels actually landed, so a
-channel the solver never placed (a GPIO it skipped, say) shows nothing. Before
-solving it marks every pin the mapping could take instead -- unless that is most
-of the package, as a bare `IN` / `OUT` would be, in which case nothing is drawn
-rather than washing the whole chip.
+With a solution loaded the ring marks where the channels actually landed, so a channel the solver never placed (a GPIO it skipped, say) shows nothing. Before solving it marks every pin the mapping could take instead -- unless that is most of the package, as a bare `IN` / `OUT` would be, in which case nothing is drawn rather than washing the whole chip.
 
 ### Navigation
 
@@ -1426,9 +1275,7 @@ All columns except Name are sortable (click header to toggle ascending/descendin
 
 ### Solution Validity Badges
 
-Each row in the **project** solution list carries a small badge showing whether
-that saved solution still fits the **current** constraint text (recomputed as
-you edit the constraints, change MCU, or load a project):
+Each row in the **project** solution list carries a small badge showing whether that saved solution still fits the **current** constraint text (recomputed as you edit the constraints, change MCU, or load a project):
 
 | Badge | Meaning |
 |-------|---------|
@@ -1436,26 +1283,17 @@ you edit the constraints, change MCU, or load a project):
 | ● blue | **Valid, with extras** -- satisfies the current constraints, but also carries assignments for channels no longer present in the constraint text (harmless leftovers from an earlier version) |
 | ✕ red | **Invalid** -- a required channel is unassigned (e.g. a new/renamed port) or a constraint is now violated |
 
-Badges make it easy to see which stored solutions are still usable after editing
-the constraints. Solutions for a different MCU than the one loaded show no badge.
+Badges make it easy to see which stored solutions are still usable after editing the constraints. Solutions for a different MCU than the one loaded show no badge.
 
 ### Editing a Solution (Modify Mode)
 
-To hand-tune a solution's routing for your board -- optimizing for things the
-cost function can't see, such as connector placement -- select it and click
-**✎ Modify** in the package-viewer toolbar. This edits a copy; the live cost and
-its delta are shown next to the button. In modify mode:
+To hand-tune a solution's routing for your board -- optimizing for things the cost function can't see, such as connector placement -- select it and click **✎ Modify** in the package-viewer toolbar. This edits a copy; the live cost and its delta are shown next to the button. In modify mode:
 
-- **Click a pin** -- move its signal to another free pin, bring a signal here
-  from another pin, or place an unmapped IN/OUT signal.
-- **Click a port** in the Peripheral Summary -- swap all of its peripherals with
-  a compatible port (e.g. exchange two encoders).
-- **Click a peripheral** -- swap it with the same-type peripheral on another
-  port, or replace it with a compatible unused instance.
+- **Click a pin** -- move its signal to another free pin, bring a signal here from another pin, or place an unmapped IN/OUT signal.
+- **Click a port** in the Peripheral Summary -- swap all of its peripherals with a compatible port (e.g. exchange two encoders).
+- **Click a peripheral** -- swap it with the same-type peripheral on another port, or replace it with a compatible unused instance.
 
-Each option lists its **cost change** and highlights the pins it would move when
-you hover it. **Ctrl+Z** / **Ctrl+Shift+Z** undo/redo. **Save** adds the edited
-solution to the project; **Discard** exits without keeping changes.
+Each option lists its **cost change** and highlights the pins it would move when you hover it. **Ctrl+Z** / **Ctrl+Shift+Z** undo/redo. **Save** adds the edited solution to the project; **Discard** exits without keeping changes.
 
 ---
 
@@ -1465,18 +1303,11 @@ solution to the project; **Discard** exits without keeping changes.
 
 - **New** -- clear the editor and start fresh
 - **Save** -- save to the current project name
-- **Save As** -- prompt for a name. A **new** name creates a new project; entering an
-  **existing** name (e.g. the current project's own name) appends a new **version** to
-  that project rather than overwriting it.
+- **Save As** -- prompt for a name. A **new** name creates a new project; entering an **existing** name (e.g. the current project's own name) appends a new **version** to that project rather than overwriting it.
 - **Project dropdown** -- switch between saved projects
 - **Import a project** -- drag & drop a project `.json` (from Data Manager → Projects → **Export**) anywhere, or pick it with the **Import** button. You are asked for a name, defaulting to the one stored in the file; importing under an existing project's name appends its versions instead of overwriting, exactly like **Save As** with that name
 
-Each project keeps a history of versions (constraint text + MCU + saved solutions per
-version), so re-saving under the same name never loses earlier work. Projects store the
-constraint text, the referenced MCU, and any saved solutions in localStorage. When you open a project whose MCU isn't in local storage, the
-tool automatically fetches it from the configured
-[remote data source](#loading-mcu-data-remote-catalogue-optional) (if one is set)
-so the project opens without a manual re-import.
+Each project keeps a history of versions (constraint text + MCU + saved solutions per version), so re-saving under the same name never loses earlier work. Projects store the constraint text, the referenced MCU, and any saved solutions in localStorage. When you open a project whose MCU isn't in local storage, the tool automatically fetches it from the configured [remote data source](#loading-mcu-data-remote-catalogue-optional) (if one is set) so the project opens without a manual re-import.
 
 ### Data Manager
 
@@ -1486,8 +1317,7 @@ Access via the **Data** button. Shows:
 - **Projects** -- saved projects with load/delete actions
 - **Custom Export Functions** -- user-defined JavaScript export functions (create, edit, delete)
 - **Macro Library** -- edit shared macros available in all constraints (edit, reset to default)
-- **Common-error Lint Library** -- edit the swap-group library that powers the
-  editor's yellow-squiggle lint (see [Common-Error Lint](#common-error-lint))
+- **Common-error Lint Library** -- edit the swap-group library that powers the editor's yellow-squiggle lint (see [Common-Error Lint](#common-error-lint))
 
 ### Custom Export Functions
 
@@ -1542,7 +1372,8 @@ The constraints language was build around some personal ideas about embedded des
 
 ### Vendor lock-in (maybe later)
 
-Right now only cpu data for the STM32 lineup is available, but most of the code base is vendor agnostic.
+Right now only cpu data for the STM32 lineup is available, but most of the code base is vendor agnostic. 
+
 The [data format specification](https://github.com/crinq/mcu_data_generated/blob/master/format-spec.md) is available and the remote url is configurable. The format might change in the future to support new features or other vendors.
 
 ### Vendor specific quirks (working on some)

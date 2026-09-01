@@ -19,7 +19,7 @@ describe('cds restart regression', () => {
 
   it('terminates under enumeration pressure (benchmark params)', () => {
     const folderPath = join(__dirname, 'h755i');
-    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
+    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'));
     const mcu = parseMcuXml(readFileSync(join(folderPath, xmlFiles[0]), 'utf-8'));
     const dmaFiles = readdirSync(folderPath).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'));
     if (dmaFiles.length > 0) {

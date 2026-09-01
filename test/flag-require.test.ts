@@ -40,7 +40,7 @@ describe('per-pin flags from the catalogue', () => {
 
   it('CubeMX XML carries no flags', () => {
     const dir = join(__dirname, 'f405v');
-    const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.startsWith('DMA-'))!;
+    const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))!;
     const x = parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
     expect(x.logicalPins.every(p => p.flags === undefined)).toBe(true);
   });

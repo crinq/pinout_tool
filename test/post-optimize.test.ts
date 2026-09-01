@@ -15,7 +15,7 @@ const COST_WEIGHTS = new Map<string, number>([
 
 function loadCase(folder: string, name: string) {
   const dir = join(__dirname, folder);
-  const xml = readdirSync(dir).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'))[0];
+  const xml = readdirSync(dir).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))[0];
   const mcu = parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
   const dma = readdirSync(dir).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'))[0];
   if (dma) { const t = readFileSync(join(dir, dma), 'utf-8'); if (isDmaXml(t)) mcu.dma = parseDmaXml(t); }

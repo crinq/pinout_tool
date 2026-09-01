@@ -336,10 +336,9 @@
   line-height: 1.5;
 }
 
-.ce-help-body section {
-  margin-bottom: 16px;
-}
-
+/* The body is rendered from syntax-help.md, so sections are delimited by the
+   headings rather than wrapper elements — the top margin does the spacing the
+   old `section { margin-bottom }` did. */
 .ce-help-body h3 {
   font-size: 12px;
   font-weight: 700;
@@ -347,6 +346,11 @@
   letter-spacing: 0.5px;
   color: var(--accent);
   margin-bottom: 6px;
+  margin-top: 16px;
+}
+
+.ce-help-body h3:first-child {
+  margin-top: 0;
 }
 
 .ce-help-body p {
@@ -354,7 +358,7 @@
   color: var(--text-secondary);
 }
 
-.ce-help-code {
+.ce-help-body pre {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -395,6 +399,23 @@
   background: var(--bg-secondary);
   padding: 1px 4px;
   border-radius: 2px;
+}
+
+/* Fenced blocks render as <pre><code>; the chip styling above is for inline
+   spans only and would draw a second box inside the block. */
+.ce-help-body pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+.ce-help-body table th {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 /* Keyword doc tooltip (hover over a highlighted keyword / built-in). */

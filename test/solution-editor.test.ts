@@ -17,7 +17,7 @@ const WEIGHTS = new Map<string, number>([
 
 function loadCase(folder: string, name: string) {
   const dir = join(__dirname, folder);
-  const xml = readdirSync(dir).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'))[0];
+  const xml = readdirSync(dir).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))[0];
   const mcu = parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
   const dma = readdirSync(dir).filter(f => f.startsWith('DMA-') && f.endsWith('.xml'))[0];
   if (dma) { const t = readFileSync(join(dir, dma), 'utf-8'); if (isDmaXml(t)) mcu.dma = parseDmaXml(t); }
@@ -25,11 +25,22 @@ function loadCase(folder: string, name: string) {
   return { mcu, ast: ast! };
 }
 
+// One solve per case, not per test: nine tests below share ecat_complex and the
+// solve burns its whole budget every time. The solution is cloned on the way
+// out because the editor tests mutate it.
+const solutionCache = new Map<string, { mcu: Mcu; ast: any; sol: Solution }>();
+
 function firstSolution(folder: string, name: string, skipGpio = true): { mcu: Mcu; ast: any; sol: Solution } {
-  const { mcu, ast } = loadCase(folder, name);
-  const res = solveTwoPhase(ast, mcu, { maxGroups: 40, maxSolutionsPerGroup: 5, timeoutMs: 4000, costWeights: WEIGHTS, skipGpioMapping: skipGpio });
-  expect(res.solutions.length).toBeGreaterThan(0);
-  return { mcu, ast, sol: res.solutions[0] };
+  const key = `${folder}/${name}/${skipGpio}`;
+  let entry = solutionCache.get(key);
+  if (!entry) {
+    const { mcu, ast } = loadCase(folder, name);
+    const res = solveTwoPhase(ast, mcu, { maxGroups: 40, maxSolutionsPerGroup: 5, timeoutMs: 4000, costWeights: WEIGHTS, skipGpioMapping: skipGpio });
+    expect(res.solutions.length).toBeGreaterThan(0);
+    entry = { mcu, ast, sol: res.solutions[0] };
+    solutionCache.set(key, entry);
+  }
+  return { mcu: entry.mcu, ast: entry.ast, sol: structuredClone(entry.sol) };
 }
 
 /** Every active config-combo must keep cross-port pin exclusivity + single pin per (port,config). */

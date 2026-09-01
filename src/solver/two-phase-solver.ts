@@ -264,9 +264,15 @@ export function solveTwoPhase(
   }
 
   if (solutions.length === 0 && groups.length > 0) {
+    // Say which budget ran out. The escalation loop above can stop on the group
+    // cap with time still on the clock, and without this the result is a bare
+    // "no solutions" that looks like proven infeasibility rather than giving up.
+    const hitCap = groups.length >= cap;
     errors.push({
       type: 'warning',
-      message: `Phase 1 found ${groups.length} instance groups but Phase 2 found no valid pin assignments`,
+      message: hitCap
+        ? `Phase 1 reached its group limit (${cap}) and Phase 2 found no valid pin assignments among those groups — raise max_groups or try another solver`
+        : `Phase 1 found ${groups.length} instance groups but Phase 2 found no valid pin assignments`,
     });
   }
 

@@ -19,7 +19,7 @@ const DMA_SRC = `port P:
 /** g474 XML *without* attaching the local DMA modes file. */
 function xmlWithoutDma(): Mcu {
   const dir = join(__dirname, 'g474');
-  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.startsWith('DMA-'))!;
+  const xml = readdirSync(dir).find(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'))!;
   return parseMcuXml(readFileSync(join(dir, xml), 'utf-8'));
 }
 

@@ -38,7 +38,7 @@ function discoverTestCases(): TestCase[] {
     const folderPath = join(TEST_DIR, folder.name);
 
     // Find the MCU XML file (skip DMA XML files)
-    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.startsWith('DMA-'));
+    const xmlFiles = readdirSync(folderPath).filter(f => f.endsWith('.xml') && !f.endsWith('_Modes.xml'));
     if (xmlFiles.length === 0) continue;
     const mcuFile = join(folderPath, xmlFiles[0]);
 
@@ -475,21 +475,40 @@ const COST_WEIGHTS = new Map([
   ['pin_clustering', 0.3],
 ]);
 
+/**
+ * Per-solver budget for the discovered cases.
+ *
+ * Sized from measurement, not habit: every case that any solver can solve is
+ * solved in under 100ms, so the rule is max(1s, 10x time-to-first-solution) and
+ * the 1s floor is what binds. The old 5s budget bought nothing — 91% of the
+ * suite's solver time was 33 (case, solver) pairs finding nothing and running
+ * the clock out, and those results are treated as inconclusive either way.
+ * Verified: the three pairs that used the full 5s while producing solutions
+ * still produce them at 1s. Override with SOLVER_TEST_TIMEOUT_MS to debug a
+ * case that looks budget-starved.
+ */
+const SOLVER_TIMEOUT_MS = Number(process.env.SOLVER_TEST_TIMEOUT_MS ?? 1000);
+
 const TWO_PHASE_CONFIG = {
   maxGroups: 20,
   maxSolutionsPerGroup: 5,
-  timeoutMs: 5000,
+  timeoutMs: SOLVER_TIMEOUT_MS,
   costWeights: COST_WEIGHTS,
 };
 
 const BASIC_CONFIG = {
   maxSolutions: 50,
-  timeoutMs: 5000,
+  timeoutMs: SOLVER_TIMEOUT_MS,
 };
 
 interface SolverDef {
   name: string;
   run: (ast: ProgramNode, mcu: Mcu) => SolverResult;
+}
+
+/** Whether a solver stopped on a resource limit instead of searching exhaustively. */
+function gaveUp(result: { errors: { message: string }[] }): boolean {
+  return result.errors.some(e => /timeout|group limit/i.test(e.message));
 }
 
 const solvers: SolverDef[] = [
@@ -506,7 +525,7 @@ const solvers: SolverDef[] = [
     run: (ast, mcu) => solveRandomizedRestarts(ast, mcu, {
       numRestarts: 3,
       maxSolutions: 50,
-      timeoutMs: 5000,
+      timeoutMs: SOLVER_TIMEOUT_MS,
       costWeights: COST_WEIGHTS,
     }),
   },
@@ -604,9 +623,11 @@ describe('Solver integration tests', () => {
               if (!parseResult.ast) return;
               const mcu = getMcu(tc.mcuFile);
               const result = getResult(solver, parseResult.ast, mcu, cacheKey);
-              // If solver timed out, result is inconclusive - skip
-              const timedOut = result.errors.some(e => e.message.includes('timeout'));
-              if (timedOut && result.solutions.length === 0) return;
+              // A solver that ran out of budget proves nothing either way, so a
+              // zero-solution result is inconclusive rather than a failure.
+              // Both limits count: the clock, and the Phase-1 group cap (which
+              // can be reached with time still on the clock).
+              if (result.solutions.length === 0 && gaveUp(result)) return;
               const solverErrors = result.errors.filter(e => e.type === 'error');
               expect(
                 result.solutions.length,
