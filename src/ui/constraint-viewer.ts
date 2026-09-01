@@ -10,7 +10,6 @@ import type {
   ConfigDeclNode,
   MappingNode,
   RequireNode,
-  ConstraintExprNode,
   SignalExprNode,
   PinAnchor,
 } from '../parser/constraint-ast';
@@ -20,6 +19,7 @@ import type { Mcu, Assignment } from '../types';
 import { expandPatternToCandidates } from '../solver/pattern-matcher';
 import { buildPortColorMap } from './port-colors';
 import { escapeHtml } from '../utils';
+import { formatConstraintExpr } from '../parser/expr-format';
 
 /** Render a `@` clause (fixed pins, `!` exclusions, and/or a soft anchor) as badge text. */
 export function anchorBadgeText(fixedPins?: string[], anchor?: PinAnchor, excludedPins?: string[]): string {
@@ -324,7 +324,7 @@ export class ConstraintViewer implements Panel {
 
     const expr = document.createElement('span');
     expr.className = 'cv-require-expr';
-    expr.textContent = this.formatExpr(req.expression);
+    expr.textContent = formatConstraintExpr(req.expression);
     el.appendChild(expr);
 
     el.addEventListener('click', () => this.jumpToLine(req.loc.line));
@@ -342,28 +342,6 @@ export class ConstraintViewer implements Panel {
     ).join(' + ');
   }
 
-  private formatExpr(expr: ConstraintExprNode): string {
-    switch (expr.type) {
-      case 'function_call':
-        return `${expr.name}(${expr.args.map(a => this.formatExpr(a)).join(', ')})`;
-      case 'binary_expr':
-        return `${this.formatExpr(expr.left)} ${expr.operator} ${this.formatExpr(expr.right)}`;
-      case 'unary_expr':
-        return `!${this.formatExpr(expr.operand)}`;
-      case 'ident':
-        return expr.name;
-      case 'dot_access':
-        return `${expr.object}.${expr.property}`;
-      case 'string_literal':
-        return `"${expr.value}"`;
-      case 'number_literal':
-        return String(expr.value);
-      case 'boolean_literal':
-        return expr.value ? 'true' : 'false';
-      case 'pattern_literal':
-        return expr.text;
-    }
-  }
 
   // ====================
   // Interactions

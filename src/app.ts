@@ -274,7 +274,7 @@ export class App {
       this.currentSolution = solution;
       this.refreshEditControls();
 
-      // Switch MCU if the solution is from a different MCU (multi-MCU mode)
+      // Switch MCU if the solution is from a different MCU (multi-MCU mode).
       if (solution.mcuRef && (!this.currentMcu || this.currentMcu.refName !== solution.mcuRef)) {
         const cachedMcu = this.mcuCache.get(solution.mcuRef);
         if (cachedMcu) {
@@ -285,6 +285,14 @@ export class App {
             mcuInfo.textContent = `${cachedMcu.refName} | ${cachedMcu.package} | ${cachedMcu.cores.join(' + ')} @ ${cachedMcu.frequency}MHz | ${cachedMcu.flash}KB Flash | ${cachedMcu.ram}KB RAM`;
           }
           this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu: cachedMcu });
+        } else {
+          // The cache only holds MCUs fetched during a multi-MCU solve, so it is
+          // empty after a reload. Fall back to storage (then the remote source)
+          // and re-render once it lands, otherwise clicking a saved solution
+          // from another MCU did nothing at all.
+          void this.loadStoredMcu(solution.mcuRef).then(() => {
+            if (this.currentSolution === solution) this.renderSolutionToPanels(solution);
+          });
         }
       }
 
@@ -1862,9 +1870,12 @@ export class App {
       portColors: new Map(),
     });
 
-    // Load MCU if version references one
-    if (version.mcuRef && (!this.currentMcu || this.currentMcu.refName !== version.mcuRef)) {
-      this.loadStoredMcu(version.mcuRef);
+    // Load MCU if version references one. Older versions were saved without an
+    // mcuRef, so fall back to the one the stored solutions were solved for —
+    // without an MCU the validity badges cannot be computed at all.
+    const mcuRef = version.mcuRef || version.solutions?.find(s => s.mcuRef)?.mcuRef;
+    if (mcuRef && (!this.currentMcu || this.currentMcu.refName !== mcuRef)) {
+      this.loadStoredMcu(mcuRef);
     }
 
     // Restore solutions into the project list (not the solver list)
@@ -1878,6 +1889,9 @@ export class App {
     }
 
     this.refreshProjectList();
+    // Solutions are the third input to the badges (with the MCU and the AST);
+    // the other two have their own triggers, this covers "list ready last".
+    this.updateProjectSolutionValidity();
     // Delay clearing the flag to outlast the 300ms debounced parse triggered by setText()
     setTimeout(() => {
       this.loadingProject = false;

@@ -1,7 +1,7 @@
 import type { Panel } from './panel';
 import type { Solution } from '../types';
 import { escapeHtml } from '../utils';
-import type { SolutionStatus } from '../solver/solution-status';
+import type { SolutionVerdict } from '../solver/solution-status';
 
 type SortKey = 'id' | 'cost' | 'pins' | 'peripherals';
 type SortDir = 'asc' | 'desc';
@@ -22,19 +22,24 @@ export class ProjectSolutions implements Panel {
   private multiSelectionCallbacks: Array<(solutions: Solution[]) => void> = [];
   private focusCallbacks: Array<() => void> = [];
   /** Validity of each stored solution against the current constraints. */
-  private validity = new Map<Solution, SolutionStatus>();
+  private validity = new Map<Solution, SolutionVerdict>();
 
   /** Update per-solution validity indicators (see solution-status.ts). */
-  setValidity(map: Map<Solution, SolutionStatus>): void {
+  setValidity(map: Map<Solution, SolutionVerdict>): void {
     this.validity = map;
     this.render();
   }
 
   private statusCell(sol: Solution): string {
-    switch (this.validity.get(sol)) {
+    const verdict = this.validity.get(sol);
+    // Reasons go on their own lines under the headline, so the tooltip reads
+    // as "what" then "why".
+    const why = (headline: string): string =>
+      escapeHtml(verdict?.reasons.length ? `${headline}\n\n${verdict.reasons.join('\n')}` : headline);
+    switch (verdict?.status) {
       case 'valid': return `<span class="sv-icon sv-valid" title="Valid — satisfies all current constraints">✓</span>`;
-      case 'extra': return `<span class="sv-icon sv-extra" title="Valid, plus assignments not required by the current constraints">●</span>`;
-      case 'invalid': return `<span class="sv-icon sv-invalid" title="Invalid — does not satisfy the current constraints">✕</span>`;
+      case 'extra': return `<span class="sv-icon sv-extra" title="${why('Valid, plus assignments not required by the current constraints')}">●</span>`;
+      case 'invalid': return `<span class="sv-icon sv-invalid" title="${why('Invalid — does not satisfy the current constraints')}">✕</span>`;
       default: return '';
     }
   }

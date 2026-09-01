@@ -2377,6 +2377,57 @@ export function solveBacktrack(
 // Constraint Evaluation (checks ALL config combinations)
 // ============================================================
 
+/**
+ * Which require constraints an assignment set violates, for explaining a
+ * verdict. Deliberately separate from evaluateAllConstraints: that one is on
+ * the solver's hot path and bails at the first failure, while this walks
+ * everything to collect up to `limit` failures. Only ever called for a
+ * solution already known to be invalid.
+ */
+export function collectConstraintFailures(
+  assignments: VariableAssignment[],
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  dmaData?: DmaData,
+  mcuInfo?: EvalMcuInfo,
+  limit = 3,
+): { portName: string; configName: string; require: RequireNode }[] {
+  const out: { portName: string; configName: string; require: RequireNode }[] = [];
+
+  const byPortConfig = new Map<string, Map<string, Map<string, VariableAssignment[]>>>();
+  for (const va of assignments) {
+    const { portName, configName, channelName } = va.variable;
+    let portMap = byPortConfig.get(portName);
+    if (!portMap) { portMap = new Map(); byPortConfig.set(portName, portMap); }
+    let configMap = portMap.get(configName);
+    if (!configMap) { configMap = new Map(); portMap.set(configName, configMap); }
+    const list = configMap.get(channelName);
+    if (list) list.push(va); else configMap.set(channelName, [va]);
+  }
+
+  const seen = new Set<RequireNode>();
+  for (const combo of configCombinations) {
+    const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
+    for (const [portName, configName] of combo) {
+      const channels = byPortConfig.get(portName)?.get(configName);
+      if (channels) channelInfo.set(portName, channels);
+    }
+    for (const [portName, configName] of combo) {
+      const config = ports.get(portName)?.configs.find(c => c.name === configName);
+      if (!config) continue;
+      for (const req of config.requires) {
+        if (req.optional || seen.has(req)) continue;
+        if (isOptionalRequireVacuous(req.expression, portName, channelInfo)) continue;
+        if (evaluateExpr(req.expression, portName, channelInfo, dmaData, mcuInfo)) continue;
+        seen.add(req);
+        out.push({ portName, configName, require: req });
+        if (out.length >= limit) return out;
+      }
+    }
+  }
+  return out;
+}
+
 export function evaluateAllConstraints(
   assignments: VariableAssignment[],
   configCombinations: Map<string, string>[],

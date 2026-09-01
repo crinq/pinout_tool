@@ -29,7 +29,7 @@ describe('classifyProjectSolutions', () => {
     const sol = res.solutions[0];
     sol.mcuRef = mcu.refName;
     const map = classifyProjectSolutions([sol], ast, mcu, true);
-    expect(map.get(sol)).toBe('valid');
+    expect(map.get(sol)?.status).toBe('valid');
   });
 
   it('marks a solution invalid when a new required port is added', () => {
@@ -40,7 +40,7 @@ describe('classifyProjectSolutions', () => {
     // Add a brand-new required port the stored solution can't cover.
     const extended = base + `\nport EXTRA:\n  channel TX\n  config "U":\n    TX = USART*_TX\n`;
     const map = classifyProjectSolutions([sol], parse(extended), mcu, true);
-    expect(map.get(sol)).toBe('invalid');
+    expect(map.get(sol)?.status).toBe('invalid');
   });
 
   it('marks a solution "extra" when a port is removed from the constraints', () => {
@@ -54,8 +54,8 @@ describe('classifyProjectSolutions', () => {
     const trimmed = lastPort > 0 ? base.slice(0, lastPort) : base;
     const map = classifyProjectSolutions([sol], parse(trimmed), mcu, true);
     // The trimmed constraints must still be solvable for a meaningful verdict.
-    expect(['extra', 'valid']).toContain(map.get(sol));
-    if (base !== trimmed) expect(map.get(sol)).toBe('extra');
+    expect(['extra', 'valid']).toContain(map.get(sol)?.status);
+    if (base !== trimmed) expect(map.get(sol)?.status).toBe('extra');
   });
 
   it('omits solutions from a different MCU', () => {

@@ -1294,6 +1294,20 @@ Each row in the **project** solution list carries a small badge showing whether 
 
 Badges make it easy to see which stored solutions are still usable after editing the constraints. Solutions for a different MCU than the one loaded show no badge.
 
+**Why is it invalid?** Hover the badge -- the tooltip lists what actually fails,
+with the source line, for example:
+
+```
+line 9: channel DIO = *_SWDIO not satisfied
+line 12: require same_instance(TX, RX) not satisfied
+line 14: channel SCK cannot use PB3 (SPI1_SCK) — already taken or reserved
+```
+
+Only the first few are spelled out (the rest are summarised as `…and N more`),
+since one edit often invalidates many channels at once and the first few are
+enough to tell you what happened. A `●` badge lists the leftover assignments
+the same way.
+
 ### Editing a Solution (Modify Mode)
 
 To hand-tune a solution's routing for your board -- optimizing for things the cost function can't see, such as connector placement -- select it and click **✎ Modify** in the package-viewer toolbar. This edits a copy; the live cost and its delta are shown next to the button. In modify mode:
