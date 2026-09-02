@@ -280,6 +280,12 @@ function buildSignalFromName(
   // so the signal joins its peripherals[] entry instead of spawning a
   // synthetic duplicate instance. The list is sorted longest-first by the
   // caller so USB_OTG_HS wins over a hypothetical USB_OTG.
+  //
+  // signalFunction stays on the collapsed-name convention (everything after
+  // the FIRST underscore, e.g. "OTGFSDP") — constraint patterns like
+  // `USB*_OTGFSDP` match instancePart × signalFunction, so a shortened
+  // function ("DP") would break every existing pattern and the stdlib
+  // usb_port macro.
   if (multiTokenInstances) {
     for (const inst of multiTokenInstances) {
       if (rawName.startsWith(inst + '_')) {
@@ -288,7 +294,7 @@ function buildSignalFromName(
           peripheralInstance: inst,
           peripheralType: typeFromInstance(inst, '').type,
           instanceNumber: instanceNumberOf(inst),
-          signalFunction: rawName.substring(inst.length + 1).replace(/_/g, ''),
+          signalFunction: collapsed.substring(collapsed.indexOf('_') + 1),
           ioModes,
         };
       }

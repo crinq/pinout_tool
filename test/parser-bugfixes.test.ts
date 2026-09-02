@@ -2,7 +2,8 @@
 // (ai_docs/report.md #13–#21). One describe block per bug.
 
 import { describe, it, expect } from 'vitest';
-import { parseConstraints } from '../src/parser/constraint-parser';
+import { parseConstraints, parseSearchPattern } from '../src/parser/constraint-parser';
+import { expandPatternToCandidates } from '../src/solver/pattern-matcher';
 import { globToRegex } from '../src/mcu-matcher';
 import { parseMcuJsonDoc, type McuJsonDocument } from '../src/parser/mcu-json-parser';
 import type { PortDeclNode } from '../src/parser/constraint-ast';
@@ -114,6 +115,7 @@ describe('#18 multi-token peripheral instances', () => {
     gpios: [
       { name: 'PA3', alternate_functions: { '10': 'USB_OTG_HS_ULPI_STP' } },
       { name: 'PA5', alternate_functions: { '5': 'SPI1_I2S_CK' } },
+      { name: 'PA11', alternate_functions: { '10': 'USB_OTG_FS_DP' } },
     ],
     dma_controllers: [{
       name: 'DMA1',
@@ -124,6 +126,7 @@ describe('#18 multi-token peripheral instances', () => {
       pins: [
         { position: '1', names: ['PA3'], type: 'io' },
         { position: '2', names: ['PA5'], type: 'io' },
+        { position: '3', names: ['PA11'], type: 'io' },
       ],
     }],
   };
@@ -134,6 +137,19 @@ describe('#18 multi-token peripheral instances', () => {
     const sig = pa3.signals.find(s => s.name.startsWith('USB'))!;
     expect(sig.peripheralInstance).toBe('USB_OTG_HS');
     expect(sig.name).toBe('USB_OTGHSULPISTP');   // collapsed name unchanged
+  });
+
+  it('keeps signalFunction on the collapsed convention so patterns still match', () => {
+    // Regression: `channel DP = USB*_OTGFSDP` (stdlib usb_port style) broke
+    // when signalFunction was shortened to "DP" — patterns match
+    // instancePart × signalFunction, both on the collapsed convention.
+    const pa11 = mcu.logicalPins.find(l => l.name === 'PA11')!;
+    const sig = pa11.signals.find(s => s.name === 'USB_OTGFSDP')!;
+    expect(sig.signalFunction).toBe('OTGFSDP');
+    expect(sig.peripheralInstance).toBe('USB_OTG_FS');
+    const pattern = parseSearchPattern('USB*_OTGFSDP')!;
+    const candidates = expandPatternToCandidates(pattern, mcu);
+    expect(candidates.map(c => c.pin.name)).toEqual(['PA11']);
   });
 
   it('does not synthesize a duplicate truncated instance', () => {
