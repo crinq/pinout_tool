@@ -135,8 +135,22 @@ export function applySettingsOverrides(
       if (!preset) {
         errors.push(`Line ${block.loc.line}: unknown settings preset "${block.preset}" (have: ${Object.keys(SETTINGS_PRESETS).join(', ')})`);
       } else {
+        // A preset resets only the SOLVER settings to factory + preset values.
+        // App/UI settings (debug overlay, viewer zoom, URL encoding, …) are
+        // not the constraints file's business and must survive untouched.
         out = {
-          ...DEFAULT_SETTINGS, ...preset,
+          ...out,
+          maxSolutions: DEFAULT_SETTINGS.maxSolutions,
+          solverTimeoutMs: DEFAULT_SETTINGS.solverTimeoutMs,
+          dynamicTimeoutMultiplier: DEFAULT_SETTINGS.dynamicTimeoutMultiplier,
+          solverTypes: [...DEFAULT_SETTINGS.solverTypes],
+          maxGroups: DEFAULT_SETTINGS.maxGroups,
+          maxSolutionsPerGroup: DEFAULT_SETTINGS.maxSolutionsPerGroup,
+          numRestarts: DEFAULT_SETTINGS.numRestarts,
+          skipGpioMapping: DEFAULT_SETTINGS.skipGpioMapping,
+          postOptimize: DEFAULT_SETTINGS.postOptimize,
+          squaredCosts: DEFAULT_SETTINGS.squaredCosts,
+          ...preset,
           costWeights: { ...DEFAULT_SETTINGS.costWeights, ...preset.costWeights },
         };
       }

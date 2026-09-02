@@ -474,7 +474,7 @@ settings from "default":     # factory defaults, then override
 settings from "complex":     # tuned for hard problems; body is optional
 ```
 
-Available presets are `"default"` (the factory configuration) and `"complex"` (5 s timeout, a heavier solver set including conflict-directed/cegar/lns-repair, 400 restarts). Edit them in `src/settings.ts` → `SETTINGS_PRESETS`.
+Available presets are `"default"` (the factory configuration) and `"complex"` (5 s timeout, a heavier solver set including conflict-directed/cegar/lns-repair, 400 restarts). Edit them in `src/settings.ts` → `SETTINGS_PRESETS`. Presets and `settings:` keys only affect **solver** settings — app/UI settings (debug overlay, viewer zoom, URL encoding, …) are never touched by a constraints file.
 
 Several blocks may appear; later ones fold onto earlier ones. Unknown keys, unknown presets and wrong value types are reported in the status bar and otherwise ignored.
 

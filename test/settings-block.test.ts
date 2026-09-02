@@ -192,3 +192,32 @@ port P:
     expect(after).toContain('port P:');
   });
 });
+
+describe('presets must not clobber app/UI settings', () => {
+  it('settings from "complex" keeps debug overlay, zoom and URL encoding', () => {
+    const base = {
+      ...DEFAULT_SETTINGS,
+      costWeights: { ...DEFAULT_SETTINGS.costWeights },
+      solverDebugOverlay: true,
+      minZoom: 0.25,
+      maxZoom: 4,
+      mouseZoomGain: 0.05,
+      touchGestures: false,
+      dataInspector: true,
+      urlEncoding: 'full' as const,
+    };
+    const r = applySettingsOverrides(parseOk('settings from "complex":\n'), base, COST_IDS);
+    expect(r.errors).toEqual([]);
+    // solver settings come from the preset / factory defaults…
+    expect(r.settings.solverTimeoutMs).toBe(SETTINGS_PRESETS.complex.solverTimeoutMs);
+    expect(r.settings.numRestarts).toBe(SETTINGS_PRESETS.complex.numRestarts);
+    // …but app/UI settings survive untouched.
+    expect(r.settings.solverDebugOverlay).toBe(true);
+    expect(r.settings.minZoom).toBe(0.25);
+    expect(r.settings.maxZoom).toBe(4);
+    expect(r.settings.mouseZoomGain).toBe(0.05);
+    expect(r.settings.touchGestures).toBe(false);
+    expect(r.settings.dataInspector).toBe(true);
+    expect(r.settings.urlEncoding).toBe('full');
+  });
+});
