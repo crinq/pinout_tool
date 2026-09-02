@@ -70,108 +70,126 @@ export function getSolverById(id: string): Solver | undefined {
 // Register built-in solvers
 registerSolver({
   id: 'two-phase',
+  label: 'Two-Phase',
   name: 'Two-Phase (Instance + Pin)',
   description: 'First assigns peripheral instances, then solves pin mappings per group',
 });
 
 registerSolver({
   id: 'backtracking',
+  label: 'Backtracking',
   name: 'Backtracking CSP',
   description: 'Constraint satisfaction with MRV heuristic and eager pruning',
 });
 
 registerSolver({
   id: 'randomized-restarts',
+  label: 'Randomized',
   name: 'Randomized Restarts',
   description: 'Runs backtracking N times with shuffled candidate orderings for diverse solutions',
 });
 
 registerSolver({
   id: 'cost-guided',
+  label: 'Cost-Guided',
   name: 'Cost-Guided',
   description: 'Backtracking with candidates sorted by estimated cost (proximity, spread, debug penalty)',
 });
 
 registerSolver({
   id: 'diverse-instances',
+  label: 'Diverse',
   name: 'Diverse Instances (Two-Phase)',
   description: 'Two-phase solver with multi-round shuffled instance exploration for diverse groups',
 });
 
 registerSolver({
   id: 'ac3',
+  label: 'AC3',
   name: 'AC-3 Forward Checking',
   description: 'Backtracking with forward checking - propagates pin/instance exclusivity to prune domains',
 });
 
 registerSolver({
   id: 'dynamic-mrv',
+  label: 'Dynamic-MRV',
   name: 'Dynamic MRV',
   description: 'Dynamically picks the most constrained variable at each step with forward checking',
 });
 
 registerSolver({
   id: 'priority-backtracking',
+  label: 'Priority-BT',
   name: 'Priority Backtracking',
   description: 'Backtracking that maps constrained peripherals first (fewer available pins = higher priority)',
 });
 
 registerSolver({
   id: 'priority-two-phase',
+  label: 'Priority-TP',
   name: 'Priority Two-Phase',
   description: 'Two-phase solver that maps constrained peripherals first in both phases',
 });
 
 registerSolver({
   id: 'priority-diverse',
+  label: 'Priority-Diverse',
   name: 'Priority Diverse',
   description: 'Priority ordering with multi-round shuffled exploration for diverse groups',
 });
 
 registerSolver({
   id: 'priority-group',
+  label: 'Priority-Group',
   name: 'Priority Group',
   description: 'Diverse instance groups with instance permutation and priority-ordered pin assignment',
 });
 
 registerSolver({
   id: 'mrv-group',
+  label: 'MRV-Group',
   name: 'MRV Group',
   description: 'Diverse instance groups with instance permutation and dynamic MRV pin assignment',
 });
 
 registerSolver({
   id: 'ratio-mrv-group',
+  label: 'Ratio-MRV',
   name: 'Ratio MRV Group',
   description: 'MRV Group with normalized priority (candidates per signal ratio instead of raw pin count)',
 });
 
 registerSolver({
   id: 'hybrid',
+  label: 'Hybrid',
   name: 'Hybrid (Single-Phase + Two-Phase)',
   description: 'Runs priority-backtracking, extracts instance groups from solutions, permutes symmetric ports, then runs Phase 2',
 });
 
 registerSolver({
   id: 'conflict-directed',
+  label: 'Conflict-Directed',
   name: 'Conflict-Directed (CBJ + dom/wdeg)',
   description: 'Backjumps to conflict causes, learns hard variables via weighted-degree ordering, Luby restarts with phase saving',
 });
 
 registerSolver({
   id: 'cegar',
+  label: 'CEGAR',
   name: 'CEGAR Instance-Refinement',
   description: 'Closed-loop two-phase: matching oracle kills unroutable groups instantly, pin-level failures become instance nogoods',
 });
 
 registerSolver({
   id: 'lns-repair',
+  label: 'LNS-Repair',
   name: 'LNS Repair (Min-Conflicts)',
   description: 'Repairs complete assignments instead of backtracking; destroy/repair moves double as a structural diversity engine',
 });
 
 registerSolver({
   id: 'adaptive',
+  label: 'Adaptive',
   name: 'Adaptive Portfolio',
   description: 'Races LNS and conflict-directed for a fast first solution, then feeds instance groups into CEGAR for diversity',
 });

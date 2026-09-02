@@ -1,15 +1,14 @@
 import { LayoutManager } from './core/layout-manager';
 import { HorizontalSplitter, VerticalSplitter } from './core/splitter';
 import { PackageViewer } from './ui/package-viewer';
-import { ConstraintEditor, highlightConstraintCode } from './ui/constraint-editor';
+import { ConstraintEditor } from './ui/constraint-editor';
 import { buildPortColorMap } from './ui/port-colors';
-import { createCodeEditor } from './ui/code-editor';
 import { SolverSolutions } from './ui/solution-table';
 import { ProjectSolutions } from './ui/project-solutions';
 import { compareSolutions, solutionCompareColor } from './solution-compare';
 import { PeripheralSummary } from './ui/peripheral-summary';
 import { parseMcuXml, validateMcu } from './parser/mcu-xml-parser';
-import { getDataSource, entryPackageNames, entryVariantNames, type IndexDeviceEntry } from './datasource';
+import { getDataSource, entryPackageNames, entryVariantNames } from './datasource';
 import { parseDmaXml, isDmaXml, getDmaXmlVersion } from './parser/dma-xml-parser';
 import { isIocFile, parseIocFile } from './parser/ioc-parser';
 import { getAllCostFunctions, setSquaredCosts } from './solver/cost-functions';
@@ -22,12 +21,11 @@ import { classifyProjectSolutions } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
-import { serializeSolution, deserializeSolution, migrateProjectData, isExportedProject, mergeImportedVersions, syncDefaults, applyDefaultUpdate, markSyncedWithDefault, type PendingUpdate, loadCustomExports, saveCustomExport, deleteCustomExport, saveMacroLibrary, loadCommonErrorsLibrary, saveCommonErrorsLibrary, savePeripheralLibrary } from './storage';
+import { serializeSolution, deserializeSolution, migrateProjectData, isExportedProject, mergeImportedVersions, syncDefaults, type PendingUpdate, loadCommonErrorsLibrary, saveCommonErrorsLibrary } from './storage';
 import { DEFAULT_COMMON_ERRORS_LIBRARY } from './parser/lint-common-errors';
 import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
-import type { CustomExportFunction } from './types';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { fromWire, type WireSolverResult } from './solver/solution-transfer';
 import { runPreSolveChecks, constraintsNeedDma } from './solver/solver';
@@ -37,13 +35,13 @@ import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport 
 import { filterStoredMcus, extractMcuFilters, matchesPatterns, matchesMcuFilters, writeMcuMeta, type McuFilters } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
-import { seedMacroLibrary, getStdlibSource, primeStdlibSource, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
-import { seedPeripheralLibrary, getPeripheralSource, primePeripheralSource, DEFAULT_PERIPHERAL_LIBRARY } from './parser/peripheral-lib';
+import { seedMacroLibrary, primeStdlibSource } from './parser/stdlib-macros';
+import { seedPeripheralLibrary, primePeripheralSource } from './parser/peripheral-lib';
 
 import { escapeHtml as escHtml, createModal, downloadBlob } from './utils';
 import { PARSE_DEBOUNCE_MS } from './ui/constraint-editor';
-import { highlightJs } from './ui/highlight-js';
 import { getTutorialSteps } from './ui/tutorial-steps';
+import { DataManager, type DataManagerHost } from './ui/data-manager';
 
 
 /** Blank result used to clear the solver panel on project switch / new. */
@@ -69,11 +67,11 @@ interface UrlState {
   sol?: SerializedSolution;
 }
 
-export class App {
+export class App implements DataManagerHost {
   private layout!: LayoutManager;
   private packageViewer!: PackageViewer;
-  private constraintEditor!: ConstraintEditor;
-  private solverSolutions!: SolverSolutions;
+  constraintEditor!: ConstraintEditor;
+  solverSolutions!: SolverSolutions;
   private projectSolutions!: ProjectSolutions;
   private peripheralSummary!: PeripheralSummary;
   currentMcu: Mcu | null = null;
@@ -100,7 +98,7 @@ export class App {
   private editor: SolutionEditor | null = null;
   private editMenu: HTMLElement | null = null;
   private currentSolution: Solution | null = null;
-  private currentProjectName: string | null = null;
+  currentProjectName: string | null = null;
   /** Cache of parsed MCU objects for multi-MCU solving */
   private mcuCache = new Map<string, Mcu>();
   /** MCU refNames involved in the current solver result (for multi-MCU mode) */
@@ -119,6 +117,8 @@ export class App {
    *  must not clobber a newer MCU selection. */
   private mcuLoadSeq = 0;
   private projectSelect!: HTMLSelectElement;
+  /** Data Manager modal — talks back to the app through the host interface. */
+  private dataManager = new DataManager(this);
 
   init(): void {
     const appEl = document.getElementById('app');
@@ -1079,7 +1079,7 @@ export class App {
     header.querySelector('#btn-docs')!.addEventListener('click', () => this.showDocs());
 
     // Data manager button
-    header.querySelector('#btn-data-manager')!.addEventListener('click', () => this.showDataManager());
+    header.querySelector('#btn-data-manager')!.addEventListener('click', () => this.dataManager.show());
 
     // Settings button
     header.querySelector('#btn-settings')!.addEventListener('click', () => this.showSettingsModal());
@@ -1247,7 +1247,7 @@ export class App {
    * Common post-parse hook: store in cache, update header, broadcast,
    * enable solve. Both XML drag-drop and remote JSON fetch route here.
    */
-  private activateLoadedMcu(mcu: Mcu): void {
+  activateLoadedMcu(mcu: Mcu): void {
     // A synchronous commit outranks any MCU load still in flight.
     this.mcuLoadSeq++;
     this.currentMcu = mcu;
@@ -1263,7 +1263,7 @@ export class App {
     this.updateProjectSolutionValidity();
   }
 
-  private async reimportAllMcus(): Promise<void> {
+  async reimportAllMcus(): Promise<void> {
     let updated = 0;
     let failed = 0;
     // MCU XMLs live in the kv store (IDB) — the localStorage originals were
@@ -1490,12 +1490,12 @@ export class App {
     this.showStatus('New project', 'info');
   }
 
-  private async listProjectNames(): Promise<string[]> {
+  async listProjectNames(): Promise<string[]> {
     const keys = await getKv().keysWithPrefix('project:');
     return keys.map(k => k.substring('project:'.length)).sort();
   }
 
-  private async listProjects(): Promise<{ name: string; size: number; tags: string[]; versionCount: number }[]> {
+  async listProjects(): Promise<{ name: string; size: number; tags: string[]; versionCount: number }[]> {
     const names = await this.listProjectNames();
     return Promise.all(names.map(async name => {
       const raw = await getKv().get(`project:${name}`);
@@ -1637,7 +1637,7 @@ export class App {
     await this.applyProjectVersion(name, latestVersion);
   }
 
-  private async loadProjectVersion(name: string, versionId: number): Promise<void> {
+  async loadProjectVersion(name: string, versionId: number): Promise<void> {
     const projectData = await this.loadProjectData(name);
     if (!projectData) return;
     const version = projectData.versions.find(v => v.id === versionId);
@@ -2024,7 +2024,7 @@ export class App {
   }
 
   /** Load + migrate a stored project; null when missing or corrupt. */
-  private async loadProjectData(name: string): Promise<ProjectData | null> {
+  async loadProjectData(name: string): Promise<ProjectData | null> {
     try {
       const raw = await getKv().get(`project:${name}`);
       if (!raw) return null;
@@ -2397,7 +2397,7 @@ export class App {
     });
   }
 
-  private async loadStoredMcu(refName: string): Promise<void> {
+  async loadStoredMcu(refName: string): Promise<void> {
     const seq = ++this.mcuLoadSeq;
     const xml = await getKv().get(`mcu-xml:${refName}`);
     if (!xml) {
@@ -2466,7 +2466,7 @@ export class App {
     }
   }
 
-  private async listStoredMcus(): Promise<{ refName: string; size: number; tags: string[] }[]> {
+  async listStoredMcus(): Promise<{ refName: string; size: number; tags: string[] }[]> {
     const kv = getKv();
     const xmlKeys = await kv.keysWithPrefix('mcu-xml:');
     return Promise.all(xmlKeys.map(async key => {
@@ -2483,14 +2483,14 @@ export class App {
   }
 
   /** Bundled defaults the user has customised and that have a newer revision. */
-  private pendingUpdates: PendingUpdate[] = [];
+  pendingUpdates: PendingUpdate[] = [];
 
   /**
    * Sync bundled libraries / export functions into storage and mark the Data
    * button when something needs a decision. Untouched items update silently;
    * only customised ones surface here.
    */
-  private async refreshDefaultUpdates(): Promise<void> {
+  async refreshDefaultUpdates(): Promise<void> {
     try {
       this.pendingUpdates = await syncDefaults();
     } catch {
@@ -2507,921 +2507,8 @@ export class App {
   }
 
   /** `Update` button markup for a library section, or '' when it is current. */
-  private updateButton(id: string): string {
-    const p = this.pendingUpdates.find(u => u.id === id);
-    return p ? `<button class="btn btn-small btn-update" data-action="update-default" data-id="${id}">Update</button>` : '';
-  }
 
-  private showDataManager(): void {
-    const result = createModal({ toggle: '.settings-overlay', modalClass: 'settings-modal dm-modal' });
-    if (!result) return;
-    const { modal, close } = result;
-
-    const renderContent = async (): Promise<void> => {
-      const storedMcus = await this.listStoredMcus();
-      const projects = await this.listProjects();
-      const customExports = await loadCustomExports();
-
-      // Storage usage from IDB (gigabytes-scale) replaces the old
-      // ~5 MB localStorage budget. The estimate is best-effort.
-      const usage = await getKv().estimate();
-      const usedKB = usage ? (usage.usedBytes / 1024).toFixed(0) : '?';
-      const limitKB = usage && usage.quotaBytes > 0 ? (usage.quotaBytes / 1024).toFixed(0) : '?';
-
-      const hasMcu = this.currentMcu !== null;
-      const hasDma = this.currentMcu?.dma !== undefined;
-      const parseResult = this.constraintEditor.getParseResult();
-      const hasAst = parseResult?.ast !== null && parseResult?.ast !== undefined;
-      const solverSolutionCount = this.solverSolutions.getSolverResult()?.solutions.length ?? 0;
-
-      modal.innerHTML = `
-        <div class="settings-header">
-          <strong>Data Manager</strong>
-          <span class="dm-storage-info">${usedKB}KB / ${limitKB}KB</span>
-          <button class="btn btn-small settings-close">Close</button>
-        </div>
-        <div class="settings-body">
-          <section class="settings-section">
-            <h3>Current Session</h3>
-            <div class="dm-list">
-              <div class="dm-row">
-                <span class="dm-name">MCU: ${hasMcu ? this.currentMcu!.refName : '(none)'}</span>
-                <button class="btn btn-small" data-action="export-current-mcu" ${hasMcu ? '' : 'disabled'}>Export MCU</button>
-                <button class="btn btn-small" data-action="export-current-dma" ${hasDma ? '' : 'disabled'}>Export DMA</button>
-                <button class="btn btn-small" data-action="export-current-ast" ${hasAst ? '' : 'disabled'}>Export AST</button>
-              </div>
-              <div class="dm-row">
-                <span class="dm-name">Solver solutions: ${solverSolutionCount}</span>
-                <button class="btn btn-small" data-action="export-current-solutions" ${solverSolutionCount > 0 ? '' : 'disabled'}>Export Solutions</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Remote Data Source</h3>
-            <p class="settings-hint">Optional. JSON catalogue served over HTTP (e.g. a GitHub Pages / raw URL pointing at the <code>data/</code> directory of an mcu_data export). Local <code>file://</code> paths work for development.</p>
-            <div class="dm-row" style="gap:6px">
-              <input id="dm-data-url" type="text" placeholder="https://example.com/path/to/data" value="${(getDataSource().baseUrl() ?? '').replace(/"/g, '&quot;')}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
-              <button class="btn btn-small" data-action="save-data-url">Save</button>
-              <button class="btn btn-small" data-action="clear-data-url">Clear</button>
-              <button class="btn btn-small" data-action="browse-mcu" title="Search the remote catalogue and load an MCU by name" ${getDataSource().baseUrl() ? '' : 'disabled'}>Browse&hellip;</button>
-            </div>
-            <p class="settings-hint" style="margin-top:6px">${(() => {
-              const s = getDataSource().stats();
-              const url = getDataSource().baseUrl();
-              if (!url) return 'No URL configured.';
-              return `Index ${s.hasIndex ? 'loaded' : 'not loaded yet'} &middot; cache ${s.entries} dies / ${(s.bytes / 1024).toFixed(1)} KB`;
-            })()}</p>
-          </section>
-
-          <section class="settings-section">
-            <h3>Cached MCUs <span class="settings-hint" style="font-weight:normal;font-size:11px;">(in-memory · cleared on reload)</span></h3>
-            ${(() => {
-              const cached = getDataSource().listCached();
-              if (cached.length === 0) return '<p class="settings-hint">No remote MCUs fetched yet. Use Browse… or run a solve with an <code>mcu:</code> filter.</p>';
-              const totalKB = cached.reduce((s, c) => s + c.bytes, 0) / 1024;
-              const variantCount = cached.reduce((s, c) => s + c.mcus.length, 0);
-              const rows: string[] = [];
-              for (const { die, mcus, bytes } of cached) {
-                // Each die may expand to multiple package variants; render
-                // one row per variant so the layout matches Stored MCUs.
-                // Distribute the die's byte cost evenly across variants for
-                // a rough per-row size hint.
-                const perVariantBytes = Math.round(bytes / Math.max(1, mcus.length));
-                for (const mcu of mcus) {
-                  const tags: string[] = ['REMOTE', 'PIN'];
-                  if (mcu.dma) tags.push('DMA');
-                  if (mcu.package) tags.push(mcu.package);
-                  rows.push(`
-                    <div class="dm-row" data-cached="${escHtml(mcu.refName)}">
-                      <span class="dm-name">${escHtml(mcu.refName)}</span>
-                      <span class="dm-tags">${tags.map(t => `<span class="dm-tag">${escHtml(t)}</span>`).join('')}</span>
-                      <span class="dm-size">${(perVariantBytes / 1024).toFixed(1)}KB</span>
-                      <button class="btn btn-small dm-load" data-action="load-cached" data-name="${escHtml(mcu.refName)}">Load</button>
-                      <button class="btn btn-small dm-delete" data-action="evict-cached" data-die="${escHtml(die)}">Discard</button>
-                    </div>
-                  `);
-                }
-              }
-              return `
-                <p class="settings-hint">${variantCount} variant${variantCount === 1 ? '' : 's'} from ${cached.length} die${cached.length === 1 ? '' : 's'} · ${totalKB.toFixed(1)}KB total</p>
-                <div class="dm-list">${rows.join('')}</div>
-              `;
-            })()}
-          </section>
-
-          <section class="settings-section">
-            <h3>Stored MCUs</h3>
-            ${storedMcus.length === 0 ? '<p class="settings-hint">No MCUs stored. Import XML files to store them.</p>' : `<div style="margin-bottom:6px"><button class="btn btn-small" data-action="reimport-all">Re-import All</button></div>`}
-            <div class="dm-list">
-              ${storedMcus.map(m => `
-                <div class="dm-row" data-mcu="${m.refName}">
-                  <span class="dm-name">${m.refName}</span>
-                  <span class="dm-tags">${m.tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}</span>
-                  <span class="dm-size">${(m.size / 1024).toFixed(0)}KB</span>
-                  <button class="btn btn-small dm-load" data-action="load-mcu" data-name="${m.refName}">Load</button>
-                  <button class="btn btn-small" data-action="export-mcu" data-name="${m.refName}">Export</button>
-                  <button class="btn btn-small dm-delete" data-action="delete-mcu" data-name="${m.refName}">Delete</button>
-                </div>
-              `).join('')}
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Projects</h3>
-            ${projects.length === 0 ? '<p class="settings-hint">No projects saved. Use "Save As" to create one.</p>' : ''}
-            <div class="dm-list">
-              ${projects.map((p, idx) => `
-                <div class="dm-row" data-project="${escHtml(p.name)}">
-                  <span class="dm-expand-btn" data-action="toggle-versions" data-name="${escHtml(p.name)}" data-idx="${idx}">${p.versionCount > 0 ? '&#9654;' : ''}</span>
-                  <span class="dm-name">${escHtml(p.name)}${p.name === this.currentProjectName ? ' (active)' : ''}</span>
-                  <span class="dm-tags">${p.tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}${p.versionCount > 0 ? `<span class="dm-tag">v${p.versionCount}</span>` : ''}</span>
-                  <span class="dm-size">${(p.size / 1024).toFixed(1)}KB</span>
-                  <button class="btn btn-small dm-load" data-action="load-project" data-name="${escHtml(p.name)}">Load</button>
-                  <button class="btn btn-small" data-action="export-project" data-name="${escHtml(p.name)}">Export</button>
-                  <button class="btn btn-small dm-delete" data-action="delete-project" data-name="${escHtml(p.name)}">Delete</button>
-                </div>
-                <div class="dm-version-list" data-version-list="${idx}" style="display:none"></div>
-              `).join('')}
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Custom Export Functions</h3>
-            <div class="dm-list">
-              ${(() => {
-                if (customExports.length === 0) return '<p class="settings-hint">No custom export functions. Click "New" to create one.</p>';
-                return customExports.map(fn => `
-                  <div class="dm-row">
-                    <span class="dm-name">${escHtml(fn.name)}</span>
-                    <span class="dm-size" style="min-width:auto">${escHtml(fn.description)}</span>
-                    <button class="btn btn-small" data-action="edit-export" data-export-id="${fn.id}">Edit</button>
-                    ${this.updateButton(fn.id)}
-                    <button class="btn btn-small dm-delete" data-action="delete-export" data-export-id="${fn.id}">Delete</button>
-                  </div>
-                `).join('');
-              })()}
-            </div>
-            <div style="margin-top:6px"><button class="btn btn-small" data-action="new-export">New</button></div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Macro Library</h3>
-            <p class="settings-hint">Shared macros available in all constraints. Uses the same syntax as the constraint editor.</p>
-            <div style="margin-top:6px">
-              <button class="btn btn-small" data-action="edit-macro-lib">Edit</button>
-              <button class="btn btn-small" data-action="reset-macro-lib">Reset to Default</button>
-              ${this.updateButton('macro-library')}
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Common-error Lint Library</h3>
-            <p class="settings-hint">Groups of signal names that are commonly swapped by mistake (miso/mosi, tx/rx, …). One group per line, tokens space-separated. Warns when a channel name and its signal pattern reference different tokens from the same group.</p>
-            <div style="margin-top:6px">
-              <button class="btn btn-small" data-action="edit-lint-lib">Edit</button>
-              <button class="btn btn-small" data-action="reset-lint-lib">Reset to Default</button>
-              ${this.updateButton('common-errors-library')}
-            </div>
-          </section>
-
-          <section class="settings-section">
-            <h3>Peripheral Library</h3>
-            <p class="settings-hint">Snippets offered by the editor's double-click helper. Each <code>#Name</code> block lists channel mappings and <code>require</code> lines for a peripheral.</p>
-            <div style="margin-top:6px">
-              <button class="btn btn-small" data-action="edit-peripheral-lib">Edit</button>
-              <button class="btn btn-small" data-action="reset-peripheral-lib">Reset to Default</button>
-              ${this.updateButton('peripheral-library')}
-            </div>
-          </section>
-        </div>
-      `;
-
-      modal.querySelector('.settings-close')!.addEventListener('click', close);
-
-      modal.querySelectorAll('[data-action]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const action = (btn as HTMLElement).dataset.action;
-          const name = (btn as HTMLElement).dataset.name!;
-          switch (action) {
-            case 'load-mcu':
-              await this.loadStoredMcu(name);
-              close();
-              break;
-            case 'export-mcu':
-              this.exportMcuData(name);
-              break;
-            case 'export-current-mcu':
-              this.exportCurrentMcu();
-              break;
-            case 'export-current-dma':
-              this.exportCurrentDma();
-              break;
-            case 'export-current-ast':
-              this.exportCurrentAst();
-              break;
-            case 'export-current-solutions':
-              this.exportCurrentSolutions();
-              break;
-            case 'delete-mcu':
-              await getKv().delete(`mcu-xml:${name}`);
-              await getKv().delete(`mcu-meta:${name}`);
-              void renderContent();
-              break;
-            case 'reimport-all':
-              this.reimportAllMcus();
-              void renderContent();
-              break;
-            case 'load-project':
-              this.loadProject(name);
-              close();
-              break;
-            case 'export-project':
-              this.exportProjectData(name);
-              break;
-            case 'delete-project':
-              this.deleteProject(name);
-              void renderContent();
-              break;
-            case 'toggle-versions': {
-              const idx = (btn as HTMLElement).dataset.idx;
-              const versionList = modal.querySelector(`[data-version-list="${idx}"]`) as HTMLElement;
-              if (!versionList) break;
-              const arrow = btn as HTMLElement;
-              if (versionList.style.display === 'none') {
-                arrow.innerHTML = '&#9660;';
-                this.renderVersionList(versionList, name, result.overlay, renderContent);
-                versionList.style.display = '';
-              } else {
-                arrow.innerHTML = '&#9654;';
-                versionList.style.display = 'none';
-              }
-              break;
-            }
-            case 'restore-version': {
-              const versionId = parseInt((btn as HTMLElement).dataset.versionId || '0');
-              this.loadProjectVersion(name, versionId);
-              close();
-              break;
-            }
-            case 'new-export':
-              this.showExportEditor(null, result.overlay, renderContent);
-              break;
-            case 'edit-export': {
-              const exportId = (btn as HTMLElement).dataset.exportId!;
-              const exports = await loadCustomExports();
-              const fn = exports.find(e => e.id === exportId);
-              if (fn) this.showExportEditor(fn, result.overlay, () => { void renderContent(); });
-              break;
-            }
-            case 'delete-export': {
-              const exportId = (btn as HTMLElement).dataset.exportId!;
-              await deleteCustomExport(exportId);
-              void renderContent();
-              break;
-            }
-            case 'edit-macro-lib':
-              this.showMacroLibEditor(result.overlay);
-              break;
-            case 'update-default': {
-              const id = (btn as HTMLElement).dataset.id;
-              const pending = this.pendingUpdates.find(u => u.id === id);
-              if (!pending) break;
-              if (!confirm(`Update "${pending.label}" to the shipped version?\n\nYour changes to it will be replaced.`)) break;
-              await applyDefaultUpdate(pending);
-              await this.refreshDefaultUpdates();
-              this.showStatus(`${pending.label} updated`, 'success');
-              void renderContent();
-              break;
-            }
-            case 'reset-macro-lib':
-              await saveMacroLibrary(DEFAULT_MACRO_LIBRARY.trim());
-              await markSyncedWithDefault('macro-library', DEFAULT_MACRO_LIBRARY.trim());
-              await primeStdlibSource();
-              await this.refreshDefaultUpdates();
-              break;
-            case 'edit-lint-lib':
-              this.showLintLibEditor();
-              break;
-            case 'reset-lint-lib':
-              await saveCommonErrorsLibrary(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
-              await markSyncedWithDefault('common-errors-library', DEFAULT_COMMON_ERRORS_LIBRARY.trim());
-              primeCommonErrorsLib(DEFAULT_COMMON_ERRORS_LIBRARY.trim());
-              await this.refreshDefaultUpdates();
-              this.showStatus('Lint library reset to default', 'success');
-              break;
-            case 'edit-peripheral-lib':
-              this.showPeripheralLibEditor();
-              break;
-            case 'reset-peripheral-lib':
-              await savePeripheralLibrary(DEFAULT_PERIPHERAL_LIBRARY.trim());
-              await markSyncedWithDefault('peripheral-library', DEFAULT_PERIPHERAL_LIBRARY.trim());
-              await primePeripheralSource();
-              await this.refreshDefaultUpdates();
-              this.showStatus('Peripheral library reset to default', 'success');
-              break;
-            case 'save-data-url': {
-              const input = modal.querySelector('#dm-data-url') as HTMLInputElement | null;
-              if (input) {
-                getDataSource().setUrl(input.value);
-                this.showStatus(input.value ? `Data URL saved: ${input.value}` : 'Data URL cleared', 'success');
-                void renderContent();
-              }
-              break;
-            }
-            case 'clear-data-url':
-              getDataSource().setUrl('');
-              void renderContent();
-              break;
-            case 'browse-mcu':
-              this.showMcuBrowser(result.overlay, () => { void renderContent(); });
-              break;
-            case 'load-cached': {
-              // Walk the cache to find the variant. Cheaper than tracking
-              // a separate refName→Mcu map since the cache is bounded (~10).
-              for (const { mcus } of getDataSource().listCached()) {
-                const hit = mcus.find(m => m.refName === name);
-                if (hit) {
-                  this.activateLoadedMcu(hit);
-                  close();
-                  return;
-                }
-              }
-              this.showStatus(`Cached MCU "${name}" not found (cache may have evicted)`, 'error');
-              break;
-            }
-            case 'evict-cached': {
-              const die = (btn as HTMLElement).dataset.die!;
-              if (getDataSource().evict(die)) void renderContent();
-              break;
-            }
-          }
-        });
-      });
-    };
-
-    void renderContent();
-  }
-
-  /**
-   * Modal that lists every die in the remote index with a live filter.
-   * Click a die to fetch + parse it, then pick a package variant if the
-   * die has more than one. Loaded MCU becomes the current MCU.
-   */
-  private showMcuBrowser(_parentOverlay: HTMLElement, onClose: () => void): void {
-    const browser = createModal({
-      zIndex: '1100',
-      modalClass: 'settings-modal dm-modal',
-      modalStyle: { width: '720px', maxHeight: '80vh' },
-    });
-    if (!browser) return;
-    const { modal, close } = browser;
-
-    // Cancellation: closing the modal aborts any in-flight fetch.
-    const ac = new AbortController();
-    const closeAll = () => {
-      ac.abort();
-      close();
-      onClose();
-    };
-
-    let dies: { die: string; entry: IndexDeviceEntry }[] = [];
-    let filter = '';
-    let status = 'Loading index…';
-
-    const renderRows = (): string => {
-      const q = filter.trim().toLowerCase();
-      // Match the query against the die name OR any full variant name, so users
-      // can search by full CPU name (e.g. "stm32h755iik").
-      const matches = q
-        ? dies.filter(d => d.die.includes(q)
-            || entryVariantNames(d.entry).some(v => v.toLowerCase().includes(q)))
-        : dies;
-      const visible = matches.slice(0, 200);
-      const overflow = matches.length - visible.length;
-      if (visible.length === 0) {
-        return '<p class="settings-hint">No matching MCUs.</p>';
-      }
-      const rowsHtml = visible.map(({ die, entry }) => {
-        const cores = (entry.cores ?? []).map(c => c.name).join(' + ');
-        const flashKB = entry.flash_bytes ? `${(entry.flash_bytes / 1024).toFixed(0)}KB` : '';
-        const ramKB = entry.ram_bytes ? `${(entry.ram_bytes / 1024).toFixed(0)}KB` : '';
-        const pkgs = [...new Set(entryPackageNames(entry))].slice(0, 3).join(', ');
-        return `
-          <div class="dm-row" data-die="${escHtml(die)}">
-            <span class="dm-name" style="font-family:monospace">${escHtml(die)}</span>
-            <span class="dm-tags"><span class="dm-tag">${escHtml(entry.family ?? '')}</span>${cores ? `<span class="dm-tag">${escHtml(cores)}</span>` : ''}${flashKB ? `<span class="dm-tag">${flashKB} flash</span>` : ''}${ramKB ? `<span class="dm-tag">${ramKB} ram</span>` : ''}</span>
-            <span class="dm-size" style="min-width:auto">${escHtml(pkgs)}</span>
-            <button class="btn btn-small dm-load" data-action="pick-die" data-die="${escHtml(die)}">Load</button>
-          </div>
-        `;
-      }).join('');
-      return rowsHtml + (overflow > 0
-        ? `<p class="settings-hint">…and ${overflow} more (refine search to see them).</p>`
-        : '');
-    };
-
-    const render = (): void => {
-      modal.innerHTML = `
-        <div class="settings-header">
-          <strong>Browse MCU Catalogue</strong>
-          <button class="btn btn-small settings-close">Close</button>
-        </div>
-        <div class="settings-body">
-          <div class="dm-row" style="margin-bottom:8px">
-            <input id="dm-mcu-filter" type="text" placeholder="Filter (e.g. stm32g4, stm32h755iik, STM32H755IIKx)" value="${escHtml(filter)}" style="flex:1; padding:4px 6px; font-family:monospace; font-size:12px"/>
-            <span class="dm-size" style="min-width:auto;color:var(--text-secondary)">${dies.length} dies</span>
-          </div>
-          <p class="settings-hint" id="dm-mcu-status">${escHtml(status)}</p>
-          <div class="dm-list" id="dm-mcu-rows">${dies.length ? renderRows() : ''}</div>
-        </div>
-      `;
-
-      modal.querySelector('.settings-close')!.addEventListener('click', closeAll);
-
-      const filterInput = modal.querySelector('#dm-mcu-filter') as HTMLInputElement | null;
-      if (filterInput) {
-        filterInput.addEventListener('input', () => {
-          filter = filterInput.value;
-          const rows = modal.querySelector('#dm-mcu-rows');
-          if (rows) rows.innerHTML = renderRows();
-          attachRowHandlers();
-        });
-        filterInput.focus();
-      }
-
-      attachRowHandlers();
-    };
-
-    const attachRowHandlers = (): void => {
-      modal.querySelectorAll('[data-action="pick-die"]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const die = (btn as HTMLElement).dataset.die!;
-          await this.handlePickDie(die, ac.signal, closeAll);
-        });
-      });
-    };
-
-    render();
-
-    // Kick off index load asynchronously.
-    getDataSource().loadIndex(ac.signal)
-      .then(idx => {
-        dies = Object.entries(idx.devices ?? {})
-          .map(([die, entry]) => ({ die, entry }))
-          .sort((a, b) => a.die.localeCompare(b.die));
-        status = `Loaded ${dies.length} dies. Type to filter.`;
-        render();
-      })
-      .catch((err: Error) => {
-        if (err.name === 'AbortError') return;
-        status = `Failed to load index: ${err.message}`;
-        render();
-      });
-  }
-
-  /**
-   * After the user picks a die in the browser modal: fetch + parse, then
-   * either load directly (single variant) or open a small variant picker.
-   */
-  private async handlePickDie(die: string, signal: AbortSignal, closeBrowser: () => void): Promise<void> {
-    try {
-      this.showStatus(`Loading ${die}…`, 'info');
-      const mcus = await getDataSource().loadDie(die, signal);
-      if (mcus.length === 0) {
-        this.showStatus(`No package variants in ${die}`, 'error');
-        return;
-      }
-      if (mcus.length === 1) {
-        this.activateLoadedMcu(mcus[0]);
-        closeBrowser();
-        return;
-      }
-      this.showVariantPicker(die, mcus, closeBrowser);
-    } catch (err) {
-      const msg = (err as Error).message;
-      if ((err as Error).name === 'AbortError') return;
-      this.showStatus(`Failed to load ${die}: ${msg}`, 'error');
-    }
-  }
-
-  /** Tiny modal listing every variant of a die so the user can pick one. */
-  private showVariantPicker(die: string, mcus: Mcu[], closeBrowser: () => void): void {
-    const picker = createModal({
-      zIndex: '1200',
-      modalClass: 'settings-modal',
-      modalStyle: { width: '500px' },
-    });
-    if (!picker) return;
-    const { modal, close } = picker;
-    modal.innerHTML = `
-      <div class="settings-header">
-        <strong>Pick a package variant for ${escHtml(die)}</strong>
-        <button class="btn btn-small settings-close">Close</button>
-      </div>
-      <div class="settings-body">
-        <div class="dm-list">
-          ${mcus.map((m, idx) => `
-            <div class="dm-row">
-              <span class="dm-name" style="font-family:monospace">${escHtml(m.refName)}</span>
-              <span class="dm-tags"><span class="dm-tag">${escHtml(m.package)}</span></span>
-              <button class="btn btn-small dm-load" data-pick="${idx}">Load</button>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-    modal.querySelector('.settings-close')!.addEventListener('click', close);
-    modal.querySelectorAll('[data-pick]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt((btn as HTMLElement).dataset.pick || '0', 10);
-        this.activateLoadedMcu(mcus[idx]);
-        close();
-        closeBrowser();
-      });
-    });
-  }
-
-  private showExportEditor(fn: CustomExportFunction | null, _parentOverlay: HTMLElement, onSave: () => void): void {
-    const isNew = fn === null;
-    const current: CustomExportFunction = fn ? { ...fn } : {
-      id: `custom-${Date.now()}`,
-      name: '',
-      description: '',
-      code: '',
-    };
-
-    const exportResult = createModal({ zIndex: '1100', modalStyle: { width: '600px' } });
-    if (!exportResult) return;
-    const { modal, close: closeExport } = exportResult;
-
-    const render = (): void => {
-      modal.innerHTML = `
-        <div class="settings-header">
-          <strong>${isNew ? 'New' : 'Edit'} Export Function</strong>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-small" id="export-editor-help">Help</button>
-            <button class="btn btn-small settings-close">Close</button>
-          </div>
-        </div>
-        <div class="settings-body">
-          <div class="settings-row" style="margin-bottom:8px">
-            <label>Name</label>
-            <input class="settings-input" style="width:200px" id="export-editor-name" value="${current.name.replace(/"/g, '&quot;')}">
-          </div>
-          <div class="settings-row" style="margin-bottom:8px">
-            <label>Description</label>
-            <input class="settings-input" style="width:300px" id="export-editor-desc" value="${current.description.replace(/"/g, '&quot;')}">
-          </div>
-          <div style="margin-bottom:4px;font-size:11px;color:var(--text-secondary)">JavaScript code (return a string to copy to clipboard, or {filename, content, mimeType} to download):</div>
-          <div id="export-editor-host" class="code-editor-wrap"></div>
-          <div class="export-error" id="export-editor-error" style="display:none"></div>
-          <div class="export-help" id="export-editor-help-panel" style="display:none">
-            <strong>Available variables:</strong>
-            <pre>mcuName     - MCU reference name (e.g. "STM32H755XIHx")
-mcuPackage  - Package type (e.g. "TFBGA240")
-assignments - Array of {pinName, signalName, portName,
-              channelName, configurationName,
-              portComment, channelComment, pinComment}
-peripherals - Array of {instanceName, type, version}
-pins        - Array of {name, position, type, gpioPort,
-              gpioNumber, isAssignable, signals:[{name,
-              peripheralInstance, peripheralType,
-              signalFunction}]}
-ports       - Array of {name, color, comment,
-              channels:[{name, comment}],
-              configurations:[]}
-pinComments - Object {pinName: comment} from pin decls</pre>
-            <strong>Return value:</strong>
-            <pre>return "text"  → copies to clipboard
-return {filename:"f.csv", content:"...", mimeType:"text/csv"}
-               → downloads as file</pre>
-          </div>
-          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
-            <button class="btn btn-small" id="export-editor-test">Test</button>
-            <button class="btn btn-small btn-primary" id="export-editor-save">Save</button>
-          </div>
-        </div>
-      `;
-
-      modal.querySelector('.settings-close')!.addEventListener('click', closeExport);
-
-      const editor = createCodeEditor({ highlighter: highlightJs });
-      const codeEl = editor.textarea;
-      codeEl.value = current.code;
-      editor.refresh();
-      modal.querySelector('#export-editor-host')!.appendChild(editor.wrapper);
-
-      modal.querySelector('#export-editor-help')!.addEventListener('click', () => {
-        const panel = modal.querySelector('#export-editor-help-panel') as HTMLElement;
-        panel.style.display = panel.style.display === 'none' ? '' : 'none';
-      });
-
-      modal.querySelector('#export-editor-test')!.addEventListener('click', () => {
-        const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
-        try {
-          const code = codeEl.value;
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', code);
-          errorEl.style.display = '';
-          errorEl.style.color = 'var(--success)';
-          errorEl.textContent = 'Syntax OK';
-          setTimeout(() => { errorEl.style.display = 'none'; }, 2000);
-        } catch (err) {
-          errorEl.style.display = '';
-          errorEl.style.color = 'var(--error)';
-          errorEl.textContent = (err as Error).message;
-        }
-      });
-
-      modal.querySelector('#export-editor-save')!.addEventListener('click', async () => {
-        const nameVal = (modal.querySelector('#export-editor-name') as HTMLInputElement).value.trim();
-        const descVal = (modal.querySelector('#export-editor-desc') as HTMLInputElement).value.trim();
-        const codeVal = codeEl.value;
-        const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
-
-        if (!nameVal) {
-          errorEl.style.display = '';
-          errorEl.style.color = 'var(--error)';
-          errorEl.textContent = 'Name is required';
-          return;
-        }
-
-        try {
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', codeVal);
-        } catch (err) {
-          errorEl.style.display = '';
-          errorEl.style.color = 'var(--error)';
-          errorEl.textContent = (err as Error).message;
-          return;
-        }
-
-        current.name = nameVal;
-        current.description = descVal;
-        current.code = codeVal;
-        await saveCustomExport(current);
-        closeExport();
-        onSave();
-      });
-    };
-
-    render();
-  }
-
-  private showMacroLibEditor(_parentOverlay: HTMLElement): void {
-    const macroResult = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
-    if (!macroResult) return;
-    const { modal, close: closeMacro } = macroResult;
-
-    const currentSource = getStdlibSource();
-
-    modal.innerHTML = `
-      <div class="settings-header">
-        <strong>Macro Library</strong>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-small" id="macro-lib-reset">Reset</button>
-          <button class="btn btn-small settings-close">Close</button>
-        </div>
-      </div>
-      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
-        <div id="macro-lib-host" style="flex:1;min-height:200px;display:flex"></div>
-        <div class="export-error" id="macro-lib-error" style="display:none"></div>
-        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
-          <button class="btn btn-small btn-primary" id="macro-lib-save">Save</button>
-        </div>
-      </div>
-    `;
-
-    const editor = createCodeEditor({ highlighter: highlightConstraintCode });
-    const codeEl = editor.textarea;
-    codeEl.value = currentSource;
-    editor.refresh();
-    const host = modal.querySelector('#macro-lib-host')!;
-    host.appendChild(editor.wrapper);
-    editor.wrapper.style.flex = '1';
-    editor.wrapper.style.border = '1px solid var(--border)';
-    editor.wrapper.style.borderRadius = '3px';
-    const errorEl = modal.querySelector('#macro-lib-error') as HTMLElement;
-
-    modal.querySelector('.settings-close')!.addEventListener('click', closeMacro);
-
-    modal.querySelector('#macro-lib-reset')!.addEventListener('click', () => {
-      codeEl.value = DEFAULT_MACRO_LIBRARY.trim();
-      editor.refresh();
-    });
-
-    modal.querySelector('#macro-lib-save')!.addEventListener('click', async () => {
-      const source = codeEl.value;
-      // Validate syntax
-      const result = parseConstraints(source);
-      if (result.errors.length > 0) {
-        errorEl.style.display = '';
-        errorEl.style.color = 'var(--error)';
-        errorEl.textContent = result.errors.map(e => `Line ${e.line}: ${e.message}`).join('; ');
-        return;
-      }
-      await saveMacroLibrary(source);
-      await primeStdlibSource();
-      closeMacro();
-    });
-  }
-
-  private async showLintLibEditor(): Promise<void> {
-    // ponytail: plain textarea, no syntax highlight. Line-based format
-    // needs zero editor tooling.
-    const r = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
-    if (!r) return;
-    const { modal, close } = r;
-    const current = (await loadCommonErrorsLibrary()) ?? DEFAULT_COMMON_ERRORS_LIBRARY.trim();
-    modal.innerHTML = `
-      <div class="settings-header">
-        <strong>Common-error Lint Library</strong>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-small" id="lint-lib-reset">Reset</button>
-          <button class="btn btn-small settings-close">Close</button>
-        </div>
-      </div>
-      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
-        <textarea id="lint-lib-code" spellcheck="false" style="flex:1;min-height:200px;font-family:monospace;font-size:12px;padding:6px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px">${current.replace(/</g, '&lt;')}</textarea>
-        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
-          <button class="btn btn-small btn-primary" id="lint-lib-save">Save</button>
-        </div>
-      </div>
-    `;
-    const codeEl = modal.querySelector('#lint-lib-code') as HTMLTextAreaElement;
-    modal.querySelector('.settings-close')!.addEventListener('click', close);
-    modal.querySelector('#lint-lib-reset')!.addEventListener('click', () => {
-      codeEl.value = DEFAULT_COMMON_ERRORS_LIBRARY.trim();
-    });
-    modal.querySelector('#lint-lib-save')!.addEventListener('click', async () => {
-      const source = codeEl.value;
-      await saveCommonErrorsLibrary(source);
-      primeCommonErrorsLib(source);
-      this.showStatus('Lint library saved', 'success');
-      close();
-    });
-  }
-
-  private async showPeripheralLibEditor(): Promise<void> {
-    // Plain textarea — the #Name/body format needs no constraint tooling.
-    const r = createModal({ zIndex: '1100', modalStyle: { width: '600px', maxHeight: '85vh' } });
-    if (!r) return;
-    const { modal, close } = r;
-    const current = getPeripheralSource();
-    modal.innerHTML = `
-      <div class="settings-header">
-        <strong>Peripheral Library</strong>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-small" id="peri-lib-reset">Reset</button>
-          <button class="btn btn-small settings-close">Close</button>
-        </div>
-      </div>
-      <div class="settings-body" style="display:flex;flex-direction:column;gap:8px;min-height:0;flex:1;overflow:hidden">
-        <p class="settings-hint" style="margin:0">One block per peripheral: a <code>#Name</code> header, then channel mappings (<code>TX = USART*_TX $u</code>) and <code>require</code> lines.</p>
-        <textarea id="peri-lib-code" spellcheck="false" style="flex:1;min-height:200px;font-family:monospace;font-size:12px;padding:6px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px">${current.replace(/</g, '&lt;')}</textarea>
-        <div style="display:flex;gap:6px;justify-content:flex-end;flex-shrink:0">
-          <button class="btn btn-small btn-primary" id="peri-lib-save">Save</button>
-        </div>
-      </div>
-    `;
-    const codeEl = modal.querySelector('#peri-lib-code') as HTMLTextAreaElement;
-    modal.querySelector('.settings-close')!.addEventListener('click', close);
-    modal.querySelector('#peri-lib-reset')!.addEventListener('click', () => {
-      codeEl.value = DEFAULT_PERIPHERAL_LIBRARY.trim();
-    });
-    modal.querySelector('#peri-lib-save')!.addEventListener('click', async () => {
-      await savePeripheralLibrary(codeEl.value);
-      await primePeripheralSource();
-      this.showStatus('Peripheral library saved', 'success');
-      close();
-    });
-  }
-
-
-  private async renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): Promise<void> {
-    try {
-      const projectData = await this.loadProjectData(projectName);
-      if (!projectData) return;
-      const versions = projectData.versions;
-
-      container.innerHTML = versions.map(v => {
-        const date = v.timestamp ? new Date(v.timestamp).toLocaleString() : 'initial';
-        const versionJson = JSON.stringify(v);
-        const sizeKB = (versionJson.length / 1024).toFixed(1);
-        const tags: string[] = [];
-        if (v.constraintText && v.constraintText.trim()) tags.push('CON');
-        if (v.solutions && v.solutions.length > 0) tags.push(`${v.solutions.length} sol`);
-        return `<div class="dm-version-row">
-          <span class="dm-version-id">v${v.id}</span>
-          <span class="dm-version-date">${date}</span>
-          <span class="dm-tags">${tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}</span>
-          <span class="dm-size">${sizeKB}KB</span>
-          <button class="btn btn-small" data-action="restore-version" data-version-id="${v.id}">Restore</button>
-          ${this.settings.dataInspector ? `<button class="btn btn-small" data-action="inspect-version" data-version-id="${v.id}">Inspect</button>` : ''}
-          <button class="btn btn-small dm-delete" data-action="delete-version" data-version-id="${v.id}">Delete</button>
-        </div>
-        ${this.settings.dataInspector ? `<div class="dm-inspect-panel" data-inspect-version="${v.id}" style="display:none"></div>` : ''}`;
-      }).join('');
-
-      container.querySelectorAll('[data-action]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const action = (btn as HTMLElement).dataset.action;
-          const vId = parseInt((btn as HTMLElement).dataset.versionId || '0');
-          if (action === 'restore-version') {
-            await this.loadProjectVersion(projectName, vId);
-            overlay.remove();
-          } else if (action === 'delete-version') {
-            await this.deleteProjectVersion(projectName, vId);
-            const names = await this.listProjectNames();
-            if (names.includes(projectName)) {
-              await this.renderVersionList(container, projectName, overlay, renderContent);
-            } else {
-              void renderContent();
-            }
-          } else if (action === 'inspect-version') {
-            const panel = container.querySelector(`[data-inspect-version="${vId}"]`) as HTMLElement;
-            if (!panel) return;
-            if (panel.style.display === 'none') {
-              const version = versions.find(v => v.id === vId);
-              if (version) this.renderInspectPanel(panel, version);
-              panel.style.display = '';
-            } else {
-              panel.style.display = 'none';
-            }
-          }
-        });
-      });
-    } catch { /* ignore */ }
-  }
-
-  private renderInspectPanel(panel: HTMLElement, version: ProjectVersion): void {
-    const sz = (val: unknown): number => JSON.stringify(val).length;
-    const fmtKB = (chars: number): string => chars < 1024 ? `${chars}B` : `${(chars / 1024).toFixed(1)}KB`;
-    const pct = (part: number, total: number): string => total > 0 ? `${(part / total * 100).toFixed(0)}%` : '0%';
-
-    const totalSize = sz(version);
-    const constraintSize = sz(version.constraintText);
-    const configsSize = sz(version.mcuRef) + sz(version.id) + sz(version.timestamp);
-    const allSolutionsSize = sz(version.solutions);
-
-    const rows: string[] = [];
-    rows.push(`<div class="dm-inspect-row dm-inspect-header">
-      <span class="dm-inspect-key">Version v${version.id}</span>
-      <span class="dm-inspect-size">${fmtKB(totalSize)}</span>
-      <span class="dm-inspect-bar-cell"></span>
-    </div>`);
-    rows.push(this.inspectRow('constraintText', constraintSize, totalSize));
-    rows.push(this.inspectRow('metadata (id, mcuRef, timestamp)', configsSize, totalSize));
-    rows.push(this.inspectRow(`solutions (${version.solutions.length})`, allSolutionsSize, totalSize));
-
-    // Per-solution breakdown
-    if (version.solutions.length > 0) {
-      for (const sol of version.solutions) {
-        const solSize = sz(sol);
-        const assignmentsData = sol.assignments ?? [];
-        const legacyData = sol.configAssignments;
-        const assignSize = sz(assignmentsData) + (legacyData ? sz(legacyData) : 0);
-        const periphSize = sz(sol.portPeripherals);
-        const costsSize = sz(sol.costs);
-        const assignCount = assignmentsData.length;
-        const format = sol.assignments ? 'compact' : 'legacy';
-
-        rows.push(`<div class="dm-inspect-row dm-inspect-sub">
-          <span class="dm-inspect-key">solution #${sol.id}${sol.name ? ` - ${sol.name}` : ''}</span>
-          <span class="dm-inspect-size">${fmtKB(solSize)}</span>
-          <span class="dm-inspect-bar-cell">${pct(solSize, totalSize)}</span>
-        </div>`);
-        rows.push(`<div class="dm-inspect-row dm-inspect-detail">
-          <span class="dm-inspect-key">assignments (${assignCount} entries, ${format})</span>
-          <span class="dm-inspect-size">${fmtKB(assignSize)}</span>
-          <span class="dm-inspect-bar-cell"><span class="dm-inspect-bar" style="width:${pct(assignSize, totalSize)}"></span></span>
-        </div>`);
-        rows.push(`<div class="dm-inspect-row dm-inspect-detail">
-          <span class="dm-inspect-key">portPeripherals</span>
-          <span class="dm-inspect-size">${fmtKB(periphSize)}</span>
-          <span class="dm-inspect-bar-cell"><span class="dm-inspect-bar" style="width:${pct(periphSize, totalSize)}"></span></span>
-        </div>`);
-        rows.push(`<div class="dm-inspect-row dm-inspect-detail">
-          <span class="dm-inspect-key">costs</span>
-          <span class="dm-inspect-size">${fmtKB(costsSize)}</span>
-          <span class="dm-inspect-bar-cell"><span class="dm-inspect-bar" style="width:${pct(costsSize, totalSize)}"></span></span>
-        </div>`);
-      }
-    }
-
-    panel.innerHTML = rows.join('');
-  }
-
-  private inspectRow(label: string, size: number, total: number): string {
-    const fmtKB = (chars: number): string => chars < 1024 ? `${chars}B` : `${(chars / 1024).toFixed(1)}KB`;
-    const pct = (part: number, t: number): string => t > 0 ? `${(part / t * 100).toFixed(0)}%` : '0%';
-    return `<div class="dm-inspect-row">
-      <span class="dm-inspect-key">${label}</span>
-      <span class="dm-inspect-size">${fmtKB(size)}</span>
-      <span class="dm-inspect-bar-cell"><span class="dm-inspect-bar" style="width:${pct(size, total)}"></span></span>
-    </div>`;
-  }
-
-  private async deleteProjectVersion(projectName: string, versionId: number): Promise<void> {
+  async deleteProjectVersion(projectName: string, versionId: number): Promise<void> {
     let emptied = false;
     await this.withProjectLock(async () => {
       const projectData = await this.loadProjectData(projectName);
@@ -3446,20 +2533,20 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     downloadBlob(JSON.stringify(data, null, 2), filename, 'application/json');
   }
 
-  private exportCurrentMcu(): void {
+  exportCurrentMcu(): void {
     const mcu = this.currentMcu;
     if (!mcu) return;
     this.downloadJson(serializeMcu(mcu), `${mcu.refName}-mcu.json`);
   }
 
-  private exportCurrentDma(): void {
+  exportCurrentDma(): void {
     const dma = this.currentMcu?.dma;
     if (!dma) return;
     this.downloadJson(serializeDma(dma), `${this.currentMcu!.refName}-dma.json`);
   }
 
   /** Export the current solver run's solutions (the Solver Solutions panel). */
-  private exportCurrentSolutions(): void {
+  exportCurrentSolutions(): void {
     const result = this.solverSolutions.getSolverResult();
     if (!result || result.solutions.length === 0) return;
     const name = this.currentProjectName || 'solutions';
@@ -3471,14 +2558,14 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     }, `${name}-solutions.json`);
   }
 
-  private exportCurrentAst(): void {
+  exportCurrentAst(): void {
     const parseResult = this.constraintEditor.getParseResult();
     if (!parseResult?.ast) return;
     const name = this.currentProjectName || 'constraints';
     this.downloadJson(parseResult.ast, `${name}-ast.json`);
   }
 
-  private async exportMcuData(refName: string): Promise<void> {
+  async exportMcuData(refName: string): Promise<void> {
     const mcuXml = await getKv().get(`mcu-xml:${refName}`);
     if (!mcuXml) return;
 
@@ -3550,7 +2637,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     );
   }
 
-  private async exportProjectData(projectName: string): Promise<void> {
+  async exportProjectData(projectName: string): Promise<void> {
     const projectData = await this.loadProjectData(projectName);
     if (!projectData) return;
     this.downloadJson(projectData, `${projectName}.json`);
@@ -3589,7 +2676,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     };
   }
 
-  private showStatus(message: string, type: 'success' | 'error' | 'info'): void {
+  showStatus(message: string, type: 'success' | 'error' | 'info'): void {
     const footer = this.layout.getFooter();
     const hint = footer.querySelector('.footer-hint');
     if (hint) {

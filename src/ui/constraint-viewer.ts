@@ -3,6 +3,7 @@
 // ============================================================
 
 import type { Panel } from '../../ts_lib/src/panel';
+import type { StateChange } from './panel';
 import type {
   ProgramNode,
   PortDeclNode,
@@ -72,18 +73,18 @@ export class ConstraintViewer implements Panel {
     this.render();
   }
 
-  onStateChange(change: Record<string, unknown>): void {
-    if (change['type'] === 'mcu-loaded') {
-      this.currentMcu = change['mcu'] as Mcu;
+  onStateChange(change: StateChange): void {
+    if (change.type === 'mcu-loaded') {
+      this.currentMcu = change.mcu!;
       this.render();
     }
-    if (change['type'] === 'solution-selected') {
-      this.currentAssignments = (change['assignments'] as Assignment[]) || null;
-      this.portColors = (change['portColors'] as Map<string, string>) || new Map();
+    if (change.type === 'solution-selected') {
+      this.currentAssignments = change.assignments ?? null;
+      this.portColors = change.portColors ?? new Map();
       this.showSolution = true;
       this.render();
     }
-    if (change['type'] === 'highlight-pins') {
+    if (change.type === 'highlight-pins') {
       // Don't react to pin highlights from other panels
     }
   }

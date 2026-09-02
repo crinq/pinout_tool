@@ -63,8 +63,7 @@ export class SolverSolutions implements Panel {
     });
   }
 
-  onStateChange(raw: Record<string, unknown>): void {
-    const change = raw as unknown as StateChange;
+  onStateChange(change: StateChange): void {
     if (change.type === 'solver-complete' && change.solverResult) {
       this.setSolverResult(change.solverResult);
     }

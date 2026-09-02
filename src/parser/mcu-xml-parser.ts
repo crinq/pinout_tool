@@ -1,3 +1,4 @@
+import { collapseSignalName, gpioPortNumber } from './mcu-common';
 import {
   type Mcu, type Peripheral, type LogicalPin, type PhysicalPin, type PinType, type Signal,
 } from '../types';
@@ -104,10 +105,6 @@ function parseGpioName(pinName: string): { port: string; number: number; baseNam
   };
 }
 
-/** Map GPIO port letter to a number (A→1, B→2, ..., I→9) */
-function gpioPortNumber(portLetter: string): number {
-  return portLetter.charCodeAt(0) - 'A'.charCodeAt(0) + 1;
-}
 
 function parsePinType(typeStr: string): PinType {
   switch (typeStr) {
@@ -138,19 +135,6 @@ function splitHyphenatedSignal(name: string): string[] {
   return parts.map(part => prefix + part);
 }
 
-/**
- * Collapse underscores in the signal function part so the constraint parser
- * can handle them (it uses underscore as the instance/function separator).
- * e.g., "RCC_OSC_IN" → "RCC_OSCIN", "RCC_OSC32_IN" → "RCC_OSC32IN"
- * The first underscore separates instance from function; subsequent ones are removed.
- */
-function collapseSignalName(name: string): string {
-  const idx = name.indexOf('_');
-  if (idx === -1) return name;
-  const instance = name.substring(0, idx);
-  const func = name.substring(idx + 1);
-  return instance + '_' + func.replace(/_/g, '');
-}
 
 export interface ValidationResult {
   valid: boolean;

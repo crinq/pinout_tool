@@ -16,6 +16,13 @@ export type StateChangeType =
 export type HighlightStyle = 'pulse' | 'subtle';
 
 export interface StateChange {
+  /**
+   * Index signature so StateChange is assignable to ts_lib's untyped
+   * `Record<string, unknown>` broadcast payload — that's what lets panels
+   * declare `onStateChange(change: StateChange)` directly instead of
+   * casting the raw record in every implementation.
+   */
+  [key: string]: unknown;
   type: StateChangeType;
   mcu?: Mcu;
   assignments?: Assignment[];

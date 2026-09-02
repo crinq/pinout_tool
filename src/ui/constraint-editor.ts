@@ -1,7 +1,6 @@
-import type { Panel, HighlightStyle } from './panel';
+import type { Panel, HighlightStyle, StateChange } from './panel';
 import { parseConstraints, KEYWORDS } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
-import type { Mcu, Assignment } from '../types';
 import { getStdlibMacroNames, getStdlibTemplates } from '../parser/stdlib-macros';
 import { resolveTemplates } from '../parser/template-resolver';
 import { lintForCommonErrors, getCachedLintLib, type LintWarning } from '../parser/lint-common-errors';
@@ -426,22 +425,22 @@ export class ConstraintEditor implements Panel {
     this.updateLineNumbers();
   }
 
-  onStateChange(change: Record<string, unknown>): void {
-    if (change['type'] === 'mcu-loaded') {
-      this.minimap.setMcu(change['mcu'] as Mcu | null);
+  onStateChange(change: StateChange): void {
+    if (change.type === 'mcu-loaded') {
+      this.minimap.setMcu(change.mcu ?? null);
     }
-    if (change['type'] === 'theme-changed') {
+    if (change.type === 'theme-changed') {
       this.minimap.paint();
     }
-    if (change['type'] === 'compare-selected') {
+    if (change.type === 'compare-selected') {
       // Compare owns the viewer's highlight slot; the caret stands down until a
       // single solution is selected again (which clears compare mode below).
       this.compareActive = true;
       this.emitHighlight(new Set());
     }
-    if (change['type'] === 'solution-selected') {
+    if (change.type === 'solution-selected') {
       this.compareActive = false;
-      this.minimap.setAssignments((change['assignments'] as Assignment[]) || null);
+      this.minimap.setAssignments(change.assignments ?? null);
       // Assignments changed what a line points at.
       this.caretLine = -1;
       this.refreshCaretHighlight();

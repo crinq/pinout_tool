@@ -22,6 +22,7 @@
 //     empty. The next data revision will fill these in.
 // ============================================================
 
+import { collapseSignalName, gpioPortNumber } from './mcu-common';
 import {
   type Mcu, type Peripheral, type LogicalPin, type PhysicalPin, type PinType, type Signal,
   type McuDocs,
@@ -245,24 +246,7 @@ function parseGpioName(name: string): { port: string; number: number; baseName: 
   return { port: m[1], number: parseInt(m[2], 10), baseName: `P${m[1]}${m[2]}` };
 }
 
-function gpioPortNumber(letter: string): number {
-  return letter.charCodeAt(0) - 'A'.charCodeAt(0) + 1;
-}
 
-/**
- * Match the XML parser's `collapseSignalName`: keep the first underscore as
- * the instance/function separator, drop every later underscore in the
- * function part. Constraint signal patterns rely on this convention.
- *
- * Example: "USB_OTG_HS_ULPI_STP" → "USB_OTGHSULPISTP".
- */
-function collapseSignalName(name: string): string {
-  const idx = name.indexOf('_');
-  if (idx === -1) return name;
-  const head = name.substring(0, idx);
-  const tail = name.substring(idx + 1).replace(/_/g, '');
-  return `${head}_${tail}`;
-}
 
 /** Try to read an instance number off the END of a peripheral name. */
 function instanceNumberOf(name: string): number | undefined {

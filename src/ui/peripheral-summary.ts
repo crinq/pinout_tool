@@ -44,8 +44,7 @@ export class PeripheralSummary implements Panel {
     this.render();
   }
 
-  onStateChange(raw: Record<string, unknown>): void {
-    const change = raw as unknown as StateChange;
+  onStateChange(change: StateChange): void {
     if (change.type === 'solution-selected') {
       this.portColors = change.portColors ?? new Map();
       this.currentAssignments = change.assignments ?? [];

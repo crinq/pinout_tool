@@ -19,7 +19,7 @@ import { solveConflictDirected } from './conflict-directed-solver';
 import { solveCegar } from './cegar-solver';
 import { solveLnsRepair } from './lns-solver';
 import { solveAdaptive } from './adaptive-solver';
-import { getSolverResourceMultiplier } from './solver-registry';
+import { getSolverById, getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { postOptimizeSolutions } from './post-optimize';
 import { toWire } from './solution-transfer';
@@ -45,29 +45,9 @@ function maybePostOptimize(
 }
 
 /** Short display names for solver IDs, used in error/warning messages. */
-const SOLVER_LABELS: Record<string, string> = {
-  'backtracking': 'Backtracking',
-  'cost-guided': 'Cost-Guided',
-  'ac3': 'AC3',
-  'dynamic-mrv': 'Dynamic-MRV',
-  'priority-backtracking': 'Priority-BT',
-  'randomized-restarts': 'Randomized',
-  'two-phase': 'Two-Phase',
-  'diverse-instances': 'Diverse',
-  'priority-two-phase': 'Priority-TP',
-  'priority-diverse': 'Priority-Diverse',
-  'priority-group': 'Priority-Group',
-  'mrv-group': 'MRV-Group',
-  'ratio-mrv-group': 'Ratio-MRV',
-  'hybrid': 'Hybrid',
-  'conflict-directed': 'Conflict-Directed',
-  'cegar': 'CEGAR',
-  'lns-repair': 'LNS-Repair',
-  'adaptive': 'Adaptive',
-};
 
 function tagErrors(result: SolverResult, solverId: string): SolverResult {
-  const label = SOLVER_LABELS[solverId] ?? solverId;
+  const label = getSolverById(solverId)?.label ?? solverId;
   for (const err of result.errors) {
     if (!err.message.startsWith(`${label}: `)) {
       err.message = `${label}: ${err.message}`;
