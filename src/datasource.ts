@@ -242,8 +242,13 @@ export class DataSource {
     return this.explicitUrl ?? getDataSourceUrl();
   }
 
+  /** Bumped by clearCache: an in-flight load for the old URL must not
+   *  repopulate a cache that was just cleared. */
+  private cacheGen = 0;
+
   /** Drop both index + per-die caches. Call when the URL changes. */
   clearCache(): void {
+    this.cacheGen++;
     this.indexCache = null;
     this.cache.clear();
   }
@@ -286,13 +291,14 @@ export class DataSource {
     if (this.indexCache) return this.indexCache;
     const base = this.baseUrl();
     if (!base) throw new Error('No MCU data URL configured');
+    const gen = this.cacheGen;
 
     // Two-step: top-level catalogue → first vendor index.
     const topUrl = joinUrl(base, 'index.json');
     const top = await this.fetchJson<IndexDocument>(topUrl, signal);
     if (top.devices) {
       // Vendor-index file already at this URL.
-      this.indexCache = top;
+      if (gen === this.cacheGen) this.indexCache = top;
       return top;
     }
     if (top.vendors) {
@@ -302,10 +308,10 @@ export class DataSource {
       if (!rel) throw new Error(`Vendor catalogue at ${topUrl} has no usable index pointer`);
       const vendorUrl = joinUrl(base, rel);
       const vendor = await this.fetchJson<IndexDocument>(vendorUrl, signal);
-      this.indexCache = vendor;
       // Stash the vendor base path so per-die fetches resolve `mcu/...`
       // against the same dir.
-      (this.indexCache as IndexDocument & { __vendorBase?: string }).__vendorBase = stripFile(vendorUrl);
+      (vendor as IndexDocument & { __vendorBase?: string }).__vendorBase = stripFile(vendorUrl);
+      if (gen === this.cacheGen) this.indexCache = vendor;
       return vendor;
     }
     throw new Error(`Unrecognised index format at ${topUrl}`);
@@ -361,6 +367,7 @@ export class DataSource {
   async loadDie(die: string, signal?: AbortSignal): Promise<Mcu[]> {
     const cached = this.cache.get(die);
     if (cached) return cached.mcus;
+    const gen = this.cacheGen;
     const idx = await this.loadIndex(signal);
     const entry = idx.devices?.[die];
     if (!entry) throw new Error(`Die ${die} not found in index`);
@@ -369,7 +376,7 @@ export class DataSource {
     const text = await this.fetchText(url, signal);
     const doc = JSON.parse(text) as McuJsonDocument;
     const mcus = parseMcuJsonDoc(doc);
-    this.cache.set(die, { size: text.length, mcus, doc });
+    if (gen === this.cacheGen) this.cache.set(die, { size: text.length, mcus, doc });
     return mcus;
   }
 

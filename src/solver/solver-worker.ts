@@ -3,7 +3,13 @@
 // is kicked off eagerly so its module graph loads in parallel with worker
 // spawn instead of waiting for the first message.
 // ponytail: shim exists only to unmask opaque worker load errors.
+let initErrorReported = false;
 function reportInitError(msg: string, stack?: string): void {
+  // One error result per worker: the main thread counts every message as a
+  // job completion, so a double post finishes the run early and gets healthy
+  // sibling workers terminated mid-solve.
+  if (initErrorReported) return;
+  initErrorReported = true;
   self.postMessage({
     _wire: true,
     mcuRef: '',
@@ -30,8 +36,11 @@ const implLoad = import('./solver-worker-impl').catch((err) => {
 });
 
 self.onmessage = async (e: MessageEvent) => {
+  // Import failure was already posted by implLoad's catch — don't post a
+  // second error result for the same job.
+  const mod = await implLoad.catch(() => null);
+  if (!mod) return;
   try {
-    const mod = await implLoad;
     mod.handle(e);
   } catch (err) {
     self.postMessage({

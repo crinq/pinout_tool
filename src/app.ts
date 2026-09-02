@@ -131,6 +131,14 @@ function highlightJs(code: string): string {
   return out.join('');
 }
 
+/** Inputs of one solve run, snapshotted at start (see startSolve). */
+interface SolveRunContext {
+  gen: number;
+  ast: ProgramNode;
+  mcuList: Mcu[];
+  solverTypes: string[];
+}
+
 interface UrlState {
   v: 1;
   c: string;
@@ -174,6 +182,19 @@ export class App {
   private mcuCache = new Map<string, Mcu>();
   /** MCU refNames involved in the current solver result (for multi-MCU mode) */
   private multiMcuRefs: string[] = [];
+  /**
+   * Monotonic solve-run token. Bumped on every run start and every cancel
+   * (abort, project switch); async continuations and worker callbacks compare
+   * their captured value against it and drop stale work instead of publishing
+   * results into a state that has moved on.
+   */
+  private solveGen = 0;
+  /** True from solve start until completion/cancel — closes the re-entrancy
+   *  window in the async gaps before any worker or AbortController exists. */
+  private solveInFlight = false;
+  /** Monotonic MCU-load token: a late loadStoredMcu/loadRemoteMcu completion
+   *  must not clobber a newer MCU selection. */
+  private mcuLoadSeq = 0;
   private projectSelect!: HTMLSelectElement;
 
   init(): void {
@@ -241,7 +262,10 @@ export class App {
       try { await migrateLocalStorageToIdb(); } catch (err) {
         console.warn('[migration] failed:', err);
       }
-      void this.restoreState();
+      this.restoreState().catch(err => {
+        console.error('State restore failed:', err);
+        this.showStatus('Failed to restore previous session state', 'error');
+      });
       void this.refreshDefaultUpdates();
       void seedMacroLibrary();
       void seedPeripheralLibrary();
@@ -290,9 +314,9 @@ export class App {
           // empty after a reload. Fall back to storage (then the remote source)
           // and re-render once it lands, otherwise clicking a saved solution
           // from another MCU did nothing at all.
-          void this.loadStoredMcu(solution.mcuRef).then(() => {
+          this.loadStoredMcu(solution.mcuRef).then(() => {
             if (this.currentSolution === solution) this.renderSolutionToPanels(solution);
-          });
+          }).catch(err => console.error(`Failed to load MCU ${solution.mcuRef}:`, err));
         }
       }
 
@@ -402,11 +426,22 @@ export class App {
 
   private async runSolver(): Promise<void> {
     // If already solving (or fetching), abort instead of restarting.
-    if (this.solverWorkers.length > 0 || this.fetchAbort || this.dmaFetchAbort) {
+    if (this.solveInFlight || this.solverWorkers.length > 0 || this.fetchAbort || this.dmaFetchAbort) {
       this.abortSolver();
       return;
     }
+    this.solveInFlight = true;
+    const gen = ++this.solveGen;
+    try {
+      await this.startSolve(gen);
+    } finally {
+      // Bail-outs before worker dispatch end the run here; once workers are
+      // running, onAllSolversComplete / cancelActiveSolve own the flag.
+      if (gen === this.solveGen && this.solverWorkers.length === 0) this.solveInFlight = false;
+    }
+  }
 
+  private async startSolve(gen: number): Promise<void> {
     this.currentSolution = null;
 
     const parseResult = this.constraintEditor.getParseResult();
@@ -437,6 +472,7 @@ export class App {
       const seen = new Set<string>();
 
       const matchingRefs = await filterStoredMcus(parseResult.ast);
+      if (gen !== this.solveGen) return;
       for (const ref of matchingRefs) {
         let mcu = this.mcuCache.get(ref);
         if (!mcu) {
@@ -461,6 +497,7 @@ export class App {
       // this path.
       if (getDataSource().baseUrl()) {
         const remote = await this.fetchRemoteMatches(filters);
+        if (gen !== this.solveGen) return;
         if (remote === null) {
           // Aborted by user — abortSolver already showed status.
           this.setSolveButtonState(false);
@@ -529,6 +566,9 @@ export class App {
     // catalogue (whose MCUs carry their own DMA data) before giving up.
     if (constraintsNeedDma(parseResult.ast)) {
       await this.ensureDmaData(mcuList);
+      // Covers abort during the DMA lookup: abortSolver bumps the token, so
+      // the run must stop here instead of proceeding to dispatch workers.
+      if (gen !== this.solveGen) return;
     }
 
     // Run pre-solve validation per MCU. In a multi-MCU run an MCU that fails
@@ -612,13 +652,17 @@ export class App {
       this.debugOverlay.startRun(solverTypes);
     }
 
-    // Solve sequentially for each MCU, collecting all results
+    // Solve sequentially for each MCU, collecting all results. The ctx
+    // snapshot (AST, MCU list, solver set) is what a dynamic-timeout retry
+    // re-runs — never the live editor state, which may have changed.
+    const ctx: SolveRunContext = { gen, ast: parseResult.ast!, mcuList, solverTypes };
     const allResults: LabeledSolverResult[] = [];
     let mcuIdx = 0;
 
     const solveNextMcu = () => {
+      if (gen !== this.solveGen) return;
       if (mcuIdx >= mcuList.length) {
-        this.onAllSolversComplete(allResults);
+        this.onAllSolversComplete(allResults, ctx);
         return;
       }
 
@@ -629,7 +673,7 @@ export class App {
         this.showStatus(`${mcuLabel}Solving...`, 'info');
       }
 
-      this.solveForMcu(mcu, parseResult.ast!, solverTypes, mcuLabel, (results) => {
+      this.solveForMcu(gen, mcu, parseResult.ast!, solverTypes, mcuLabel, (results) => {
         allResults.push(...results);
         mcuIdx++;
         solveNextMcu();
@@ -643,6 +687,7 @@ export class App {
    * Dispatch solver workers for a single MCU. Calls onComplete when all workers finish.
    */
   private solveForMcu(
+    gen: number,
     mcu: Mcu,
     ast: ProgramNode,
     solverTypes: string[],
@@ -704,6 +749,13 @@ export class App {
 
       const workerStartTime = performance.now();
       worker.onmessage = (e) => {
+        // Messages already queued when the run was cancelled still arrive
+        // after terminateWorkers(); drop them instead of publishing stale
+        // results into whatever the app is showing now.
+        if (gen !== this.solveGen) {
+          this.retireWorker(worker);
+          return;
+        }
         const receiveTime = performance.now();
         const wireData = e.data as WireSolverResult | SolverResult;
         const solverResult = '_wire' in wireData ? fromWire(wireData as WireSolverResult) : wireData as SolverResult;
@@ -737,6 +789,10 @@ export class App {
       };
 
       worker.onerror = (err) => {
+        if (gen !== this.solveGen) {
+          this.retireWorker(worker);
+          return;
+        }
         console.error(`Solver worker error (${jobLabel}):`, err);
         // ErrorEvent.message is often empty for cross-origin / module-load
         // failures. Piece together whatever we can so the modal shows
@@ -806,7 +862,7 @@ export class App {
     this.solverWorkers = [];
   }
 
-  private onAllSolversComplete(results: LabeledSolverResult[]): void {
+  private onAllSolversComplete(results: LabeledSolverResult[], ctx: SolveRunContext): void {
     this.terminateWorkers();
 
     const t0 = performance.now();
@@ -814,56 +870,47 @@ export class App {
     const mergeMs = performance.now() - t0;
     if (mergeMs > 50) console.log(`[perf] mergeResults: ${mergeMs.toFixed(0)}ms (${result.solutions.length} solutions)`);
 
-    // Dynamic timeout retry: if 0 solutions and multiplier > 1 and not already a retry
+    // Dynamic timeout retry: if 0 solutions and multiplier > 1 and not already
+    // a retry. Re-runs the ctx snapshot (AST, MCU list, solver set from the
+    // original run) — the user may have edited constraints in the meantime.
     const mult = this.solveSettings.dynamicTimeoutMultiplier;
     if (result.solutions.length === 0 && mult > 1 && !this.isDynamicTimeoutRetry) {
-      const originalTimeout = this.solveSettings.solverTimeoutMs;
-      const boostedTimeout = originalTimeout * mult;
+      const savedTimeout = this.solveSettings.solverTimeoutMs;
+      const boostedTimeout = savedTimeout * mult;
       this.showStatus(`No solutions found — retrying with ${boostedTimeout}ms timeout (×${mult})...`, 'info');
       this.isDynamicTimeoutRetry = true;
-      const savedTimeout = this.solveSettings.solverTimeoutMs;
       this.solveSettings.solverTimeoutMs = boostedTimeout;
 
-      const parseResult = this.constraintEditor.getParseResult();
-      if (parseResult?.ast) {
-        if (this.solveSettings.solverDebugOverlay) {
-          this.debugOverlay.startRun(this.solveSettings.solverTypes);
-        }
+      if (this.solveSettings.solverDebugOverlay) {
+        this.debugOverlay.startRun(ctx.solverTypes);
+      }
 
-        // Re-run solver with boosted timeout
-        const mcuList = this.multiMcuRefs.length > 0
-          ? this.multiMcuRefs.map(ref => this.mcuCache.get(ref)!).filter(Boolean)
-          : this.currentMcu ? [this.currentMcu] : [];
+      const allRetryResults: LabeledSolverResult[] = [];
+      let mcuIdx = 0;
 
-        if (mcuList.length > 0) {
-          const allRetryResults: LabeledSolverResult[] = [];
-          let mcuIdx = 0;
-
-          const solveNextMcu = () => {
-            if (mcuIdx >= mcuList.length) {
-              this.solveSettings.solverTimeoutMs = savedTimeout;
-              // Keep isDynamicTimeoutRetry = true so the recursive call won't retry again
-              this.onAllSolversComplete(allRetryResults);
-              this.isDynamicTimeoutRetry = false;
-              return;
-            }
-            const mcu = mcuList[mcuIdx];
-            const mcuLabel = mcuList.length > 1 ? `[${mcuIdx + 1}/${mcuList.length} ${mcu.refName}] ` : '';
-            this.solveForMcu(mcu, parseResult.ast!, this.solveSettings.solverTypes, mcuLabel, (res) => {
-              allRetryResults.push(...res);
-              mcuIdx++;
-              solveNextMcu();
-            });
-          };
-          solveNextMcu();
+      const solveNextMcu = () => {
+        if (ctx.gen !== this.solveGen) return;
+        if (mcuIdx >= ctx.mcuList.length) {
+          this.solveSettings.solverTimeoutMs = savedTimeout;
+          // Keep isDynamicTimeoutRetry = true so the recursive call won't retry again
+          this.onAllSolversComplete(allRetryResults, ctx);
+          this.isDynamicTimeoutRetry = false;
           return;
         }
-        this.solveSettings.solverTimeoutMs = savedTimeout;
-      }
-      this.isDynamicTimeoutRetry = false;
+        const mcu = ctx.mcuList[mcuIdx];
+        const mcuLabel = ctx.mcuList.length > 1 ? `[${mcuIdx + 1}/${ctx.mcuList.length} ${mcu.refName}] ` : '';
+        this.solveForMcu(ctx.gen, mcu, ctx.ast, ctx.solverTypes, mcuLabel, (res) => {
+          allRetryResults.push(...res);
+          mcuIdx++;
+          solveNextMcu();
+        });
+      };
+      solveNextMcu();
+      return;
     }
 
     this.isDynamicTimeoutRetry = false;
+    this.solveInFlight = false;
     this.setSolveButtonState(false);
 
     this.debugOverlay.finalize(result.solutions);
@@ -1021,27 +1068,31 @@ export class App {
   }
 
   private abortSolver(): void {
-    // Cancel paths in order: MCU fetch, DMA lookup, then the worker phase.
-    if (this.dmaFetchAbort) {
-      this.dmaFetchAbort.abort();
-      this.dmaFetchAbort = null;
-      this.setSolveButtonState(false);
-      this.showStatus('Aborted DMA lookup', 'info');
-      return;
-    }
-    if (this.fetchAbort) {
-      this.fetchAbort.abort();
-      this.fetchAbort = null;
-      this.setSolveButtonState(false);
-      this.showStatus('Aborted MCU fetch', 'info');
-      return;
-    }
-    if (this.solverWorkers.length > 0) {
-      this.terminateWorkers();
-      this.setSolveButtonState(false);
-      this.debugOverlay.stopRun();
-      this.showStatus('Solver aborted', 'info');
-    }
+    const phase = this.dmaFetchAbort ? 'Aborted DMA lookup'
+      : this.fetchAbort ? 'Aborted MCU fetch'
+      : this.solveInFlight || this.solverWorkers.length > 0 ? 'Solver aborted'
+      : null;
+    this.cancelActiveSolve();
+    if (phase) this.showStatus(phase, 'info');
+  }
+
+  /**
+   * Silently cancel any in-flight solve, whatever phase it is in. Bumping
+   * solveGen makes every pending continuation and queued worker message a
+   * no-op; called on user abort and on project switch/new so a late result
+   * can never land in state it doesn't belong to.
+   */
+  private cancelActiveSolve(): void {
+    if (!this.solveInFlight && this.solverWorkers.length === 0 && !this.fetchAbort && !this.dmaFetchAbort) return;
+    this.solveGen++;
+    this.solveInFlight = false;
+    this.fetchAbort?.abort();
+    this.fetchAbort = null;
+    this.dmaFetchAbort?.abort();
+    this.dmaFetchAbort = null;
+    this.terminateWorkers();
+    this.debugOverlay.stopRun();
+    this.setSolveButtonState(false);
   }
 
   private setSolveButtonState(solving: boolean): void {
@@ -1095,15 +1146,7 @@ export class App {
     importBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', () => {
       if (fileInput.files) {
-        for (const file of fileInput.files) {
-          if (file.name.endsWith('.ioc')) {
-            this.loadIocFile(file);
-          } else if (file.name.endsWith('.json')) {
-            this.loadProjectFile(file);
-          } else {
-            this.loadXmlFile(file);
-          }
-        }
+        void this.importFiles([...fileInput.files]);
       }
       fileInput.value = '';
     });
@@ -1230,32 +1273,48 @@ export class App {
       element.classList.remove('drag-over');
 
       if (e.dataTransfer?.files) {
-        for (const file of e.dataTransfer.files) {
-          if (file.name.endsWith('.xml')) {
-            this.loadXmlFile(file);
-          } else if (file.name.endsWith('.ioc')) {
-            this.loadIocFile(file);
-          } else if (file.name.endsWith('.json')) {
-            this.loadProjectFile(file);
-          }
-        }
+        void this.importFiles(
+          [...e.dataTransfer.files].filter(f => /\.(xml|ioc|json)$/i.test(f.name)),
+        );
       }
     });
   }
 
-  private async loadXmlFile(file: File): Promise<void> {
-    try {
-      const text = await file.text();
-      if (isIocFile(text)) {
-        this.loadIocData(text, file.name);
-      } else if (isDmaXml(text)) {
-        this.loadDmaXml(text, file.name);
-      } else {
-        this.loadMcuXml(text, file.name);
+  /**
+   * Import a batch of dropped/picked files. Sequential (concurrent loaders
+   * raced on IDB commit order), with DMA XML processed before MCU XML so a
+   * batch containing both links them deterministically.
+   */
+  private async importFiles(files: Iterable<File>): Promise<void> {
+    const xmlJobs: Array<{ file: File; text: string }> = [];
+    for (const file of files) {
+      try {
+        if (file.name.endsWith('.ioc')) {
+          await this.loadIocFile(file);
+        } else if (file.name.endsWith('.json')) {
+          await this.loadProjectFile(file);
+        } else {
+          xmlJobs.push({ file, text: await file.text() });
+        }
+      } catch (err) {
+        console.error('Failed to load file:', err);
+        this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
       }
-    } catch (err) {
-      console.error('Failed to load file:', err);
-      this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
+    }
+    const ordered = [...xmlJobs.filter(j => isDmaXml(j.text)), ...xmlJobs.filter(j => !isDmaXml(j.text))];
+    for (const { file, text } of ordered) {
+      try {
+        if (isIocFile(text)) {
+          await this.loadIocData(text, file.name);
+        } else if (isDmaXml(text)) {
+          await this.loadDmaXml(text, file.name);
+        } else {
+          await this.loadMcuXml(text, file.name);
+        }
+      } catch (err) {
+        console.error('Failed to load file:', err);
+        this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
+      }
     }
   }
 
@@ -1273,8 +1332,9 @@ export class App {
       console.warn('MCU validation warnings:', validation.warnings);
     }
 
-    // Try to attach DMA data from stored DMA XMLs
-    this.attachDmaData(mcu);
+    // Try to attach DMA data from stored DMA XMLs. Await it — the meta tags
+    // and status below depend on whether mcu.dma got filled in.
+    await this.attachDmaData(mcu);
 
     // Persist raw XML so reloads don't need a re-import.
     try {
@@ -1296,6 +1356,8 @@ export class App {
    * enable solve. Both XML drag-drop and remote JSON fetch route here.
    */
   private activateLoadedMcu(mcu: Mcu): void {
+    // A synchronous commit outranks any MCU load still in flight.
+    this.mcuLoadSeq++;
     this.currentMcu = mcu;
     this.mcuCache.set(mcu.refName, mcu);
     // ponytail: temporary diagnostic — remove once JSON solver path proven.
@@ -1531,7 +1593,7 @@ export class App {
     // If we have a current MCU, try to attach DMA data to it
     if (this.currentMcu && !this.currentMcu.dma) {
       const mcu = this.currentMcu;
-      this.attachDmaData(mcu);
+      await this.attachDmaData(mcu);
       if (mcu.dma) {
         // Update the stored MCU metadata tags
         try {
@@ -1666,6 +1728,7 @@ export class App {
   // ---- Project management ----
 
   private newProject(): void {
+    this.cancelActiveSolve();
     this.currentProjectName = null;
     this.currentSolution = null;
     localStorage.removeItem('current-project');
@@ -1713,30 +1776,44 @@ export class App {
     }));
   }
 
+  /**
+   * Serialize project read-modify-writes. The kv store has no transactions,
+   * so two writers (Save racing Save-As, or two tabs) would silently drop the
+   * loser's version history. Web Locks span tabs; browsers without the API
+   * fall back to unserialized writes (same as before).
+   */
+  private withProjectLock<T>(fn: () => Promise<T>): Promise<T> {
+    return navigator.locks
+      ? navigator.locks.request('pinout-tool-projects', fn) as Promise<T>
+      : fn();
+  }
+
   /** Save project by overwriting the latest version (header Save + project list Save) */
   private async saveProject(name: string): Promise<void> {
     const version = this.buildCurrentVersion(0);
 
-    // Load existing project data
-    let projectData: ProjectData = { name, versions: [] };
-    try {
-      const existing = await getKv().get(`project:${name}`);
-      if (existing) {
-        projectData = migrateProjectData(JSON.parse(existing));
-        projectData.name = name;
+    await this.withProjectLock(async () => {
+      // Load existing project data
+      let projectData: ProjectData = { name, versions: [] };
+      try {
+        const existing = await getKv().get(`project:${name}`);
+        if (existing) {
+          projectData = migrateProjectData(JSON.parse(existing));
+          projectData.name = name;
+        }
+      } catch { /* start fresh */ }
+
+      // Overwrite latest version, or create first version
+      if (projectData.versions.length > 0) {
+        const latest = projectData.versions[projectData.versions.length - 1];
+        version.id = latest.id;
+        projectData.versions[projectData.versions.length - 1] = version;
+      } else {
+        projectData.versions.push(version);
       }
-    } catch { /* start fresh */ }
 
-    // Overwrite latest version, or create first version
-    if (projectData.versions.length > 0) {
-      const latest = projectData.versions[projectData.versions.length - 1];
-      version.id = latest.id;
-      projectData.versions[projectData.versions.length - 1] = version;
-    } else {
-      projectData.versions.push(version);
-    }
-
-    this.persistProject(name, projectData, version);
+      await this.persistProject(name, projectData, version);
+    });
   }
 
   /** Save As: prompt for name, append a new version */
@@ -1745,20 +1822,22 @@ export class App {
     if (!name?.trim()) return;
     const trimmed = name.trim();
 
-    // Load existing project data (may or may not exist)
-    let projectData: ProjectData = { name: trimmed, versions: [] };
-    try {
-      const existing = await getKv().get(`project:${trimmed}`);
-      if (existing) {
-        projectData = migrateProjectData(JSON.parse(existing));
-        projectData.name = trimmed;
-      }
-    } catch { /* start fresh */ }
+    await this.withProjectLock(async () => {
+      // Load existing project data (may or may not exist)
+      let projectData: ProjectData = { name: trimmed, versions: [] };
+      try {
+        const existing = await getKv().get(`project:${trimmed}`);
+        if (existing) {
+          projectData = migrateProjectData(JSON.parse(existing));
+          projectData.name = trimmed;
+        }
+      } catch { /* start fresh */ }
 
-    const version = this.buildCurrentVersion(projectData.versions.length);
-    projectData.versions.push(version);
+      const version = this.buildCurrentVersion(projectData.versions.length);
+      projectData.versions.push(version);
 
-    this.persistProject(trimmed, projectData, version);
+      await this.persistProject(trimmed, projectData, version);
+    });
   }
 
   private buildCurrentVersion(id: number): ProjectVersion {
@@ -1849,6 +1928,7 @@ export class App {
   }
 
   private async applyProjectVersion(name: string, version: ProjectVersion): Promise<void> {
+    this.cancelActiveSolve();
     this.loadingProject = true;
     this.constraintEditor.setText(version.constraintText || '');
     this.currentProjectName = name;
@@ -1875,7 +1955,7 @@ export class App {
     // without an MCU the validity badges cannot be computed at all.
     const mcuRef = version.mcuRef || version.solutions?.find(s => s.mcuRef)?.mcuRef;
     if (mcuRef && (!this.currentMcu || this.currentMcu.refName !== mcuRef)) {
-      this.loadStoredMcu(mcuRef);
+      this.loadStoredMcu(mcuRef).catch(err => console.error(`Failed to load MCU ${mcuRef}:`, err));
     }
 
     // Restore solutions into the project list (not the solver list)
@@ -1911,7 +1991,7 @@ export class App {
   }
 
   async deleteProject(name: string): Promise<void> {
-    await getKv().delete(`project:${name}`);
+    await this.withProjectLock(() => getKv().delete(`project:${name}`));
     if (this.currentProjectName === name) {
       this.currentProjectName = null;
       localStorage.removeItem('current-project');
@@ -2251,7 +2331,7 @@ export class App {
           const json = decodeURIComponent(atob(hash.slice(3)));
           const state: UrlState = JSON.parse(json);
           this.constraintEditor.setText(state.c || '');
-          if (state.m) this.loadStoredMcu(state.m);
+          if (state.m) this.loadStoredMcu(state.m).catch(err => console.error(`Failed to load MCU ${state.m}:`, err));
           if (state.sol) {
             const solution = deserializeSolution(state.sol);
             const solverResult: SolverResult = {
@@ -2557,6 +2637,7 @@ export class App {
   }
 
   private async loadStoredMcu(refName: string): Promise<void> {
+    const seq = ++this.mcuLoadSeq;
     const xml = await getKv().get(`mcu-xml:${refName}`);
     if (!xml) {
       // Not in local storage. Try the in-memory cache (fetched this session),
@@ -2567,7 +2648,7 @@ export class App {
         this.activateLoadedMcu(cached);
         return;
       }
-      await this.loadRemoteMcu(refName);
+      await this.loadRemoteMcu(refName, seq);
       return;
     }
     try {
@@ -2579,7 +2660,11 @@ export class App {
       }
 
       // Attach DMA data if available
-      this.attachDmaData(mcu);
+      await this.attachDmaData(mcu);
+
+      // A newer MCU load or import won while we were reading storage — this
+      // result must not clobber it.
+      if (seq !== this.mcuLoadSeq) return;
 
       this.currentMcu = mcu;
 
@@ -2610,7 +2695,7 @@ export class App {
    * DMA data, so they route straight through activateLoadedMcu (no separate
    * dma-xml attach). The result is memory-cached by activateLoadedMcu.
    */
-  private async loadRemoteMcu(refName: string): Promise<void> {
+  private async loadRemoteMcu(refName: string, seq = ++this.mcuLoadSeq): Promise<void> {
     const ds = getDataSource();
     if (!ds.baseUrl()) {
       this.showStatus(`MCU "${refName}" is not in local storage and no data source is configured`, 'error');
@@ -2620,6 +2705,8 @@ export class App {
     this.showStatus(`Fetching ${refName} from data source…`, 'info');
     try {
       const mcu = await ds.loadVariant(refName, controller.signal);
+      // A newer MCU load or import won while this fetch was in flight.
+      if (seq !== this.mcuLoadSeq) return;
       if (!mcu) {
         this.showStatus(`MCU "${refName}" not found in local storage or the data source`, 'error');
         return;
@@ -3588,20 +3675,25 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
   }
 
   private async deleteProjectVersion(projectName: string, versionId: number): Promise<void> {
-    const raw = await getKv().get(`project:${projectName}`);
-    if (!raw) return;
-    try {
-      const projectData = migrateProjectData(JSON.parse(raw));
-      projectData.versions = projectData.versions.filter(v => v.id !== versionId);
-      if (projectData.versions.length === 0) {
-        this.deleteProject(projectName);
-        return;
-      }
-      // Re-number version ids
-      projectData.versions.forEach((v, i) => v.id = i);
-      await getKv().set(`project:${projectName}`, JSON.stringify(projectData));
-      this.refreshProjectList();
-    } catch { /* ignore */ }
+    let emptied = false;
+    await this.withProjectLock(async () => {
+      const raw = await getKv().get(`project:${projectName}`);
+      if (!raw) return;
+      try {
+        const projectData = migrateProjectData(JSON.parse(raw));
+        projectData.versions = projectData.versions.filter(v => v.id !== versionId);
+        if (projectData.versions.length === 0) {
+          emptied = true;
+          return;
+        }
+        // Re-number version ids
+        projectData.versions.forEach((v, i) => v.id = i);
+        await getKv().set(`project:${projectName}`, JSON.stringify(projectData));
+        this.refreshProjectList();
+      } catch { /* ignore */ }
+    });
+    // Outside the lock — deleteProject takes it itself.
+    if (emptied) await this.deleteProject(projectName);
   }
 
   private downloadJson(data: unknown, filename: string): void {
@@ -3700,20 +3792,23 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
 
     // Merge into an existing project when the name is taken, so importing
     // twice builds up versions instead of overwriting.
-    let target: ProjectData = { name: trimmed, versions: [] };
-    try {
-      const existing = await getKv().get(`project:${trimmed}`);
-      if (existing) {
-        target = migrateProjectData(JSON.parse(existing));
-        target.name = trimmed;
-      }
-    } catch { /* treat as new */ }
-
     const addedCount = imported.versions.length;
-    mergeImportedVersions(target, imported);
+    const latest = await this.withProjectLock(async () => {
+      let target: ProjectData = { name: trimmed, versions: [] };
+      try {
+        const existing = await getKv().get(`project:${trimmed}`);
+        if (existing) {
+          target = migrateProjectData(JSON.parse(existing));
+          target.name = trimmed;
+        }
+      } catch { /* treat as new */ }
 
-    const latest = target.versions[target.versions.length - 1];
-    await this.persistProject(trimmed, target, latest);
+      mergeImportedVersions(target, imported);
+
+      const merged = target.versions[target.versions.length - 1];
+      await this.persistProject(trimmed, target, merged);
+      return merged;
+    });
     await this.applyProjectVersion(trimmed, latest);
     this.showStatus(
       `Imported "${file.name}" as "${trimmed}" (${addedCount} version(s), now v${latest.id})`,

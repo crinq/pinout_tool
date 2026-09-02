@@ -268,22 +268,30 @@ export async function migrateLocalStorageToIdb(): Promise<{ moved: number; skipp
   } catch { return { moved: 0, skipped: 0 }; }
 
   let moved = 0;
+  const copied: string[] = [];
   for (const k of toMigrate) {
     const v = localStorage.getItem(k);
-    if (v == null) continue;
+    if (v == null) { copied.push(k); continue; }
     try {
       await kv.set(k, v);
       moved++;
+      copied.push(k);
     } catch (err) {
       // Leave the localStorage entry in place if IDB write failed.
       console.warn(`[migration] failed to copy ${k}: ${(err as Error).message}`);
     }
   }
 
-  try { localStorage.setItem('idb-migrated', '1'); } catch { /* */ }
+  // Flag only when every entry made it across — a partial failure (quota,
+  // flaky private-mode IDB) retries on the next boot instead of orphaning
+  // the failed keys. Re-copying already-moved keys then is a harmless
+  // idempotent overwrite.
+  if (copied.length === toMigrate.length) {
+    try { localStorage.setItem('idb-migrated', '1'); } catch { /* */ }
+  }
 
-  // Now safe to delete from localStorage to reclaim the cap.
-  for (const k of toMigrate) {
+  // Delete only what was actually copied; failed keys keep their original.
+  for (const k of copied) {
     try { localStorage.removeItem(k); } catch { /* ignore */ }
   }
 
