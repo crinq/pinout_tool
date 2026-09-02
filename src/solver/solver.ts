@@ -1893,7 +1893,10 @@ export function prepareSolverContext(
   const configCombinations = generateConfigCombinations(ports);
   const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
-  if (allVariables.length === 0) return null;
+  if (allVariables.length === 0) {
+    errors.push({ type: 'warning', message: 'No variables to solve (no port configs defined)' });
+    return null;
+  }
 
   const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
@@ -1909,7 +1912,10 @@ export function prepareSolverContext(
   const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
   const { solveVars: variables, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!skipGpioMapping);
 
-  if (variables.length === 0 && gpioVars.length === 0) return null;
+  if (variables.length === 0 && gpioVars.length === 0) {
+    errors.push({ type: 'warning', message: 'No variables to solve (no port configs defined)' });
+    return null;
+  }
 
   if (gpioVars.length > 0) {
     errors.push({
@@ -1941,13 +1947,7 @@ export function prepareSolverContext(
 
   const tracker = createPinTracker(reserved.pins, sharedPatterns, reserved.positions);
 
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
+  const stats: SolverStats = newStats(configCombinations.length);
 
   const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
 
@@ -1986,125 +1986,11 @@ export function solveConstraints(
   const solutions: Solution[] = [];
 
 
-  // Expand macros (including stdlib) before extracting ports
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  // Placement anchors — see prepareSolverContext.
-  setActiveAnchors(buildAnchors(expandedAst, mcu));
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) {
-    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  }
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-
-
-  const configCombinations = generateConfigCombinations(ports);
-
-  // Create variables for ALL configs of ALL ports
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve (no port configs defined)' }],
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
-  }
-
-  // Check for empty domains (skip optional variables — they can be left unassigned)
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors,
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
-  }
-
-  // Remove optional variables with empty domains (they'll remain unassigned)
-  const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
-  const { solveVars: variables, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!cfg.skipGpioMapping);
-
-  if (gpioVars.length > 0) {
-    errors.push({
-      type: 'warning',
-      message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only`,
-    });
-  }
-
-  // Sort by MRV (minimum remaining values), optional variables last
-  variables.sort((a, b) => {
-    if (a.optional !== b.optional) return a.optional ? 1 : -1;
-    return a.domain.length - b.domain.length;
-  });
-
-  // Pre-compute: last variable index per (port, config) in MRV order
-  // When we reach this index, all variables for that config are assigned
-  // and we can eagerly check its require constraints.
-  const lastVarOfConfig = new Map<string, number>();
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (let i = 0; i < variables.length; i++) {
-    const key = `${variables[i].portName}\0${variables[i].configName}`;
-    lastVarOfConfig.set(key, i); // last one wins
-  }
-  for (const [portName, port] of ports) {
-    for (const config of port.configs) {
-      if (config.requires.length > 0) {
-        configRequiresMap.set(`${portName}\0${config.name}`, config.requires);
-      }
-    }
-  }
-
-  const tracker = createPinTracker(reserved.pins, sharedPatterns, reserved.positions);
-
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
-
-  // Track deepest partial solution for conflict reporting
-  const deepest = { depth: -1, assignments: [] as VariableAssignment[] };
-
-  // Only pass DMA data when configs actually use dma() constraints
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-
-  // Build MCU info for pin position functions
-  const pinByName = new Map<string, { position: string }>();
-  for (const pin of mcu.logicalPins) {
-    pinByName.set(pin.name, { position: pin.physical.position });
-  }
-  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
+  const ctx = prepareSolverContext(ast, mcu, errors, cfg.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { variables, ports, pinnedAssignments, configCombinations, gpioVarsPerConfig,
+    lastVarOfConfig, configRequiresMap, tracker, stats, deepest, dmaData, mcuInfo } = ctx;
+  const reservedPins = ctx.reservedPins;
 
   // Backtracking search over ALL variables simultaneously
   solveBacktrack(
@@ -2117,33 +2003,9 @@ export function solveConstraints(
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
 
   // If no solutions found, report deepest partial as conflict info
-  if (solutions.length === 0 && deepest.depth >= 0) {
-    const failingVar = deepest.depth + 1 < variables.length ? variables[deepest.depth + 1] : null;
-    const partialAssignments: Assignment[] = deepest.assignments.map(va => ({
-      pinName: va.candidate.pin.name,
-      signalName: va.candidate.signalName,
-      portName: va.variable.portName,
-      channelName: va.variable.channelName,
-      configurationName: va.variable.configName,
-    }));
+  if (solutions.length === 0) pushDeepestConflictError(errors, deepest, variables);
 
-    if (failingVar) {
-      errors.push({
-        type: 'error',
-        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
-        source: `${failingVar.portName}.${failingVar.channelName}`,
-        partialSolution: partialAssignments,
-      });
-    } else {
-      errors.push({
-        type: 'error',
-        message: 'All pin assignments found but require constraints failed for all config combinations',
-        partialSolution: partialAssignments,
-      });
-    }
-  }
-
-  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, stats, startTime, gpioVarsPerConfig, reservedPins, pinnedAssignments);
 }
 
 export function solveBacktrack(
@@ -2198,22 +2060,14 @@ export function solveBacktrack(
 
     // All variables assigned - evaluate constraints
     if (vi === totalVars) {
-      stats.evaluatedCombinations++;
-      const dmaAssignmentsOut: Map<string, string>[] = [];
-      if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaAssignmentsOut, mcuInfo, tracker.sharedPatterns)) {
-        const solution = buildSolution(
-          current, configCombinations, ports, pinnedAssignments, solutions.length, dmaAssignmentsOut
-        );
-        // C2: compute cost immediately and update pruning threshold
-        if (costTracker) {
-          computeTotalCost(solution, costTracker.mcu, costTracker.costWeights);
-          updateCostThreshold(costTracker, solution.totalCost);
-        }
-        solutions.push(solution);
-        stats.validSolutions++;
-        const elapsed = performance.now() - startTime;
-        if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
-        stats.lastSolutionMs = elapsed;
+      const solution = tryEmitSolution(
+        current, configCombinations, ports, pinnedAssignments,
+        solutions, stats, startTime, dmaData, mcuInfo, tracker.sharedPatterns,
+      );
+      // C2: compute cost immediately and update pruning threshold
+      if (solution && costTracker) {
+        computeTotalCost(solution, costTracker.mcu, costTracker.costWeights);
+        updateCostThreshold(costTracker, solution.totalCost);
       }
       // Pop this leaf frame and backtrack
       stackVarIdx.length = sp;
@@ -2288,29 +2142,8 @@ export function solveBacktrack(
         const configKey = `${v.portName}\0${v.configName}`;
         if (lastVarOfConfig.get(configKey) === vi) {
           const requires = configRequiresMap.get(configKey);
-          if (requires) {
-            const portChannels = new Map<string, VariableAssignment[]>();
-            for (const va of current) {
-              if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
-                if (!portChannels.has(va.variable.channelName)) {
-                  portChannels.set(va.variable.channelName, []);
-                }
-                portChannels.get(va.variable.channelName)!.push(va);
-              }
-            }
-            const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-            channelInfo.set(v.portName, portChannels);
-            for (const req of requires) {
-              // Skip if any referenced channel is unassigned (from ?= mapping)
-              if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
-                continue;
-              }
-              if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
-                if (req.optional) continue; // require? — soft constraint, ignore failure
-                pruned = true;
-                break;
-              }
-            }
+          if (requires && !checkRequires(requires, v.portName, v.configName, current, dmaData, mcuInfo)) {
+            pruned = true;
           }
         }
       }
@@ -2390,6 +2223,118 @@ export function solveBacktrack(
  * everything to collect up to `limit` failures. Only ever called for a
  * solution already known to be invalid.
  */
+/**
+ * When a solve produced nothing, report the deepest failure point: which
+ * variable exhausted its candidates (with the partial assignment that got
+ * there), or that full assignments existed but every combo failed requires.
+ */
+export function pushDeepestConflictError(
+  errors: SolverError[],
+  deepest: { depth: number; assignments: VariableAssignment[] },
+  variables: SolverVariable[],
+): void {
+  if (deepest.depth < 0) return;
+  const failingVar = deepest.depth + 1 < variables.length ? variables[deepest.depth + 1] : null;
+  const partialSolution: Assignment[] = deepest.assignments.map(va => ({
+    pinName: va.candidate.pin.name,
+    signalName: va.candidate.signalName,
+    portName: va.variable.portName,
+    channelName: va.variable.channelName,
+    configurationName: va.variable.configName,
+  }));
+  if (failingVar) {
+    errors.push({
+      type: 'error',
+      message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
+      source: `${failingVar.portName}.${failingVar.channelName}`,
+      partialSolution,
+    });
+  } else {
+    errors.push({
+      type: 'error',
+      message: 'All pin assignments found but require constraints failed for all config combinations',
+      partialSolution,
+    });
+  }
+}
+
+/** Fresh statistics object; totalCombinations mirrors configCombinations. */
+export function newStats(configCombinations = 0): SolverStats {
+  return {
+    totalCombinations: configCombinations,
+    evaluatedCombinations: 0,
+    validSolutions: 0,
+    solveTimeMs: 0,
+    configCombinations,
+  };
+}
+
+/**
+ * Evaluate a complete assignment at a search leaf and, when valid, push the
+ * built solution and stamp the stats (evaluated/valid counters, first/last
+ * solution timing). Returns the emitted solution, or null when the leaf
+ * violates a constraint. Shared by every solver's leaf handler.
+ */
+export function tryEmitSolution(
+  current: VariableAssignment[],
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  pinnedAssignments: PinnedAssignment[],
+  solutions: Solution[],
+  stats: SolverStats,
+  startTime: number,
+  dmaData?: DmaData,
+  mcuInfo?: EvalMcuInfo,
+  sharedPatterns?: PatternPart[],
+): Solution | null {
+  stats.evaluatedCombinations++;
+  const dmaOut: Map<string, string>[] = [];
+  if (!evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, mcuInfo, sharedPatterns)) {
+    return null;
+  }
+  const solution = buildSolution(current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut);
+  solutions.push(solution);
+  stats.validSolutions++;
+  const elapsed = performance.now() - startTime;
+  if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
+  stats.lastSolutionMs = elapsed;
+  return solution;
+}
+
+/**
+ * Evaluate one (port, config)'s require list against the currently assigned
+ * variables. Optional requires (`require?`) and requires referencing
+ * unassigned (`?=`) channels never fail. Shared by every solver's eager
+ * config-complete check.
+ */
+export function checkRequires(
+  requires: RequireNode[],
+  portName: string,
+  configName: string,
+  current: VariableAssignment[],
+  dmaData: DmaData | undefined,
+  mcuInfo: EvalMcuInfo | undefined
+): boolean {
+  const portChannels = new Map<string, VariableAssignment[]>();
+  for (const va of current) {
+    if (va.variable.portName === portName && va.variable.configName === configName) {
+      if (!portChannels.has(va.variable.channelName)) portChannels.set(va.variable.channelName, []);
+      portChannels.get(va.variable.channelName)!.push(va);
+    }
+  }
+  const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
+  channelInfo.set(portName, portChannels);
+
+  for (const req of requires) {
+    if (isOptionalRequireVacuous(req.expression, portName, channelInfo)) continue;
+    if (!evaluateExpr(req.expression, portName, channelInfo, dmaData, mcuInfo)) {
+      if (req.optional) continue; // require? — soft constraint, ignore failure
+      return false;
+    }
+  }
+  return true;
+}
+
 export function collectConstraintFailures(
   assignments: VariableAssignment[],
   configCombinations: Map<string, string>[],
@@ -3552,33 +3497,6 @@ export function deduplicateSolutions(solutions: Solution[]): Solution[] {
 
 /** Group solutions by peripheral fingerprint (port→peripherals, ignoring pin names).
  *  Sets clusterSize on each solution and returns one representative per cluster (lowest cost). */
-export function clusterSolutions(solutions: Solution[]): Solution[] {
-  if (solutions.length === 0) return solutions;
-
-  const clusters = new Map<string, Solution[]>();
-  for (const sol of solutions) {
-    // Build fingerprint from portPeripherals (ignoring pin-level details)
-    const parts: string[] = [];
-    for (const [port, peripherals] of sol.portPeripherals) {
-      parts.push(`${port}:[${[...peripherals].sort().join(',')}]`);
-    }
-    const fp = parts.sort().join('|');
-    if (!clusters.has(fp)) clusters.set(fp, []);
-    clusters.get(fp)!.push(sol);
-  }
-
-  const representatives: Solution[] = [];
-  for (const group of clusters.values()) {
-    group.sort((a, b) => a.totalCost - b.totalCost);
-    const best = group[0];
-    best.clusterSize = group.length;
-    representatives.push(best);
-  }
-
-  representatives.sort((a, b) => a.totalCost - b.totalCost);
-  representatives.forEach((s, i) => s.id = i);
-  return representatives;
-}
 
 // ============================================================
 // Helpers

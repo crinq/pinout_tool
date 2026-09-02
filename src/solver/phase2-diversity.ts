@@ -199,3 +199,45 @@ export function runPhase2Diverse(
 
   return allSolutions;
 }
+
+/**
+ * Order groups by farthest-point sampling on instance-assignment distance,
+ * so Phase 2 visits structurally diverse groups first. Shared by the
+ * two-phase family (was copy-pasted into three solvers).
+ */
+export function orderByDiversity(groups: InstanceGroup[]): InstanceGroup[] {
+  if (groups.length <= 2) return [...groups];
+
+  const n = groups.length;
+  const selected: InstanceGroup[] = [groups[0]];
+  const used = new Uint8Array(n);
+  used[0] = 1;
+  // minDist[i] = minimum distance from group i to any already-selected group
+  const minDist = new Float64Array(n).fill(Infinity);
+
+  for (let iter = 1; iter < n; iter++) {
+    const last = selected[selected.length - 1];
+    let bestIdx = -1;
+    let bestDist = -1;
+
+    for (let i = 0; i < n; i++) {
+      if (used[i]) continue;
+      // Hamming distance: count differing instance assignments
+      let d = 0;
+      for (const [k, v] of last.assignments) {
+        if (groups[i].assignments.get(k) !== v) d++;
+      }
+      minDist[i] = Math.min(minDist[i], d);
+      if (minDist[i] > bestDist) {
+        bestDist = minDist[i];
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx === -1) break;
+    selected.push(groups[bestIdx]);
+    used[bestIdx] = 1;
+  }
+
+  return selected;
+}

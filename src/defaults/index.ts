@@ -46,7 +46,12 @@ export const DEFAULT_LIBRARIES: DefaultLibrary[] = [
  * a new file in adds an export; ids are taken from the file's header so a new
  * built-in can never collide with a user's own function.
  */
-const EXPORT_FILES = import.meta.glob('./exports/*.js', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+// Vite replaces the import.meta.glob call at build time; under plain Node
+// (the benchmark worker bundles this module via the solver → stdlib-macros →
+// storage chain) the function doesn't exist, so fall back to no built-ins.
+const EXPORT_FILES = (typeof import.meta.glob === 'function'
+  ? import.meta.glob('./exports/*.js', { query: '?raw', import: 'default', eager: true })
+  : {}) as Record<string, string>;
 
 /** Parse `// key: value` header lines off the top of a default export file. */
 export function parseExportFile(source: string, fallbackId: string): CustomExportFunction {

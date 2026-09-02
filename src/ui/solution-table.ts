@@ -1,3 +1,4 @@
+import { countSolutionPins, countSolutionPeripherals, sortHeaderCell, scrollFocusedRowIntoView } from './solution-list-common';
 import type { Panel, StateChange } from './panel';
 import type { Solution, SolverResult } from '../types';
 
@@ -224,20 +225,7 @@ export class SolverSolutions implements Panel {
   }
 
   private scrollToFocused(): void {
-    const row = this.tableWrapper.querySelector('tr.st-focused') as HTMLElement | null;
-    if (!row) return;
-
-    const thead = this.tableWrapper.querySelector('thead');
-    const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
-    const wrapperRect = this.tableWrapper.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-
-    // If row is behind the sticky header, scroll it down into view
-    if (rowRect.top < wrapperRect.top + headerHeight) {
-      this.tableWrapper.scrollTop -= (wrapperRect.top + headerHeight - rowRect.top);
-    } else if (rowRect.bottom > wrapperRect.bottom) {
-      this.tableWrapper.scrollTop += (rowRect.bottom - wrapperRect.bottom);
-    }
+    scrollFocusedRowIntoView(this.tableWrapper);
   }
 
   private render(): void {
@@ -449,8 +437,7 @@ export class SolverSolutions implements Panel {
   }
 
   private headerCell(label: string, key: SortKey): string {
-    const arrow = this.sortKey === key ? (this.sortDir === 'asc' ? ' ^' : ' v') : '';
-    return `<th class="st-sortable" data-sort="${key}">${label}${arrow}</th>`;
+    return sortHeaderCell(label, key, this.sortKey, this.sortDir);
   }
 
   private getSelectedSolution(): Solution | null {
@@ -463,25 +450,11 @@ export class SolverSolutions implements Panel {
   }
 
   private countPins(solution: Solution): number {
-    if (solution._pinCount != null) return solution._pinCount;
-    const pins = new Set<string>();
-    for (const ca of solution.configAssignments) {
-      for (const a of ca.assignments) {
-        if (a.portName !== '<pinned>') pins.add(a.pinName);
-      }
-    }
-    solution._pinCount = pins.size;
-    return pins.size;
+    return countSolutionPins(solution);
   }
 
   private countPeripherals(solution: Solution): number {
-    if (solution._peripheralCount != null) return solution._peripheralCount;
-    let count = 0;
-    for (const peripherals of solution.portPeripherals.values()) {
-      count += peripherals.size;
-    }
-    solution._peripheralCount = count;
-    return count;
+    return countSolutionPeripherals(solution);
   }
 
   private static SOLVER_SHORT_LABELS: Record<string, string> = {

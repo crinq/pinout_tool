@@ -86,16 +86,10 @@ const MACRO_HEADER = /^(\s*)macro\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:\s
 /** `NAME(args)` on a line of its own, with an optional trailing comment. */
 const MACRO_CALL = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*(?:#.*)?$/;
 
-/**
- * Statement heads that can legally be followed by `(...)` — most notably
- * `require (A & B)`. Without this exemption MACRO_CALL swallows the line
- * and reports "Unknown macro 'require'". Mirrors the parser's KEYWORDS set.
- */
-const STATEMENT_KEYWORDS = new Set([
-  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve',
-  'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
-  'from', 'settings', 'group',
-]);
+// Statement heads that can legally be followed by `(...)` — most notably
+// `require (A & B)`. Without this exemption MACRO_CALL swallows the line and
+// reports "Unknown macro 'require'". One canonical set, owned by the parser.
+import { KEYWORDS as STATEMENT_KEYWORDS } from './constraint-parser';
 
 /**
  * `channel NAME(args)` — shorthand for declaring the argument channels and

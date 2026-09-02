@@ -1,7 +1,7 @@
-import { solveConstraints, estimateComplexity, setActiveAnchorsFor } from './solver';
+import { newStats, solveConstraints, estimateComplexity, setActiveAnchorsFor } from './solver';
 import { setSquaredCosts } from './cost-functions';
 import type { SolverConfig } from './solver';
-import { solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
+import { priorityPhase2Sort, costGuidedPhase2Sort, solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import { solveRandomizedRestarts } from './randomized-solver';
 import { solveCostGuided } from './cost-guided-solver';
@@ -21,8 +21,6 @@ import { solveLnsRepair } from './lns-solver';
 import { solveAdaptive } from './adaptive-solver';
 import { getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
-import { computePortPriority } from './port-priority';
-import { estimateCandidateCost } from './cost-functions';
 import { postOptimizeSolutions } from './post-optimize';
 import { toWire } from './solution-transfer';
 import type { Mcu, SolverResult } from '../types';
@@ -98,44 +96,10 @@ function getPhase2SortFn(
   switch (solverId) {
     case 'priority-two-phase':
     case 'priority-group':
-      return (vars: SolverVariable[]) => {
-        const p2Priority = computePortPriority(vars);
-        const minCosts = new Map<SolverVariable, number>();
-        for (const v of vars) {
-          let minCost = Infinity;
-          for (const ci of v.domain) {
-            const cost = estimateCandidateCost(v.candidates[ci], costWeights);
-            if (cost < minCost) minCost = cost;
-          }
-          minCosts.set(v, minCost);
-        }
-        vars.sort((a, b) => {
-          const pa = p2Priority.get(a.portName) ?? 0;
-          const pb = p2Priority.get(b.portName) ?? 0;
-          if (pa !== pb) return pb - pa;
-          const sizeA = a.domain.length, sizeB = b.domain.length;
-          if (sizeA !== sizeB) return sizeA - sizeB;
-          return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
-        });
-      };
+      return (vars) => priorityPhase2Sort(vars, costWeights);
     default:
       // MRV + cost (C1)
-      return (vars: SolverVariable[]) => {
-        const minCosts = new Map<SolverVariable, number>();
-        for (const v of vars) {
-          let minCost = Infinity;
-          for (const ci of v.domain) {
-            const cost = estimateCandidateCost(v.candidates[ci], costWeights);
-            if (cost < minCost) minCost = cost;
-          }
-          minCosts.set(v, minCost);
-        }
-        vars.sort((a, b) => {
-          const sizeA = a.domain.length, sizeB = b.domain.length;
-          if (sizeA !== sizeB) return sizeA - sizeB;
-          return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
-        });
-      };
+      return (vars) => costGuidedPhase2Sort(vars, costWeights);
   }
 }
 
@@ -238,7 +202,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
             const emptyResult: SolverResult = {
               mcuRef: mcu.refName, solutions: [],
               errors: phase1?.errors?.map(e => ({ ...e })) ?? [{ type: 'error', message: 'Phase 1: No valid assignments' }],
-              statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+              statistics: newStats(0),
             };
             labeled.push({ solverId: st, result: tagErrors(emptyResult, st) });
           }
@@ -267,7 +231,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       mcuRef: '',
       solutions: [],
       errors: [{ type: 'error', message: `Solver crashed: ${err instanceof Error ? err.message : String(err)}${err instanceof Error && err.stack ? '\n' + err.stack : ''}` }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+      statistics: newStats(0),
       _wire: true,
     });
   }

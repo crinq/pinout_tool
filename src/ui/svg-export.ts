@@ -5,39 +5,8 @@
 // assignments, matching the canvas renderer's layout logic.
 // ============================================================
 
-import type { Mcu, LogicalPin, PhysicalPin, Assignment } from '../types';
-
-/**
- * Pick the logical pin to use as the visual representative of a physical
- * pad: if any sibling has an assignment, that one wins; otherwise prefer
- * the default-variant pin if assignable; otherwise the first logical.
- */
-function pickPrimaryLogical(
-  phys: PhysicalPin,
-  assignmentsByPin: Map<string, Assignment[]>,
-): LogicalPin {
-  for (const lp of phys.logicals) {
-    if (assignmentsByPin.has(lp.name) && assignmentsByPin.get(lp.name)!.length > 0) return lp;
-  }
-  for (const lp of phys.logicals) {
-    if (lp.isDefaultVariant && lp.isAssignable) return lp;
-  }
-  for (const lp of phys.logicals) if (lp.isAssignable) return lp;
-  return phys.logicals[0];
-}
-
-/** Aggregate assignments across every logical bonded to a physical pin. */
-function physicalAssignments(
-  phys: PhysicalPin,
-  assignmentsByPin: Map<string, Assignment[]>,
-): Assignment[] {
-  const out: Assignment[] = [];
-  for (const lp of phys.logicals) {
-    const arr = assignmentsByPin.get(lp.name);
-    if (arr) out.push(...arr);
-  }
-  return out;
-}
+import { pickPrimaryLogical, physicalAssignments } from './pin-render-common';
+import type { Mcu, PhysicalPin, Assignment } from '../types';
 
 interface SvgExportOptions {
   mcu: Mcu;

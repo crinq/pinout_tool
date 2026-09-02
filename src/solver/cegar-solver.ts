@@ -19,17 +19,12 @@
 // stays low, diversity accumulates for the rest of the budget).
 // ============================================================
 
-import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
-import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
-import { resolveTemplates } from '../parser/template-resolver';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
+import type { Mcu, Solution, SolverResult, SolverError } from '../types';
+import type { ProgramNode } from '../parser/constraint-ast';
 import {
-  extractPorts, resolveReservePatterns, extractPinnedAssignments,
-  extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations,
+  prepareSolverContext,
   emptyResult, pushSolverWarnings, finalizeSolutions,
-  partitionGpioVariables, isGpioVariable,
-  configsHaveDma, pinnedOccupiedPins } from './solver';
+  isGpioVariable } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
@@ -74,65 +69,16 @@ export function solveCegar(
   const deadline = () => performance.now() - startTime > config.timeoutMs;
 
   // ---------- Setup (mirrors the other two-phase solvers) ----------
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!config.skipGpioMapping);
-  if (solveVars.length === 0 && gpioVars.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { ports, pinnedAssignments, sharedPatterns, configCombinations, dmaData, gpioVarsPerConfig, configRequiresMap, stats } = ctx;
+  const reservedPins = ctx.reservedPins;
+  const solveVars = ctx.variables;
 
   const portPriority = computePortPriority(solveVars);
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
   sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
-
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (const [portName, port] of ports) {
-    for (const c of port.configs) {
-      if (c.requires.length > 0) configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
-    }
-  }
-
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
 
   // ---------- CEGAR state ----------
   const nogoods: InstanceNogood[] = [];
@@ -247,7 +193,7 @@ export function solveCegar(
   const solveGroup = (group: InstanceGroup, maxSol: number, seed: number,
     pinUsage?: Map<string, number>, budget?: { steps: number }): Solution[] =>
     solvePhase2ForGroup(
-      group, solveVars, ports, reserved.pins, pinnedAssignments,
+      group, solveVars, ports, reservedPins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
       undefined, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage, budget
@@ -405,6 +351,6 @@ export function solveCegar(
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
   return finalizeSolutions(
     solutions, mcu, config.costWeights, errors, stats, startTime,
-    gpioVarsPerConfig, reserved.pins, pinnedAssignments,
+    gpioVarsPerConfig, reservedPins, pinnedAssignments,
   );
 }

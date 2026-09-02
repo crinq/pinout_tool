@@ -12,11 +12,9 @@ import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
 import { parseBgaPosition, parsePackagePinCount, isDebugPin } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import {
-  prepareSolverContext,
-  evaluateAllConstraints, buildSolution,
-  canAssignPin, assignPin, unassignPin, evaluateExpr,
+  prepareSolverContext, tryEmitSolution,
+  canAssignPin, assignPin, unassignPin, checkRequires,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
 } from './solver';
@@ -167,18 +165,10 @@ function solveBacktrackCostGuided(
   }
 
   if (varIndex === variables.length) {
-    stats.evaluatedCombinations++;
-    const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, mcuInfo, tracker.sharedPatterns)) {
-      const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
-      );
-      solutions.push(solution);
-      stats.validSolutions++;
-      const elapsed = performance.now() - startTime;
-      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
-      stats.lastSolutionMs = elapsed;
-    }
+    tryEmitSolution(
+      current, configCombinations, ports, pinnedAssignments,
+      solutions, stats, startTime, dmaData, mcuInfo, tracker.sharedPatterns,
+    );
     return;
   }
 
@@ -207,29 +197,8 @@ function solveBacktrackCostGuided(
     const configKey = `${v.portName}\0${v.configName}`;
     if (lastVarOfConfig.get(configKey) === varIndex) {
       const requires = configRequiresMap.get(configKey);
-      if (requires) {
-        const portChannels = new Map<string, VariableAssignment[]>();
-        for (const va of current) {
-          if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
-            if (!portChannels.has(va.variable.channelName)) {
-              portChannels.set(va.variable.channelName, []);
-            }
-            portChannels.get(va.variable.channelName)!.push(va);
-          }
-        }
-        const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-        channelInfo.set(v.portName, portChannels);
-
-        for (const req of requires) {
-          if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
-            continue;
-          }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
-            if (req.optional) continue;
-            pruned = true;
-            break;
-          }
-        }
+      if (requires && !checkRequires(requires, v.portName, v.configName, current, dmaData, mcuInfo)) {
+        pruned = true;
       }
     }
 

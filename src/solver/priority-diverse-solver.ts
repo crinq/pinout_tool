@@ -8,23 +8,20 @@
 //   group diversity (explores different peripheral instances)
 // ============================================================
 
+import type { RandomizedConfig } from './randomized-solver';
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import {
-  prepareSolverContext, solveBacktrack,
+  newStats,
+  prepareSolverContext, solveBacktrack, pushDeepestConflictError,
   emptyResult, pushSolverWarnings, finalizeSolutions, buildLastVarOfConfig,
   createPinTracker,
   type SolverVariable, type VariableAssignment,
 } from './solver';
 import { computePortPriority, sortByPortPriority } from './port-priority';
 
-export interface PriorityDiverseConfig {
-  numRestarts: number;
-  maxSolutions: number;
-  timeoutMs: number;
-  costWeights: Map<string, number>;
-  skipGpioMapping?: boolean;
-}
+/** Identical to the randomized-restarts config — one shape, two solvers. */
+export type PriorityDiverseConfig = RandomizedConfig;
 
 import { mulberry32, shuffleArray } from './solver-utils';
 
@@ -48,13 +45,7 @@ export function solvePriorityDiverse(
   const diverseRounds = Math.max(1, config.numRestarts - 1);
   const perDiverseRound = Math.max(1, Math.ceil((config.maxSolutions - round0Budget) / diverseRounds));
 
-  const stats: SolverStats = {
-    totalCombinations: ctx.configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: ctx.configCombinations.length,
-  };
+  const stats: SolverStats = newStats(ctx.configCombinations.length);
 
   // ========== Round 0: Priority ordering (fast initial solve) ==========
   {
@@ -116,16 +107,7 @@ export function solvePriorityDiverse(
 
   pushSolverWarnings(errors, allSolutions, config.maxSolutions, startTime, config.timeoutMs);
 
-  if (allSolutions.length === 0 && ctx.deepest.depth >= 0) {
-    const failingVar = ctx.deepest.depth + 1 < ctx.variables.length ? ctx.variables[ctx.deepest.depth + 1] : null;
-    if (failingVar) {
-      errors.push({
-        type: 'error',
-        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
-        source: `${failingVar.portName}.${failingVar.channelName}`,
-      });
-    }
-  }
+  if (allSolutions.length === 0) pushDeepestConflictError(errors, ctx.deepest, ctx.variables);
 
   stats.validSolutions = allSolutions.length;
   return finalizeSolutions(allSolutions, mcu, config.costWeights, errors, stats, startTime, ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments);

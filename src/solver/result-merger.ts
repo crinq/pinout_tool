@@ -1,5 +1,5 @@
 import type { SolverResult, SolverStats } from '../types';
-import { deduplicateSolutions } from './solver';
+import { newStats, deduplicateSolutions } from './solver';
 
 export interface LabeledSolverResult {
   solverId: string;
@@ -15,7 +15,7 @@ export function mergeResults(
       mcuRef: '',
       solutions: [],
       errors: [{ type: 'warning', message: 'No solver results to merge' }],
-      statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+      statistics: newStats(0),
     };
   }
 

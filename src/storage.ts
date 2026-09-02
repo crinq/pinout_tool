@@ -1,4 +1,4 @@
-import type { Solution, SolverResult, Assignment, ConfigCombinationAssignment, CustomExportFunction } from './types';
+import type { Solution, Assignment, ConfigCombinationAssignment, CustomExportFunction } from './types';
 import { DEFAULT_LIBRARIES, DEFAULT_EXPORTS, contentHash } from './defaults';
 import { getKv } from './kv';
 
@@ -154,9 +154,6 @@ function rebuildConfigAssignments(assignments: Assignment[]): ConfigCombinationA
   return results;
 }
 
-export function serializeSolverResult(result: SolverResult): SerializedSolution[] {
-  return result.solutions.map(serializeSolution);
-}
 
 // ============================================================
 // Project Migration (old format → versioned)
@@ -282,9 +279,6 @@ export async function markSyncedWithDefault(id: string, defaultText: string): Pr
   try { await getKv().set(baseHashKey(id), contentHash(defaultText)); } catch { /* storage unavailable */ }
 }
 
-export async function seedDefaultExports(): Promise<void> {
-  await syncDefaults();
-}
 
 // ============================================================
 // Macro Library

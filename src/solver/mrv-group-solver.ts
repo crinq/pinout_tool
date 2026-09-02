@@ -12,28 +12,25 @@
 
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
-import { resolveTemplates } from '../parser/template-resolver';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
 import {
-  extractPorts, resolveReservePatterns, extractPinnedAssignments,
-  extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations,
+  prepareSolverContext,
+  newStats,
   emptyResult, pushSolverWarnings, finalizeSolutions,
   createPinTracker,
-  partitionGpioVariables, isGpioVariable,
-  configsHaveDma, buildPinLookups, buildSameInstancePropagator,
-  type SolverVariable, type PinnedAssignment, type PortSpec, type EvalMcuInfo, pinnedOccupiedPins } from './solver';
+  isGpioVariable,
+  buildPinLookups, buildSameInstancePropagator,
+  type SolverVariable, type PinnedAssignment, type PortSpec, type EvalMcuInfo } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   PHASE2_GROUP_STEP_BUDGET,
-  buildInstanceVariables, solvePhase1,
+  buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
   groupFingerprint, varKey,
   type InstanceGroup, type InstanceTracker,
 } from './two-phase-solver';
 import { computePortPriority, sortByPortPriority, type PriorityFn } from './port-priority';
 import { solveBacktrackDynamic } from './dynamic-mrv-solver';
 import { mulberry32, shuffleArray, diversifyDomain } from './solver-utils';
-import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
+import { runPhase2Diverse, type GroupSolverFn, orderByDiversity } from './phase2-diversity';
 import { generatePermutedGroups } from './group-permutation';
 
 // ============================================================
@@ -45,46 +42,6 @@ const STALE_ROUNDS_LIMIT = 3;
 const MAX_PERMUTED_GROUPS = 200;
 const MAX_PERMS_PER_GROUP = 50;
 
-// ============================================================
-// Diversity-Aware Group Ordering (farthest-point sampling)
-// ============================================================
-
-function orderByDiversity(groups: InstanceGroup[]): InstanceGroup[] {
-  if (groups.length <= 2) return [...groups];
-
-  const n = groups.length;
-  const selected: InstanceGroup[] = [groups[0]];
-  const used = new Uint8Array(n);
-  used[0] = 1;
-  // minDist[i] = minimum distance from group i to any already-selected group
-  const minDist = new Float64Array(n).fill(Infinity);
-
-  for (let iter = 1; iter < n; iter++) {
-    const last = selected[selected.length - 1];
-    let bestIdx = -1;
-    let bestDist = -1;
-
-    for (let i = 0; i < n; i++) {
-      if (used[i]) continue;
-      // Hamming distance: count differing instance assignments
-      let d = 0;
-      for (const [k, v] of last.assignments) {
-        if (groups[i].assignments.get(k) !== v) d++;
-      }
-      minDist[i] = Math.min(minDist[i], d);
-      if (minDist[i] > bestDist) {
-        bestDist = minDist[i];
-        bestIdx = i;
-      }
-    }
-
-    if (bestIdx === -1) break;
-    selected.push(groups[bestIdx]);
-    used[bestIdx] = 1;
-  }
-
-  return selected;
-}
 
 // ============================================================
 // Phase 2: Dynamic MRV per Group
@@ -195,71 +152,26 @@ export function solveMrvGroup(
   ast: ProgramNode,
   mcu: Mcu,
   config: TwoPhaseConfig,
-  computePriority: PriorityFn = computePortPriority
+  computePriority: PriorityFn = computePortPriority,
+  /**
+   * Phase-2 engine: 'mrv' = dynamic-MRV backtracker (this solver's default),
+   * 'two-phase' = solvePhase2ForGroup with priority sort + C2 cost pruning
+   * (the priority-group solver — identical Phase 1/1.5, only this differs).
+   */
+  phase2Mode: 'mrv' | 'two-phase' = 'mrv'
 ): SolverResult {
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) {
-    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  }
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  // Geometry require functions need package + pin positions.
-  const pinByName = new Map<string, { position: string }>();
-  for (const pin of mcu.logicalPins) pinByName.set(pin.name, { position: pin.physical.position });
-  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
-
-  if (solveVars.length === 0 && gpioVars.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { ports, pinnedAssignments, sharedPatterns, configCombinations, dmaData, gpioVarsPerConfig, configRequiresMap, mcuInfo, stats } = ctx;
+  const reservedPins = ctx.reservedPins;
+  const solveVars = ctx.variables;
 
   const portPriority = computePriority(solveVars);
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
-
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (const [portName, port] of ports) {
-    for (const c of port.configs) {
-      if (c.requires.length > 0) {
-        configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
-      }
-    }
-  }
 
   // ========== Phase 1: Diverse Instance Group Discovery ==========
   const groupFingerprints = new Set<string>();
@@ -377,28 +289,33 @@ export function solveMrvGroup(
     errors.push({ type: 'error', message: 'Phase 1: No valid peripheral instance assignments found' });
     return {
       mcuRef: mcu.refName, solutions: [], errors,
-      statistics: { totalCombinations: configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: configCombinations.length },
+      statistics: newStats(configCombinations.length),
     };
   }
 
   // ========== Phase 2a: MRV Pin Assignment on Discovered Groups ==========
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
 
   const solutions: Solution[] = [];
   const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
+  const domainCache = new Map<string, number[]>();
+  const phase2Sort = (vars: SolverVariable[]): void => {
+    sortByPortPriority(vars, computePriority(vars));
+  };
   const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
-    solvePhase2MRV(
-      group, solveVars, ports, reserved.pins, pinnedAssignments,
-      sharedPatterns, configCombinations,
-      maxSol, startTime, config.timeoutMs, stats,
-      dmaData, seed, pinUsage, mcuInfo
-    );
+    phase2Mode === 'two-phase'
+      ? solvePhase2ForGroup(
+          group, solveVars, ports, reservedPins, pinnedAssignments,
+          sharedPatterns, configCombinations,
+          maxSol, startTime, config.timeoutMs, stats,
+          phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage,
+          { steps: PHASE2_GROUP_STEP_BUDGET }
+        )
+      : solvePhase2MRV(
+          group, solveVars, ports, reservedPins, pinnedAssignments,
+          sharedPatterns, configCombinations,
+          maxSol, startTime, config.timeoutMs, stats,
+          dmaData, seed, pinUsage, mcuInfo
+        );
 
   const orderedDiscovered = orderByDiversity(discoveredGroups);
   // Track per-group feasibility for D10 feedback
@@ -463,6 +380,6 @@ export function solveMrvGroup(
 
   return finalizeSolutions(
     solutions, mcu, config.costWeights, errors, stats,
-    startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments,
+    startTime, gpioVarsPerConfig, reservedPins, pinnedAssignments,
   );
 }

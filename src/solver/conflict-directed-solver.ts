@@ -23,18 +23,18 @@
 // CEGAR solver where the matching oracle can prove them.
 // ============================================================
 
-import type { Mcu, Solution, SolverResult, SolverError, DmaData } from '../types';
-import type { ProgramNode, RequireNode, ConstraintExprNode } from '../parser/constraint-ast';
+import type { Mcu, Solution, SolverResult, SolverError } from '../types';
+import type { ProgramNode, ConstraintExprNode } from '../parser/constraint-ast';
 import {
   prepareSolverContext, evaluateAllConstraints, buildSolution,
-  canAssignPin, assignPin, unassignPin, evaluateExpr,
+  canAssignPin, assignPin, unassignPin,
   propagateShared, undoPropagateShared, buildPinLookups,
   buildSameInstancePropagator, propagateSameInstance,
-  createPinTracker, isOptionalRequireVacuous, coupledBasePin,
+  createPinTracker, coupledBasePin, checkRequires,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   type SolverConfig, type VariableAssignment,
   type SameInstancePropagator,
-  type EvalMcuInfo, type SolverContext,
+  type SolverContext,
 } from './solver';
 import { mulberry32 } from './solver-utils';
 
@@ -507,30 +507,3 @@ function levelOfVar(frames: Frame[], vi: number): number {
   return -1;
 }
 
-function checkRequires(
-  requires: RequireNode[],
-  portName: string,
-  configName: string,
-  current: VariableAssignment[],
-  dmaData: DmaData | undefined,
-  mcuInfo: EvalMcuInfo | undefined
-): boolean {
-  const portChannels = new Map<string, VariableAssignment[]>();
-  for (const va of current) {
-    if (va.variable.portName === portName && va.variable.configName === configName) {
-      if (!portChannels.has(va.variable.channelName)) portChannels.set(va.variable.channelName, []);
-      portChannels.get(va.variable.channelName)!.push(va);
-    }
-  }
-  const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-  channelInfo.set(portName, portChannels);
-
-  for (const req of requires) {
-    if (isOptionalRequireVacuous(req.expression, portName, channelInfo)) continue;
-    if (!evaluateExpr(req.expression, portName, channelInfo, dmaData, mcuInfo)) {
-      if (req.optional) continue;
-      return false;
-    }
-  }
-  return true;
-}

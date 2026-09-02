@@ -1,3 +1,4 @@
+import { countSolutionPins, countSolutionPeripherals, sortHeaderCell, scrollFocusedRowIntoView } from './solution-list-common';
 import type { Panel } from './panel';
 import type { Solution } from '../types';
 import { escapeHtml } from '../utils';
@@ -230,19 +231,7 @@ export class ProjectSolutions implements Panel {
   }
 
   private scrollToFocused(): void {
-    const row = this.tableWrapper.querySelector('tr.st-focused') as HTMLElement | null;
-    if (!row) return;
-
-    const thead = this.tableWrapper.querySelector('thead');
-    const headerHeight = thead ? thead.getBoundingClientRect().height : 0;
-    const wrapperRect = this.tableWrapper.getBoundingClientRect();
-    const rowRect = row.getBoundingClientRect();
-
-    if (rowRect.top < wrapperRect.top + headerHeight) {
-      this.tableWrapper.scrollTop -= (wrapperRect.top + headerHeight - rowRect.top);
-    } else if (rowRect.bottom > wrapperRect.bottom) {
-      this.tableWrapper.scrollTop += (rowRect.bottom - wrapperRect.bottom);
-    }
+    scrollFocusedRowIntoView(this.tableWrapper);
   }
 
   private render(): void {
@@ -344,26 +333,15 @@ export class ProjectSolutions implements Panel {
   }
 
   private headerCell(label: string, key: SortKey): string {
-    const arrow = this.sortKey === key ? (this.sortDir === 'asc' ? ' ^' : ' v') : '';
-    return `<th class="st-sortable" data-sort="${key}">${label}${arrow}</th>`;
+    return sortHeaderCell(label, key, this.sortKey, this.sortDir);
   }
 
   private countPins(solution: Solution): number {
-    const pins = new Set<string>();
-    for (const ca of solution.configAssignments) {
-      for (const a of ca.assignments) {
-        if (a.portName !== '<pinned>') pins.add(a.pinName);
-      }
-    }
-    return pins.size;
+    return countSolutionPins(solution);
   }
 
   private countPeripherals(solution: Solution): number {
-    let count = 0;
-    for (const peripherals of solution.portPeripherals.values()) {
-      count += peripherals.size;
-    }
-    return count;
+    return countSolutionPeripherals(solution);
   }
 
 }

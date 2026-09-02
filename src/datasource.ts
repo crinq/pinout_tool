@@ -91,7 +91,7 @@ export const DEFAULT_DATA_URL =
  *   - storage has an empty string    → null (user explicitly cleared).
  *   - storage has no key             → DEFAULT_DATA_URL (fresh install).
  */
-export function getDataSourceUrl(): string | null {
+function getDataSourceUrl(): string | null {
   try {
     const stored = localStorage.getItem(URL_STORAGE_KEY);
     if (stored === null) return DEFAULT_DATA_URL;
@@ -106,7 +106,7 @@ export function getDataSourceUrl(): string | null {
  * Persist the data source URL. An empty string is stored verbatim and
  * means "explicitly disabled" (so the default doesn't bounce back in).
  */
-export function setDataSourceUrl(url: string): void {
+function setDataSourceUrl(url: string): void {
   try {
     localStorage.setItem(URL_STORAGE_KEY, url.trim());
   } catch {

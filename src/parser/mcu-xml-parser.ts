@@ -419,14 +419,6 @@ export function parseMcuXml(xmlString: string): Mcu {
 }
 
 /**
- * Parse an MCU XML file (File object from drag-and-drop or file picker).
- */
-export async function parseMcuXmlFile(file: File): Promise<Mcu> {
-  const text = await file.text();
-  return parseMcuXml(text);
-}
-
-/**
  * Validate a parsed MCU structure.
  */
 export function validateMcu(mcu: Mcu): ValidationResult {

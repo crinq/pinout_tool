@@ -10,9 +10,9 @@
 import type { Mcu, SolverResult, SolverError, Solution } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import {
-  prepareSolverContext, solveBacktrack,
+  prepareSolverContext, solveBacktrack, pushDeepestConflictError,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
-  type SolverConfig, type VariableAssignment,
+  type SolverConfig,
 } from './solver';
 import { computePortPriority, sortByPortPriority } from './port-priority';
 
@@ -54,31 +54,7 @@ export function solvePriorityBacktracking(
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
 
-  if (solutions.length === 0 && ctx.deepest.depth >= 0) {
-    const failingVar = ctx.deepest.depth + 1 < ctx.variables.length ? ctx.variables[ctx.deepest.depth + 1] : null;
-    const partialAssignments = ctx.deepest.assignments.map((va: VariableAssignment) => ({
-      pinName: va.candidate.pin.name,
-      signalName: va.candidate.signalName,
-      portName: va.variable.portName,
-      channelName: va.variable.channelName,
-      configurationName: va.variable.configName,
-    }));
-
-    if (failingVar) {
-      errors.push({
-        type: 'error',
-        message: `Could not assign ${failingVar.portName}.${failingVar.channelName} (config "${failingVar.configName}") - ${failingVar.candidates.length} candidates all conflict`,
-        source: `${failingVar.portName}.${failingVar.channelName}`,
-        partialSolution: partialAssignments,
-      });
-    } else {
-      errors.push({
-        type: 'error',
-        message: 'All pin assignments found but require constraints failed for all config combinations',
-        partialSolution: partialAssignments,
-      });
-    }
-  }
+  if (solutions.length === 0) pushDeepestConflictError(errors, ctx.deepest, ctx.variables);
 
   return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
 }

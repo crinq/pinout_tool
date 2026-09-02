@@ -13,15 +13,12 @@
 
 import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
-import { resolveTemplates } from '../parser/template-resolver';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
 import {
-  extractPorts, resolveReservePatterns, extractPinnedAssignments,
-  extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations,
+  type SolverVariable,
+  prepareSolverContext,
   emptyResult, pushSolverWarnings, finalizeSolutions,
-  partitionGpioVariables, isGpioVariable,
-  configsHaveDma, pinnedOccupiedPins } from './solver';
+   isGpioVariable,
+   } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   PHASE2_GROUP_STEP_BUDGET,
@@ -32,7 +29,7 @@ import {
 import { computePortPriority, sortByPortPriority } from './port-priority';
 import { solvePriorityBacktracking } from './priority-backtracking-solver';
 import { generatePermutedGroups } from './group-permutation';
-import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
+import { runPhase2Diverse, type GroupSolverFn, orderByDiversity } from './phase2-diversity';
 import { mulberry32 } from './solver-utils';
 
 // ============================================================
@@ -98,44 +95,6 @@ export function extractInstanceGroupsFromSolutions(
   return groups;
 }
 
-// ============================================================
-// Diversity-Aware Group Ordering (farthest-point sampling)
-// ============================================================
-
-function orderByDiversity(groups: InstanceGroup[]): InstanceGroup[] {
-  if (groups.length <= 2) return [...groups];
-
-  const n = groups.length;
-  const selected: InstanceGroup[] = [groups[0]];
-  const used = new Uint8Array(n);
-  used[0] = 1;
-  const minDist = new Float64Array(n).fill(Infinity);
-
-  for (let iter = 1; iter < n; iter++) {
-    const last = selected[selected.length - 1];
-    let bestIdx = -1;
-    let bestDist = -1;
-
-    for (let i = 0; i < n; i++) {
-      if (used[i]) continue;
-      let d = 0;
-      for (const [k, v] of last.assignments) {
-        if (groups[i].assignments.get(k) !== v) d++;
-      }
-      minDist[i] = Math.min(minDist[i], d);
-      if (minDist[i] > bestDist) {
-        bestDist = minDist[i];
-        bestIdx = i;
-      }
-    }
-
-    if (bestIdx === -1) break;
-    selected.push(groups[bestIdx]);
-    used[bestIdx] = 1;
-  }
-
-  return selected;
-}
 
 // ============================================================
 // Main solver
@@ -153,47 +112,11 @@ export function solveHybrid(
   const errors: SolverError[] = [];
 
   // ========== Setup (same as other two-phase solvers) ==========
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
-
-  if (solveVars.length === 0 && gpioVars.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { ports, pinnedAssignments, sharedPatterns, configCombinations, dmaData, gpioVarsPerConfig } = ctx;
+  const reservedPins = ctx.reservedPins;
+  const solveVars = ctx.variables;
 
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
@@ -248,15 +171,9 @@ export function solveHybrid(
   const orderedGroups = orderByDiversity(allGroups);
 
   // ========== Phase D: Run Phase 2 with diversity ==========
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
+  const stats = ctx.stats;
 
-  const phase2Sort = (vars: typeof allVariables) => {
+  const phase2Sort = (vars: SolverVariable[]) => {
     const p2Priority = computePortPriority(vars);
     sortByPortPriority(vars, p2Priority);
   };
@@ -266,7 +183,7 @@ export function solveHybrid(
 
   const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
     solvePhase2ForGroup(
-      group, solveVars, ports, reserved.pins, pinnedAssignments,
+      group, solveVars, ports, reservedPins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
       phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage,
@@ -292,6 +209,6 @@ export function solveHybrid(
   stats.validSolutions = solutions.length;
   return finalizeSolutions(
     solutions, mcu, config.costWeights, errors, stats,
-    startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments,
+    startTime, gpioVarsPerConfig, reservedPins, pinnedAssignments,
   );
 }

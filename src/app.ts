@@ -34,101 +34,24 @@ import { runPreSolveChecks, constraintsNeedDma } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport } from './solver/diagnostics';
-import { filterStoredMcus, extractMcuFilters, matchesPatterns, matchesMcuFilters, type McuFilters } from './mcu-matcher';
+import { filterStoredMcus, extractMcuFilters, matchesPatterns, matchesMcuFilters, writeMcuMeta, type McuFilters } from './mcu-matcher';
 import { startTutorial, shouldShowTutorial } from '../ts_lib/src/tutorial';
 import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange } from '../ts_lib/src/theme';
-import type { TutorialStep } from '../ts_lib/src/tutorial';
 import { seedMacroLibrary, getStdlibSource, primeStdlibSource, DEFAULT_MACRO_LIBRARY } from './parser/stdlib-macros';
 import { seedPeripheralLibrary, getPeripheralSource, primePeripheralSource, DEFAULT_PERIPHERAL_LIBRARY } from './parser/peripheral-lib';
 
-// ============================================================
-// Simple JS syntax highlighter for the export function editor
-// ============================================================
+import { escapeHtml as escHtml, createModal, downloadBlob } from './utils';
+import { PARSE_DEBOUNCE_MS } from './ui/constraint-editor';
+import { highlightJs } from './ui/highlight-js';
+import { getTutorialSteps } from './ui/tutorial-steps';
 
-const JS_KEYWORDS = new Set([
-  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default',
-  'delete', 'do', 'else', 'export', 'extends', 'finally', 'for', 'function',
-  'if', 'import', 'in', 'instanceof', 'let', 'new', 'of', 'return', 'switch',
-  'throw', 'try', 'typeof', 'var', 'void', 'while', 'with', 'yield',
-  'true', 'false', 'null', 'undefined', 'this',
-]);
 
-import { escapeHtml as escHtml, createModal } from './utils';
-
-function highlightJs(code: string): string {
-  const out: string[] = [];
-  let i = 0;
-  const n = code.length;
-
-  while (i < n) {
-    const ch = code[i];
-
-    // Line comment
-    if (ch === '/' && code[i + 1] === '/') {
-      const end = code.indexOf('\n', i);
-      const slice = end === -1 ? code.substring(i) : code.substring(i, end);
-      out.push(`<span class="hl-comment">${escHtml(slice)}</span>`);
-      i += slice.length;
-      continue;
-    }
-
-    // Block comment
-    if (ch === '/' && code[i + 1] === '*') {
-      const end = code.indexOf('*/', i + 2);
-      const slice = end === -1 ? code.substring(i) : code.substring(i, end + 2);
-      out.push(`<span class="hl-comment">${escHtml(slice)}</span>`);
-      i += slice.length;
-      continue;
-    }
-
-    // String (single, double, backtick)
-    if (ch === '"' || ch === "'" || ch === '`') {
-      let j = i + 1;
-      while (j < n && code[j] !== ch) {
-        if (code[j] === '\\') j++; // skip escaped char
-        j++;
-      }
-      if (j < n) j++; // include closing quote
-      const slice = code.substring(i, j);
-      out.push(`<span class="hl-string">${escHtml(slice)}</span>`);
-      i = j;
-      continue;
-    }
-
-    // Number
-    if ((ch >= '0' && ch <= '9') || (ch === '.' && i + 1 < n && code[i + 1] >= '0' && code[i + 1] <= '9')) {
-      let j = i;
-      if (ch === '0' && (code[i + 1] === 'x' || code[i + 1] === 'X')) {
-        j += 2;
-        while (j < n && /[0-9a-fA-F]/.test(code[j])) j++;
-      } else {
-        while (j < n && ((code[j] >= '0' && code[j] <= '9') || code[j] === '.')) j++;
-      }
-      out.push(`<span class="hl-number">${escHtml(code.substring(i, j))}</span>`);
-      i = j;
-      continue;
-    }
-
-    // Word (identifier or keyword)
-    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_' || ch === '$') {
-      let j = i + 1;
-      while (j < n && ((code[j] >= 'a' && code[j] <= 'z') || (code[j] >= 'A' && code[j] <= 'Z') || (code[j] >= '0' && code[j] <= '9') || code[j] === '_' || code[j] === '$')) j++;
-      const word = code.substring(i, j);
-      if (JS_KEYWORDS.has(word)) {
-        out.push(`<span class="hl-keyword">${escHtml(word)}</span>`);
-      } else {
-        out.push(escHtml(word));
-      }
-      i = j;
-      continue;
-    }
-
-    // Default: single character
-    out.push(escHtml(ch));
-    i++;
-  }
-
-  return out.join('');
+/** Blank result used to clear the solver panel on project switch / new. */
+function emptySolverResult(): SolverResult {
+  return {
+    mcuRef: '', solutions: [], errors: [],
+    statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
+  };
 }
 
 /** Inputs of one solve run, snapshotted at start (see startSolve). */
@@ -278,7 +201,7 @@ export class App {
     // Show tutorial for first-time users
     if (shouldShowTutorial('tutorial-seen')) {
       requestAnimationFrame(() => startTutorial({
-        steps: this.getTutorialSteps(),
+        steps: getTutorialSteps(),
         storageKey: 'tutorial-seen',
         onStart: () => this.loadTutorialExample(),
       }));
@@ -303,11 +226,7 @@ export class App {
         const cachedMcu = this.mcuCache.get(solution.mcuRef);
         if (cachedMcu) {
           this.currentMcu = cachedMcu;
-          // Update header
-          const mcuInfo = document.getElementById('mcu-info');
-          if (mcuInfo) {
-            mcuInfo.textContent = `${cachedMcu.refName} | ${cachedMcu.package} | ${cachedMcu.cores.join(' + ')} @ ${cachedMcu.frequency}MHz | ${cachedMcu.flash}KB Flash | ${cachedMcu.ram}KB RAM`;
-          }
+          this.setMcuHeader(cachedMcu);
           this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu: cachedMcu });
         } else {
           // The cache only holds MCUs fetched during a multi-MCU solve, so it is
@@ -361,16 +280,7 @@ export class App {
       this.saveStateDebounced();
       this.hasSolverResult = false;
 
-      const solveBtn = this.constraintEditor.getSolveButton();
-      if (solveBtn) {
-        const hasErrors = result.errors.length > 0;
-        const hasMcu = this.currentMcu !== null;
-        // `mcu:` filter drives multi-MCU mode — remote fetch or stored
-        // scan populates the mcu list at solve time, so no loaded MCU
-        // is required.
-        const hasMcuFilter = result.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
-        (solveBtn as HTMLButtonElement).disabled = hasErrors || (!hasMcu && !hasMcuFilter);
-      }
+      this.updateSolveButtonEnabled();
 
       // Show pin declarations on viewer immediately (before solving)
       this.showPinPreview(result.ast);
@@ -592,15 +502,7 @@ export class App {
       const fatalErrors = preErrors.filter(e => e.type === 'error');
       const statusBar = this.constraintEditor.getSolverStatusBar();
       if (statusBar) {
-        statusBar.innerHTML = preErrors
-          .map((e: { type: string; message: string }) => {
-            const m = e.message.match(/^([A-Za-z0-9_-]+): (.*)$/);
-            if (m) {
-              return `<span class="st-${e.type}"><span class="st-sender">${m[1]}:</span> ${m[2]}</span>`;
-            }
-            return `<span class="st-${e.type}">${e.message}</span>`;
-          })
-          .join(' ');
+        statusBar.innerHTML = this.renderStatusBarErrors(preErrors);
       }
       // Show error lines in minimap
       const errorLines = preErrors.filter(e => e.line != null).map(e => e.line!);
@@ -934,15 +836,7 @@ export class App {
     const statusBar = this.constraintEditor.getSolverStatusBar();
     if (statusBar) {
       if (result.errors.length > 0) {
-        statusBar.innerHTML = result.errors
-          .map((e: { type: string; message: string }) => {
-            const m = e.message.match(/^([A-Za-z0-9_-]+): (.*)$/);
-            if (m) {
-              return `<span class="st-${e.type}"><span class="st-sender">${m[1]}:</span> ${m[2]}</span>`;
-            }
-            return `<span class="st-${e.type}">${e.message}</span>`;
-          })
-          .join(' ');
+        statusBar.innerHTML = this.renderStatusBarErrors(result.errors);
       } else {
         statusBar.textContent = '';
       }
@@ -1175,7 +1069,7 @@ export class App {
     // Tutorial button
     header.querySelector('#btn-tutorial')!.addEventListener('click', () => {
       startTutorial({
-        steps: this.getTutorialSteps(),
+        steps: getTutorialSteps(),
         storageKey: 'tutorial-seen',
         onStart: () => this.loadTutorialExample(),
       });
@@ -1341,9 +1235,7 @@ export class App {
       await getKv().set(`mcu-xml:${mcu.refName}`, xmlString);
       const tags = ['PIN'];
       if (mcu.dma) tags.push('DMA');
-      await getKv().set(`mcu-meta:${mcu.refName}`, JSON.stringify({
-        tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
-      }));
+      await writeMcuMeta(mcu, tags);
     } catch (err) {
       console.warn('Failed to store MCU XML:', err);
     }
@@ -1360,24 +1252,11 @@ export class App {
     this.mcuLoadSeq++;
     this.currentMcu = mcu;
     this.mcuCache.set(mcu.refName, mcu);
-    // ponytail: temporary diagnostic — remove once JSON solver path proven.
-    console.log(
-      `[mcu-loaded] ${mcu.refName}: ${mcu.logicalPins.length} logicals, ${mcu.peripherals.length} peripherals, `
-      + `types=${[...mcu.typeToInstances.keys()].sort().join(',')}`
-    );
-
-    const mcuInfo = document.getElementById('mcu-info');
-    if (mcuInfo) {
-      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
-    }
+    this.setMcuHeader(mcu);
 
     this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
 
-    const solveBtn = this.constraintEditor.getSolveButton();
-    if (solveBtn) {
-      const parseResult = this.constraintEditor.getParseResult();
-      (solveBtn as HTMLButtonElement).disabled = !parseResult || parseResult.errors.length > 0;
-    }
+    this.updateSolveButtonEnabled();
 
     const dmaInfo = mcu.dma ? `, ${mcu.dma.streams.length} DMA streams` : '';
     this.showStatus(`Loaded ${mcu.refName} (${mcu.physicalPins.length} pins, ${mcu.peripherals.length} peripherals${dmaInfo})`, 'success');
@@ -1387,11 +1266,12 @@ export class App {
   private async reimportAllMcus(): Promise<void> {
     let updated = 0;
     let failed = 0;
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (!key?.startsWith('mcu-xml:')) continue;
+    // MCU XMLs live in the kv store (IDB) — the localStorage originals were
+    // deleted by the one-shot migration, so scanning localStorage re-imports
+    // nothing on any migrated install.
+    for (const key of await getKv().keysWithPrefix('mcu-xml:')) {
       const refName = key.substring('mcu-xml:'.length);
-      const xml = localStorage.getItem(key);
+      const xml = await getKv().get(key);
       if (!xml) continue;
       try {
         const mcu = parseMcuXml(xml);
@@ -1402,9 +1282,7 @@ export class App {
           if (oldMeta) tags = JSON.parse(oldMeta).tags ?? ['PIN'];
         } catch { /* use default */ }
         if (mcu.dma) tags = [...new Set([...tags, 'DMA'])];
-        await getKv().set(`mcu-meta:${refName}`, JSON.stringify({
-          tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
-        }));
+        await writeMcuMeta(mcu, tags);
         updated++;
       } catch {
         failed++;
@@ -1430,143 +1308,6 @@ export class App {
       .catch(() => { /* Example not available, tutorial continues without it */ });
   }
 
-  private getTutorialSteps(): TutorialStep[] {
-    const findPanel = (id: string) => document.querySelector(`[data-panel-id="${id}"]`) as HTMLElement | null;
-    return [
-      {
-        target: () => document.querySelector('.app-header') as HTMLElement,
-        title: 'Welcome',
-        body: `This tool helps you assign STM32 peripheral signals to MCU pins using constraint-based solving.<br><br>
-          Let's walk through the basics.`,
-        placement: 'bottom',
-      },
-      {
-        target: '#btn-import-xml',
-        title: 'Import MCU Data',
-        body: `Start by importing an MCU XML file from your STM32CubeMX installation
-          (<code>db/mcu/</code> folder). You can also drag & drop <code>.xml</code> or <code>.ioc</code> files anywhere.<br><br>
-          The XML defines which pins and peripheral signals are available.
-          Importing a <code>.ioc</code> file adds its pin assignments as <code>pin</code> declarations to your constraints.`,
-        placement: 'bottom',
-      },
-      {
-        target: () => findPanel('package-viewer'),
-        title: 'Package Viewer',
-        body: `Once an MCU is loaded, its package appears here. Scroll to zoom, drag to pan, and click pins to see available signals.<br><br>
-          Use the search field to highlight pins by signal pattern (e.g. <code>SPI*_SCK</code>).
-          Click <b>Export</b> to save your pinout as PNG, SVG, text, JSON, or a custom format.`,
-        placement: 'right',
-      },
-      {
-        target: () => findPanel('constraint-editor'),
-        title: 'Write Constraints',
-        body: `Define your peripheral requirements here. A minimal example:<br>
-          <pre style="margin:8px 0;padding:6px 8px;background:var(--bg-secondary);border-radius:3px;font-size:11px;line-height:1.4">port CMD:
-  channel TX
-  channel RX
-
-  config "UART":
-    TX = USART*_TX
-    RX = USART*_RX
-    require same_instance(TX, RX)</pre>
-          Pin declarations (<code>pin PA5 = SPI1_SCK</code>) lock specific pins. Click <b>Syntax Help</b> for the language reference, or <b>Docs</b> (top bar) for the full documentation.<br><br>
-          Syntax errors show a red squiggle; suspected signal-name swaps (e.g. a
-          <code>miso</code> channel mapped to <code>SPI*_MOSI</code>) show a yellow
-          squiggle. Both list in the status panel below. Edit the swap-group library via
-          <b>Data Manager &gt; Common-error Lint Library</b>.`,
-        placement: 'left',
-      },
-      {
-        target: '#btn-solve',
-        title: 'Solve',
-        body: `Press <b>Ctrl+Enter</b> or click <b>Solve</b> to find valid pin assignments.
-          Multiple solvers run in parallel and results are merged.`,
-        placement: 'left',
-      },
-      {
-        target: () => findPanel('solver-solutions'),
-        title: 'Solver Solutions',
-        body: `Solutions appear here, grouped by peripheral instance assignment.
-          Use <b>arrow keys</b> to navigate between groups and solutions.<br><br>
-          Each group represents a different combination of peripheral instances (e.g. SPI1+UART2 vs SPI3+UART5).
-          Selecting a solution highlights the assigned pins on the package viewer.`,
-        placement: 'top',
-      },
-      {
-        target: () => findPanel('project-solutions'),
-        title: 'Project Solutions',
-        body: `Save interesting solutions here for later comparison.
-          Select a solver solution and press <b>Enter</b> to add it to the project.<br><br>
-          Project solutions persist across solver runs and are included when you save the project.<br><br>
-          A <b>validity badge</b> on each row shows whether it still fits the <i>current</i> constraints:
-          <b style="color:#22c55e">✓</b> valid, <b style="color:#3b82f6">●</b> valid but with assignments
-          the constraints no longer require, <b style="color:#ef4444">✕</b> invalid. It updates live as you
-          edit the constraint text &mdash; handy for spotting which saved solutions survived a change.<br><br>
-          <b>Compare mode:</b> Ctrl/Cmd-click multiple rows to compare them in the
-          package viewer &mdash; matching pins render normally, differing pins pulse
-          through one color per selected solution, and their tooltip lists every
-          per-solution mapping.`,
-        placement: 'top',
-      },
-      {
-        target: () => findPanel('peripheral-summary'),
-        title: 'Peripheral Summary',
-        body: `Shows which peripheral instances are used by the selected solution and how they map to ports.<br><br>
-          Helps you quickly compare solutions to see which peripherals are consumed and which remain free.`,
-        placement: 'top',
-      },
-      {
-        target: () => {
-          const el = document.querySelector('.pv-edit-controls') as HTMLElement | null;
-          return el && el.childElementCount > 0 ? el : null;
-        },
-        title: 'Modify a Solution',
-        body: `With a solution selected, click <b>✎ Modify</b> in the package-viewer toolbar to hand-tune
-          the routing for your board &mdash; no re-solving needed. In modify mode:<br><br>
-          &bull; click a <b>pin</b> to move its signal to another free pin, or place an unmapped IN/OUT signal<br>
-          &bull; click a <b>port</b> in the peripheral summary to swap all its peripherals with a compatible port<br>
-          &bull; click a <b>peripheral</b> to swap it with another port's, or with an unused instance<br><br>
-          Every option shows its <b>cost change</b> and glows the pins it moves when you hover it.
-          <b>Ctrl+Z / Ctrl+Shift+Z</b> undo/redo; <b>Save</b> adds the edited solution to the project,
-          <b>Discard</b> exits without keeping changes.`,
-        placement: 'bottom',
-      },
-      {
-        target: '#project-select',
-        title: 'Projects',
-        body: `Your work is organized into projects. Use the dropdown to switch between projects.<br><br>
-          <b>New</b> &mdash; start an empty project<br>
-          <b>Save</b> &mdash; save constraints, MCU, and project solutions<br>
-          <b>Save As</b> &mdash; save under a new name, or as a new version with the old name<br><br>
-          Each save as creates a <b>version</b>, so you can go back to previous states.
-          Projects are stored in your browser's local storage. If a project's MCU isn't stored
-          locally, it's fetched automatically from the configured remote data source on open.`,
-        placement: 'bottom',
-      },
-      {
-        target: '#btn-data-manager',
-        title: 'Data Manager',
-        body: `View and manage stored MCU data, DMA files, projects, custom export functions, and the macro library.
-          You can edit the shared macro library to add or modify macros available in all constraints.`,
-        placement: 'bottom',
-      },
-      {
-        target: '#btn-settings',
-        title: 'Settings',
-        body: `Configure which of the 18 solver algorithms run, timeouts, cost-function weights, and display options.<br><br>
-          Two options worth knowing: <b>Skip GPIO mapping</b> (faster when there are many IN/OUT channels)
-          and <b>Post-optimize pins</b> (after solving, greedily relocate pins to lower the cost).`,
-        placement: 'bottom',
-      },
-      {
-        target: () => document.querySelector('.app-header') as HTMLElement,
-        title: 'Ready!',
-        body: `That's everything. Import an MCU XML to get started.<br><br>
-          You can replay this tutorial anytime from the <b>Tutorial</b> button in the header.`,
-        placement: 'bottom',
-      },
-    ];
-  }
 
   private async loadDmaXml(xmlString: string, fileName: string): Promise<void> {
     const version = getDmaXmlVersion(xmlString);
@@ -1687,7 +1428,7 @@ export class App {
   private async loadIocFile(file: File): Promise<void> {
     try {
       const text = await file.text();
-      this.loadIocData(text, file.name);
+      await this.loadIocData(text, file.name);
     } catch (err) {
       console.error('Failed to load .ioc file:', err);
       this.showStatus(`Failed to load ${file.name}: ${err}`, 'error');
@@ -1743,7 +1484,7 @@ export class App {
     });
     this.layout.broadcastStateChange({
       type: 'solver-complete',
-      solverResult: { mcuRef: '', solutions: [], errors: [], statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 } },
+      solverResult: emptySolverResult(),
     });
     this.refreshProjectList();
     this.showStatus('New project', 'info');
@@ -1794,14 +1535,9 @@ export class App {
 
     await this.withProjectLock(async () => {
       // Load existing project data
-      let projectData: ProjectData = { name, versions: [] };
-      try {
-        const existing = await getKv().get(`project:${name}`);
-        if (existing) {
-          projectData = migrateProjectData(JSON.parse(existing));
-          projectData.name = name;
-        }
-      } catch { /* start fresh */ }
+      const existing = await this.loadProjectData(name);
+      const projectData: ProjectData = existing ?? { name, versions: [] };
+      projectData.name = name;
 
       // Overwrite latest version, or create first version
       if (projectData.versions.length > 0) {
@@ -1824,14 +1560,9 @@ export class App {
 
     await this.withProjectLock(async () => {
       // Load existing project data (may or may not exist)
-      let projectData: ProjectData = { name: trimmed, versions: [] };
-      try {
-        const existing = await getKv().get(`project:${trimmed}`);
-        if (existing) {
-          projectData = migrateProjectData(JSON.parse(existing));
-          projectData.name = trimmed;
-        }
-      } catch { /* start fresh */ }
+      const existing = await this.loadProjectData(trimmed);
+      const projectData: ProjectData = existing ?? { name: trimmed, versions: [] };
+      projectData.name = trimmed;
 
       const version = this.buildCurrentVersion(projectData.versions.length);
       projectData.versions.push(version);
@@ -1893,38 +1624,28 @@ export class App {
   }
 
   async loadProject(name: string): Promise<void> {
-    const raw = await getKv().get(`project:${name}`);
-    if (!raw) {
-      this.showStatus(`Project "${name}" not found`, 'error');
+    const projectData = await this.loadProjectData(name);
+    if (!projectData) {
+      this.showStatus(`Project "${name}" not found or unreadable`, 'error');
       return;
     }
-    try {
-      const projectData = migrateProjectData(JSON.parse(raw));
-      const latestVersion = projectData.versions[projectData.versions.length - 1];
-      if (!latestVersion) {
-        this.showStatus(`Project "${name}" has no versions`, 'error');
-        return;
-      }
-      this.applyProjectVersion(name, latestVersion);
-    } catch {
-      this.showStatus(`Failed to load project "${name}"`, 'error');
+    const latestVersion = projectData.versions[projectData.versions.length - 1];
+    if (!latestVersion) {
+      this.showStatus(`Project "${name}" has no versions`, 'error');
+      return;
     }
+    await this.applyProjectVersion(name, latestVersion);
   }
 
   private async loadProjectVersion(name: string, versionId: number): Promise<void> {
-    const raw = await getKv().get(`project:${name}`);
-    if (!raw) return;
-    try {
-      const projectData = migrateProjectData(JSON.parse(raw));
-      const version = projectData.versions.find(v => v.id === versionId);
-      if (!version) {
-        this.showStatus(`Version ${versionId} not found`, 'error');
-        return;
-      }
-      this.applyProjectVersion(name, version);
-    } catch {
-      this.showStatus(`Failed to load version`, 'error');
+    const projectData = await this.loadProjectData(name);
+    if (!projectData) return;
+    const version = projectData.versions.find(v => v.id === versionId);
+    if (!version) {
+      this.showStatus(`Version ${versionId} not found`, 'error');
+      return;
     }
+    await this.applyProjectVersion(name, version);
   }
 
   private async applyProjectVersion(name: string, version: ProjectVersion): Promise<void> {
@@ -1937,7 +1658,7 @@ export class App {
     // Clear solver results
     this.layout.broadcastStateChange({
       type: 'solver-complete',
-      solverResult: { mcuRef: '', solutions: [], errors: [], statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 } },
+      solverResult: emptySolverResult(),
     });
     // Drop the outgoing project's solution from the viewer, the constraint
     // viewer and the caret highlight. Without this, opening a project that has
@@ -1976,16 +1697,10 @@ export class App {
     setTimeout(() => {
       this.loadingProject = false;
       // Re-evaluate solve button now that parse has completed and loading is done
-      const solveBtn = this.constraintEditor.getSolveButton() as HTMLButtonElement | null;
-      if (solveBtn) {
-        const parseResult = this.constraintEditor.getParseResult();
-        const hasErrors = !parseResult || parseResult.errors.length > 0;
-        const hasMcuFilter = parseResult?.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
-        solveBtn.disabled = hasErrors || (!this.currentMcu && !hasMcuFilter);
-      }
+      this.updateSolveButtonEnabled();
       // MCU + parse are settled now → badge the restored solutions.
       this.updateProjectSolutionValidity();
-    }, 400);
+    }, PARSE_DEBOUNCE_MS + 100);
     const solCount = version.solutions?.length ?? 0;
     this.showStatus(`Project "${name}" loaded (v${version.id}${solCount > 0 ? `, ${solCount} solutions` : ''})`, 'success');
   }
@@ -2285,6 +2000,53 @@ export class App {
     return comments;
   }
 
+  /** One place for the header MCU summary line. */
+  private setMcuHeader(mcu: Mcu): void {
+    const mcuInfo = document.getElementById('mcu-info');
+    if (mcuInfo) {
+      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+    }
+  }
+
+  /**
+   * Solve is enabled ⇔ the parse is clean AND (an MCU is loaded OR `mcu:`
+   * filters drive multi-MCU mode, where MCUs are resolved at solve time).
+   * The single predicate — three call sites used to carry two variants, one
+   * of which ignored `mcu:` mode.
+   */
+  private updateSolveButtonEnabled(): void {
+    const solveBtn = this.constraintEditor.getSolveButton() as HTMLButtonElement | null;
+    if (!solveBtn) return;
+    const parseResult = this.constraintEditor.getParseResult();
+    const hasErrors = !parseResult || parseResult.errors.length > 0;
+    const hasMcuFilter = parseResult?.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
+    solveBtn.disabled = hasErrors || (!this.currentMcu && !hasMcuFilter);
+  }
+
+  /** Load + migrate a stored project; null when missing or corrupt. */
+  private async loadProjectData(name: string): Promise<ProjectData | null> {
+    try {
+      const raw = await getKv().get(`project:${name}`);
+      if (!raw) return null;
+      return migrateProjectData(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Solver status-bar HTML for a list of errors ("sender: message" styled). */
+  private renderStatusBarErrors(errors: Array<{ type: string; message: string }>): string {
+    return errors
+      .map(e => {
+        const m = e.message.match(/^([A-Za-z0-9_-]+): (.*)$/);
+        if (m) {
+          return `<span class="st-${e.type}"><span class="st-sender">${escHtml(m[1])}:</span> ${escHtml(m[2])}</span>`;
+        }
+        return `<span class="st-${e.type}">${escHtml(e.message)}</span>`;
+      })
+      .join(' ');
+  }
+
   private setupKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
       // Ctrl+Enter / Cmd+Enter: solve
@@ -2356,13 +2118,12 @@ export class App {
 
     // If we have a current project, load it (with versioned format)
     if (this.currentProjectName) {
-      const raw = await getKv().get(`project:${this.currentProjectName}`);
-      if (raw) {
+      const projectData = await this.loadProjectData(this.currentProjectName);
+      if (projectData) {
         try {
-          const projectData = migrateProjectData(JSON.parse(raw));
           const latest = projectData.versions[projectData.versions.length - 1];
           if (latest) {
-            this.applyProjectVersion(this.currentProjectName, latest);
+            await this.applyProjectVersion(this.currentProjectName, latest);
             return;
           }
         } catch { /* fallthrough */ }
@@ -2458,7 +2219,7 @@ export class App {
             </label>
             <div class="solver-checkbox-list" id="set-solver-types">
               ${solvers.map(s => `
-                <label class="solver-checkbox" title="${s.description}">
+                <label class="solver-checkbox" title="${escHtml(s.description)}">
                   <input type="checkbox" value="${s.id}" ${this.settings.solverTypes.includes(s.id) ? 'checked' : ''}>
                   ${s.name}
                 </label>
@@ -2508,7 +2269,7 @@ export class App {
           </div>
           ${costFunctions.map(fn => `
             <div class="settings-row">
-              <label title="${fn.description}">${fn.name}</label>
+              <label title="${escHtml(fn.description)}">${escHtml(fn.name)}</label>
               <input type="number" class="settings-input" data-cost-id="${fn.id}" min="0" max="10" step="0.1" value="${this.settings.costWeights[fn.id] ?? 1}">
             </div>
           `).join('')}
@@ -2666,24 +2427,11 @@ export class App {
       // result must not clobber it.
       if (seq !== this.mcuLoadSeq) return;
 
-      this.currentMcu = mcu;
-
-      const mcuInfo = document.getElementById('mcu-info');
-      if (mcuInfo) {
-        mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
-      }
-
-      this.layout.broadcastStateChange({ type: 'mcu-loaded', mcu });
-
-      const solveBtn = this.constraintEditor.getSolveButton();
-      if (solveBtn) {
-        const parseResult = this.constraintEditor.getParseResult();
-        (solveBtn as HTMLButtonElement).disabled = !parseResult || parseResult.errors.length > 0;
-      }
-
+      // Common post-parse hook (header, broadcast, solve button, badges) —
+      // this used to be re-implemented inline and had drifted.
+      this.activateLoadedMcu(mcu);
       const dmaInfo = mcu.dma ? ` (+DMA)` : '';
       this.showStatus(`Loaded ${mcu.refName} from storage${dmaInfo}`, 'success');
-      this.updateProjectSolutionValidity();
     } catch (err) {
       this.showStatus(`Failed to parse stored MCU "${refName}": ${err}`, 'error');
     }
@@ -2884,14 +2632,14 @@ export class App {
             ${projects.length === 0 ? '<p class="settings-hint">No projects saved. Use "Save As" to create one.</p>' : ''}
             <div class="dm-list">
               ${projects.map((p, idx) => `
-                <div class="dm-row" data-project="${p.name}">
-                  <span class="dm-expand-btn" data-action="toggle-versions" data-name="${p.name}" data-idx="${idx}">${p.versionCount > 0 ? '&#9654;' : ''}</span>
-                  <span class="dm-name">${p.name}${p.name === this.currentProjectName ? ' (active)' : ''}</span>
+                <div class="dm-row" data-project="${escHtml(p.name)}">
+                  <span class="dm-expand-btn" data-action="toggle-versions" data-name="${escHtml(p.name)}" data-idx="${idx}">${p.versionCount > 0 ? '&#9654;' : ''}</span>
+                  <span class="dm-name">${escHtml(p.name)}${p.name === this.currentProjectName ? ' (active)' : ''}</span>
                   <span class="dm-tags">${p.tags.map(t => `<span class="dm-tag">${t}</span>`).join('')}${p.versionCount > 0 ? `<span class="dm-tag">v${p.versionCount}</span>` : ''}</span>
                   <span class="dm-size">${(p.size / 1024).toFixed(1)}KB</span>
-                  <button class="btn btn-small dm-load" data-action="load-project" data-name="${p.name}">Load</button>
-                  <button class="btn btn-small" data-action="export-project" data-name="${p.name}">Export</button>
-                  <button class="btn btn-small dm-delete" data-action="delete-project" data-name="${p.name}">Delete</button>
+                  <button class="btn btn-small dm-load" data-action="load-project" data-name="${escHtml(p.name)}">Load</button>
+                  <button class="btn btn-small" data-action="export-project" data-name="${escHtml(p.name)}">Export</button>
+                  <button class="btn btn-small dm-delete" data-action="delete-project" data-name="${escHtml(p.name)}">Delete</button>
                 </div>
                 <div class="dm-version-list" data-version-list="${idx}" style="display:none"></div>
               `).join('')}
@@ -2905,8 +2653,8 @@ export class App {
                 if (customExports.length === 0) return '<p class="settings-hint">No custom export functions. Click "New" to create one.</p>';
                 return customExports.map(fn => `
                   <div class="dm-row">
-                    <span class="dm-name">${fn.name}</span>
-                    <span class="dm-size" style="min-width:auto">${fn.description}</span>
+                    <span class="dm-name">${escHtml(fn.name)}</span>
+                    <span class="dm-size" style="min-width:auto">${escHtml(fn.description)}</span>
                     <button class="btn btn-small" data-action="edit-export" data-export-id="${fn.id}">Edit</button>
                     ${this.updateButton(fn.id)}
                     <button class="btn btn-small dm-delete" data-action="delete-export" data-export-id="${fn.id}">Delete</button>
@@ -3372,7 +3120,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       modal.querySelector('#export-editor-test')!.addEventListener('click', () => {
         const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
         try {
-          const code = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
+          const code = codeEl.value;
           new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', code);
           errorEl.style.display = '';
           errorEl.style.color = 'var(--success)';
@@ -3388,7 +3136,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
       modal.querySelector('#export-editor-save')!.addEventListener('click', async () => {
         const nameVal = (modal.querySelector('#export-editor-name') as HTMLInputElement).value.trim();
         const descVal = (modal.querySelector('#export-editor-desc') as HTMLInputElement).value.trim();
-        const codeVal = (modal.querySelector('#export-editor-code') as HTMLTextAreaElement).value;
+        const codeVal = codeEl.value;
         const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
 
         if (!nameVal) {
@@ -3399,7 +3147,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         }
 
         try {
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', codeVal);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', codeVal);
         } catch (err) {
           errorEl.style.display = '';
           errorEl.style.color = 'var(--error)';
@@ -3551,9 +3299,8 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
 
   private async renderVersionList(container: HTMLElement, projectName: string, overlay: HTMLElement, renderContent: () => void): Promise<void> {
     try {
-      const raw = await getKv().get(`project:${projectName}`);
-      if (!raw) return;
-      const projectData = migrateProjectData(JSON.parse(raw));
+      const projectData = await this.loadProjectData(projectName);
+      if (!projectData) return;
       const versions = projectData.versions;
 
       container.innerHTML = versions.map(v => {
@@ -3677,10 +3424,9 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
   private async deleteProjectVersion(projectName: string, versionId: number): Promise<void> {
     let emptied = false;
     await this.withProjectLock(async () => {
-      const raw = await getKv().get(`project:${projectName}`);
-      if (!raw) return;
+      const projectData = await this.loadProjectData(projectName);
+      if (!projectData) return;
       try {
-        const projectData = migrateProjectData(JSON.parse(raw));
         projectData.versions = projectData.versions.filter(v => v.id !== versionId);
         if (projectData.versions.length === 0) {
           emptied = true;
@@ -3697,14 +3443,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
   }
 
   private downloadJson(data: unknown, filename: string): void {
-    const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(JSON.stringify(data, null, 2), filename, 'application/json');
   }
 
   private exportCurrentMcu(): void {
@@ -3794,14 +3533,9 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
     // twice builds up versions instead of overwriting.
     const addedCount = imported.versions.length;
     const latest = await this.withProjectLock(async () => {
-      let target: ProjectData = { name: trimmed, versions: [] };
-      try {
-        const existing = await getKv().get(`project:${trimmed}`);
-        if (existing) {
-          target = migrateProjectData(JSON.parse(existing));
-          target.name = trimmed;
-        }
-      } catch { /* treat as new */ }
+      const existing = await this.loadProjectData(trimmed);
+      const target: ProjectData = existing ?? { name: trimmed, versions: [] };
+      target.name = trimmed;
 
       mergeImportedVersions(target, imported);
 
@@ -3817,9 +3551,8 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
   }
 
   private async exportProjectData(projectName: string): Promise<void> {
-    const raw = await getKv().get(`project:${projectName}`);
-    if (!raw) return;
-    const projectData = migrateProjectData(JSON.parse(raw));
+    const projectData = await this.loadProjectData(projectName);
+    if (!projectData) return;
     this.downloadJson(projectData, `${projectName}.json`);
   }
 

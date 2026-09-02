@@ -25,9 +25,7 @@
 
 import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
-import { estimateComplexity, resolveAllVariables, extractPorts, resolveReservePatterns, extractSharedPatterns, partitionGpioVariables, isGpioVariable } from './solver';
-import { resolveTemplates } from '../parser/template-resolver';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
+import { prepareSolverContext, estimateComplexity, isGpioVariable } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import { buildInstanceVariables, type InstanceGroup } from './two-phase-solver';
 import { solveTwoPhase } from './two-phase-solver';
@@ -100,17 +98,8 @@ function extractSeedGroups(
   const solutions = labeled.flatMap(l => l.result.solutions);
   if (solutions.length === 0) return [];
 
-  const { ast: expandedAst } = resolveTemplates(ast, getStdlibTemplates());
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  extractSharedPatterns(expandedAst);
-  const reservedPinSet = new Set(reserved.pins);
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-  const { solveVars } = partitionGpioVariables(
-    allVariables.filter(v => v.domain.length > 0 || !v.optional),
-    !!config.skipGpioMapping
-  );
-  const instanceVars = buildInstanceVariables(solveVars.filter(v => !isGpioVariable(v)));
+  const ctx = prepareSolverContext(ast, mcu, [], config.skipGpioMapping);
+  if (!ctx) return [];
+  const instanceVars = buildInstanceVariables(ctx.variables.filter(v => !isGpioVariable(v)));
   return extractInstanceGroupsFromSolutions(solutions, instanceVars);
 }

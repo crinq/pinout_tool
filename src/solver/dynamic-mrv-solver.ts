@@ -9,13 +9,11 @@
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
 import type { ProgramNode, RequireNode, PatternPart } from '../parser/constraint-ast';
 import {
-  prepareSolverContext,
-  evaluateAllConstraints, buildSolution,
-  canAssignPin, assignPin, unassignPin, evaluateExpr,
+  prepareSolverContext, tryEmitSolution,
+  canAssignPin, assignPin, unassignPin, checkRequires,
   propagateShared, undoPropagateShared, buildPinLookups,
   buildSameInstancePropagator, propagateSameInstance,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
   type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
   type SameInstancePropagator,
@@ -103,18 +101,10 @@ export function solveBacktrackDynamic(
 
   if (depth === totalVars) {
     // All variables assigned - check all config combinations
-    stats.evaluatedCombinations++;
-    const dmaOut1: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1, mcuInfo, sharedPatterns)) {
-      const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut1
-      );
-      solutions.push(solution);
-      stats.validSolutions++;
-      const elapsed = performance.now() - startTime;
-      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
-      stats.lastSolutionMs = elapsed;
-    }
+    tryEmitSolution(
+      current, configCombinations, ports, pinnedAssignments,
+      solutions, stats, startTime, dmaData, mcuInfo, sharedPatterns,
+    );
     return;
   }
 
@@ -159,18 +149,10 @@ export function solveBacktrackDynamic(
           return true;
         });
     if (viableCombos.length > 0) {
-      stats.evaluatedCombinations++;
-      const dmaOut2: Map<string, string>[] = [];
-      if (evaluateAllConstraints(current, viableCombos, ports, dmaData, dmaOut2, mcuInfo, sharedPatterns)) {
-        const solution = buildSolution(
-          current, viableCombos, ports, pinnedAssignments, solutions.length, dmaOut2
-        );
-        solutions.push(solution);
-        stats.validSolutions++;
-        const elapsed2 = performance.now() - startTime;
-        if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed2;
-        stats.lastSolutionMs = elapsed2;
-      }
+      tryEmitSolution(
+        current, viableCombos, ports, pinnedAssignments,
+        solutions, stats, startTime, dmaData, mcuInfo, sharedPatterns,
+      );
     }
     for (const i of skipped) assigned[i] = false;
     return;
@@ -198,29 +180,8 @@ export function solveBacktrackDynamic(
     const configVars = configVarIndices.get(configKey);
     if (configVars && configVars.every(idx => assigned[idx])) {
       const requires = configRequiresMap.get(configKey);
-      if (requires) {
-        const portChannels = new Map<string, VariableAssignment[]>();
-        for (const va of current) {
-          if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
-            if (!portChannels.has(va.variable.channelName)) {
-              portChannels.set(va.variable.channelName, []);
-            }
-            portChannels.get(va.variable.channelName)!.push(va);
-          }
-        }
-        const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-        channelInfo.set(v.portName, portChannels);
-
-        for (const req of requires) {
-          if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
-            continue;
-          }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
-            if (req.optional) continue;
-            pruned = true;
-            break;
-          }
-        }
+      if (requires && !checkRequires(requires, v.portName, v.configName, current, dmaData, mcuInfo)) {
+        pruned = true;
       }
     }
 

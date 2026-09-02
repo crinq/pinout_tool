@@ -15,24 +15,21 @@ import { normalizePeripheralType } from '../parser/mcu-xml-parser';
 import type {
   ProgramNode, RequireNode, PatternPart, ConstraintExprNode,
 } from '../parser/constraint-ast';
-import { resolveTemplates } from '../parser/template-resolver';
 import { checkGroupPinFeasibility } from './matching-oracle';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
   SolverVariable, VariableAssignment, PortSpec, PinnedAssignment, EvalMcuInfo,
 } from './solver';
 import {
-  extractPorts, resolveReservePatterns, extractPinnedAssignments,
-  extractSharedPatterns, isSharedInstance, resolveAllVariables,
-  generateConfigCombinations,
+  prepareSolverContext, emptyResult, newStats,
+  isSharedInstance,
   solveBacktrack, createPinTracker,
-  partitionGpioVariables, isGpioVariable,
-  configsHaveDma, buildPropagationContext,
+  isGpioVariable, buildPropagationContext,
   pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous, pinnedOccupiedPins } from './solver';
+  isOptionalRequireVacuous } from './solver';
 import { mulberry32, shuffleArray } from './solver-utils';
+import { computePortPriority } from './port-priority';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 
 // ============================================================
@@ -100,84 +97,11 @@ export function solveTwoPhase(
   const errors: SolverError[] = [];
   const solutions: Solution[] = [];
 
-  // Expand macros
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) {
-    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  }
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve (no port configs defined)' }],
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
-  }
-
-  // Check for empty domains
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors,
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
-  }
-
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
-
-  if (solveVars.length === 0 && gpioVars.length === 0) {
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors: [{ type: 'warning', message: 'No variables to solve (no port configs defined)' }],
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
-  }
-
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { ports, pinnedAssignments, sharedPatterns, configCombinations, dmaData, gpioVarsPerConfig, configRequiresMap, stats } = ctx;
+  const reservedPins = ctx.reservedPins;
+  const solveVars = ctx.variables;
 
   // Build instance variables from non-GPIO solver variables only.
   // GPIO variables (IN/OUT) don't have meaningful peripheral instances
@@ -187,16 +111,6 @@ export function solveTwoPhase(
 
   // C3: Sort instance domains by ascending average pin cost
   sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
-
-  // Build requires map
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (const [portName, port] of ports) {
-    for (const c of port.configs) {
-      if (c.requires.length > 0) {
-        configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
-      }
-    }
-  }
 
   // ========== Phase 1: Instance Assignment per Config Combination ==========
   const collect = (cap: number): InstanceGroup[] => collectPhase1Groups(
@@ -210,28 +124,10 @@ export function solveTwoPhase(
       type: 'error',
       message: 'Phase 1: No valid peripheral instance assignments found',
     });
-    return {
-      mcuRef: mcu.refName,
-      solutions: [],
-      errors,
-      statistics: {
-        totalCombinations: configCombinations.length,
-        evaluatedCombinations: 0,
-        validSolutions: 0,
-        solveTimeMs: performance.now() - startTime,
-        configCombinations: configCombinations.length,
-      },
-    };
+    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
   // ========== Phase 2: Pin Assignment per Group ==========
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
 
   // C1: Cost-guided variable ordering for Phase 2
   const costWeights = config.costWeights;
@@ -243,7 +139,7 @@ export function solveTwoPhase(
   const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
   const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
     solvePhase2ForGroup(
-      group, solveVars, ports, reserved.pins, pinnedAssignments,
+      group, solveVars, ports, reservedPins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
       phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage,
@@ -288,7 +184,7 @@ export function solveTwoPhase(
 
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reservedPins, pinnedAssignments);
 }
 
 // ============================================================
@@ -1027,7 +923,7 @@ export function sortInstanceDomainsByCost(
 // Cost-Guided Phase 2 Variable Ordering (C1)
 // ============================================================
 
-function costGuidedPhase2Sort(
+export function costGuidedPhase2Sort(
   vars: SolverVariable[],
   costWeights: Map<string, number>
 ): void {
@@ -1045,6 +941,35 @@ function costGuidedPhase2Sort(
   // Primary: MRV (domain size), Secondary: higher min-cost first
   // (assign expensive variables first to prune early)
   vars.sort((a, b) => {
+    const sizeA = a.domain.length, sizeB = b.domain.length;
+    if (sizeA !== sizeB) return sizeA - sizeB;
+    return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
+  });
+}
+
+/**
+ * Phase-2 variable order for the priority solvers: port priority first, then
+ * MRV, then higher min-candidate-cost first. Shared with the worker's
+ * shared-Phase-1 path so the two can't drift.
+ */
+export function priorityPhase2Sort(
+  vars: SolverVariable[],
+  costWeights: Map<string, number>
+): void {
+  const p2Priority = computePortPriority(vars);
+  const minCosts = new Map<SolverVariable, number>();
+  for (const v of vars) {
+    let minCost = Infinity;
+    for (const ci of v.domain) {
+      const cost = estimateCandidateCost(v.candidates[ci], costWeights);
+      if (cost < minCost) minCost = cost;
+    }
+    minCosts.set(v, minCost);
+  }
+  vars.sort((a, b) => {
+    const pa = p2Priority.get(a.portName) ?? 0;
+    const pb = p2Priority.get(b.portName) ?? 0;
+    if (pa !== pb) return pb - pa;
     const sizeA = a.domain.length, sizeB = b.domain.length;
     if (sizeA !== sizeB) return sizeA - sizeB;
     return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
@@ -1077,7 +1002,6 @@ export interface SharedPhase1Result {
   sharedPatterns: PatternPart[];
   configCombinations: Map<string, string>[];
   gpioVarsPerConfig: Map<string, SolverVariable[]>;
-  gpioVarCount: number;
   errors: SolverError[];
   dmaData?: DmaData;
 }
@@ -1094,64 +1018,36 @@ export function runSharedPhase1(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) {
+    // Empty-domain errors must reach the caller (the worker reports them per
+    // solver); a plain no-variables case stays null like before.
+    if (errors.some(e => e.type === 'error')) {
+      return {
+        groups: [], solveVars: [], ports: new Map(), reservedPins: [],
+        pinnedAssignments: [], sharedPatterns: [], configCombinations: [],
+        gpioVarsPerConfig: new Map(), errors, dmaData: undefined,
+      };
+    }
+    return null;
   }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) return null;
-
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return { groups: [], solveVars: [], ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns, configCombinations, gpioVarsPerConfig: new Map(), gpioVarCount: 0, errors, dmaData };
-  }
-
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
-  if (solveVars.length === 0 && gpioVars.length === 0) return null;
-
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const solveVars = ctx.variables;
 
   const nonGpioVars = solveVars.filter(v => !isGpioVariable(v));
   const allInstanceVars = buildInstanceVariables(nonGpioVars);
   sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
 
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (const [portName, port] of ports) {
-    for (const c of port.configs) {
-      if (c.requires.length > 0) configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
-    }
-  }
-
   // Phase 1: instance assignment across config combinations
   const groups = collectPhase1Groups(
-    allInstanceVars, solveVars, configCombinations, ports, sharedPatterns, configRequiresMap,
-    config.maxGroups, startTime, config.timeoutMs, dmaData,
+    allInstanceVars, solveVars, ctx.configCombinations, ctx.ports, ctx.sharedPatterns, ctx.configRequiresMap,
+    config.maxGroups, startTime, config.timeoutMs, ctx.dmaData,
   );
 
   return {
-    groups, solveVars, ports, reservedPins: reserved.pins,
-    pinnedAssignments, sharedPatterns, configCombinations,
-    gpioVarsPerConfig, gpioVarCount: gpioVars.length, errors, dmaData,
+    groups, solveVars, ports: ctx.ports, reservedPins: ctx.reservedPins,
+    pinnedAssignments: ctx.pinnedAssignments, sharedPatterns: ctx.sharedPatterns,
+    configCombinations: ctx.configCombinations,
+    gpioVarsPerConfig: ctx.gpioVarsPerConfig, errors, dmaData: ctx.dmaData,
   };
 }
 
@@ -1173,17 +1069,11 @@ export function runPhase2Only(
     }
     return {
       mcuRef: mcu.refName, solutions: [], errors,
-      statistics: { totalCombinations: phase1.configCombinations.length, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: phase1.configCombinations.length },
+      statistics: newStats(phase1.configCombinations.length),
     };
   }
 
-  const stats: SolverStats = {
-    totalCombinations: phase1.configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: phase1.configCombinations.length,
-  };
+  const stats: SolverStats = newStats(phase1.configCombinations.length);
 
   const domainCache = new Map<string, number[]>();
   const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));

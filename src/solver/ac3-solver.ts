@@ -1,30 +1,21 @@
 // ============================================================
-// AC-3 Forward Checking Solver
+// AC3 Solver
 //
-// After each variable assignment, propagates constraints to shrink
-// remaining variables' domains. Detects failures earlier and prunes
-// more branches than the basic backtracking solver.
-//
-// Propagation rules:
-// 1. Pin exclusivity: assigned pin removed from other ports' domains
-// 2. Instance exclusivity: non-shared instance removed from other ports
+// Backtracking with forward-checking propagation (arc-consistency
+// lite). solveBacktrack already supports the full propagation context
+// (pin/instance exclusivity + F2 same_instance, shared wipeout check),
+// so this solver is just that engine with propagation enabled — the
+// standalone re-implementation it used to carry was a line-for-line
+// copy that kept drifting behind on fixes.
 // ============================================================
 
-import type { Mcu, SolverResult, SolverError, Solution, SolverStats, DmaData } from '../types';
-import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
+import type { Mcu, SolverResult, SolverError, Solution } from '../types';
+import type { ProgramNode } from '../parser/constraint-ast';
 import {
-  prepareSolverContext,
-  evaluateAllConstraints, buildSolution,
-  canAssignPin, assignPin, unassignPin, evaluateExpr,
-  propagateShared, undoPropagateShared, buildPinLookups,
-  buildSameInstancePropagator, propagateSameInstance,
+  prepareSolverContext, solveBacktrack, buildPropagationContext,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous,
-  type SolverConfig, type SolverVariable, type VariableAssignment,
-  type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
-  type SameInstancePropagator,
+  type SolverConfig,
 } from './solver';
-import type { PatternPart } from '../parser/constraint-ast';
 
 export function solveAC3(
   ast: ProgramNode,
@@ -42,166 +33,16 @@ export function solveAC3(
   }
 
   const solutions: Solution[] = [];
+  const propagationCtx = buildPropagationContext(ctx.variables, ctx.sharedPatterns, ctx.configRequiresMap);
 
-  // Build mutable domains
-  const domains: number[][] = ctx.variables.map(v => [...v.domain]);
-
-  const { pinToVarCandidates, instanceToVarCandidates } = buildPinLookups(ctx.variables);
-  const sameInstance = buildSameInstancePropagator(ctx.variables, ctx.configRequiresMap);
-
-  solveBacktrackAC3(
+  solveBacktrack(
     ctx.variables, 0, ctx.tracker, [],
     ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
-    domains, pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
-    ctx.dmaData, sameInstance, ctx.mcuInfo
+    ctx.dmaData, propagationCtx, undefined, ctx.mcuInfo,
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
   return finalizeSolutions(solutions, mcu, cfg.costWeights, errors, ctx.stats, startTime, ctx.gpioVarsPerConfig, ctx.reservedPins, ctx.pinnedAssignments);
-}
-
-function solveBacktrackAC3(
-  variables: SolverVariable[],
-  varIndex: number,
-  tracker: PinTracker,
-  current: VariableAssignment[],
-  configCombinations: Map<string, string>[],
-  ports: Map<string, PortSpec>,
-  pinnedAssignments: PinnedAssignment[],
-  solutions: Solution[],
-  maxSolutions: number,
-  startTime: number,
-  timeoutMs: number,
-  stats: SolverStats,
-  deepest: { depth: number; assignments: VariableAssignment[] },
-  lastVarOfConfig: Map<string, number>,
-  configRequiresMap: Map<string, RequireNode[]>,
-  domains: number[][],
-  pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[],
-  dmaData?: DmaData,
-  sameInstance?: SameInstancePropagator,
-  mcuInfo?: EvalMcuInfo
-): void {
-  if (performance.now() - startTime > timeoutMs) return;
-  if (solutions.length >= maxSolutions) return;
-
-  if (varIndex > deepest.depth) {
-    deepest.depth = varIndex;
-    deepest.assignments = [...current];
-  }
-
-  if (varIndex === variables.length) {
-    stats.evaluatedCombinations++;
-    const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, mcuInfo, sharedPatterns)) {
-      const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
-      );
-      solutions.push(solution);
-      stats.validSolutions++;
-      const elapsed = performance.now() - startTime;
-      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed;
-      stats.lastSolutionMs = elapsed;
-    }
-    return;
-  }
-
-  const v = variables[varIndex];
-  const assigned = new Set<number>();
-  for (let i = 0; i < varIndex; i++) assigned.add(i);
-
-  // Iterate over current domain (may have been pruned by propagation)
-  const domainCopy = [...domains[varIndex]];
-  for (const candidateIdx of domainCopy) {
-    if (solutions.length >= maxSolutions) return;
-    if (performance.now() - startTime > timeoutMs) return;
-
-    const candidate = v.candidates[candidateIdx];
-
-    if (!canAssignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position)) continue;
-
-    assignPin(tracker, candidate.pin.name, v.portName, v.configName, v.channelName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
-    current.push({ variable: v, candidate });
-
-    // Eager constraint check
-    let pruned = false;
-    const configKey = `${v.portName}\0${v.configName}`;
-    if (lastVarOfConfig.get(configKey) === varIndex) {
-      const requires = configRequiresMap.get(configKey);
-      if (requires) {
-        const portChannels = new Map<string, VariableAssignment[]>();
-        for (const va of current) {
-          if (va.variable.portName === v.portName && va.variable.configName === v.configName) {
-            if (!portChannels.has(va.variable.channelName)) {
-              portChannels.set(va.variable.channelName, []);
-            }
-            portChannels.get(va.variable.channelName)!.push(va);
-          }
-        }
-        const channelInfo = new Map<string, Map<string, VariableAssignment[]>>();
-        channelInfo.set(v.portName, portChannels);
-
-        for (const req of requires) {
-          if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
-            continue;
-          }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
-            if (req.optional) continue;
-            pruned = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!pruned) {
-      // Forward-check propagation (F2: same_instance first, shared wipeout check covers both)
-      assigned.add(varIndex);
-      const siRemoved = sameInstance
-        ? propagateSameInstance(varIndex, candidate, sameInstance, variables, domains, i => assigned.has(i))
-        : null;
-      const removed = propagateShared(
-        candidate, v.portName,
-        variables, domains, i => assigned.has(i),
-        pinToVarCandidates, instanceToVarCandidates,
-        sharedPatterns
-      );
-
-      if (removed !== null) {
-        // No domain wipeout - recurse
-        solveBacktrackAC3(
-          variables, varIndex + 1, tracker, current,
-          configCombinations, ports, pinnedAssignments,
-          solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
-          lastVarOfConfig, configRequiresMap,
-          domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData, sameInstance, mcuInfo
-        );
-        undoPropagateShared(removed, domains);
-      }
-      if (siRemoved) undoPropagateShared(siRemoved, domains);
-      assigned.delete(varIndex);
-    }
-
-    current.pop();
-    unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
-  }
-
-  // Optional variable: also explore leaving it unassigned (mirrors
-  // solveBacktrack's skip branch) — a fully-conflicting `?=` channel must
-  // not kill branches that are valid without it.
-  if (v.optional) {
-    solveBacktrackAC3(
-      variables, varIndex + 1, tracker, current,
-      configCombinations, ports, pinnedAssignments,
-      solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
-      lastVarOfConfig, configRequiresMap,
-      domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-      dmaData, sameInstance, mcuInfo
-    );
-  }
 }

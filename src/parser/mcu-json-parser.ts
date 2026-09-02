@@ -48,7 +48,7 @@ interface JsonGpio {
   pin?: number;                          // 0
   alternate_functions?: AltFunctions;
   additional_functions?: string[];
-  /** Optional per-pin properties, e.g. { "5V_tolerant": false }. */
+  /** Per-pin flags, e.g. { "5V_tolerant": true }. */
   flags?: Record<string, string | number | boolean>;
 }
 
@@ -111,6 +111,20 @@ interface JsonMemory {
   size: number;
 }
 
+/** Entry in `docs.other[]` — errata sheets, application notes, manuals. */
+interface JsonDocOther {
+  type?: string;       // "errata_sheet" | "application_note" | ...
+  title?: string;
+  name?: string;
+  url?: string;
+}
+
+interface JsonDocs {
+  datasheet?: string;
+  refmanual?: string;
+  other?: JsonDocOther[];
+}
+
 export interface McuJsonDocument {
   schema?: number;
   name: string;
@@ -124,8 +138,8 @@ export interface McuJsonDocument {
   packages?: JsonPackage[];
   peripherals?: JsonPeripheral[];
   gpios?: JsonGpio[];
-  docs?: JsonDocs;
   dma_controllers?: JsonDmaController[];
+  docs?: JsonDocs;
   die?: string;
 }
 
@@ -134,32 +148,28 @@ export interface McuJsonDocument {
 // ============================================================
 
 const GPIO_NAME_RE = /^P([A-Z])(\d+)$/;
-/** Dual-pad analog pin, e.g. PC2_C — a second pad behind an analog switch. */
-/** Vendor doc links live under `docs`; the errata sits in `docs.other[]`. */
-interface JsonDocs {
-  datasheet?: string;
-  refmanual?: string;
-  other?: { type?: string; url?: string }[];
-}
 
 /**
- * Pick out the three documents the UI links to. URLs are upgraded to https —
- * the vendor data still uses http and the app is typically served over https.
+ * Pick the documentation links out of the vendor `docs` block. The errata
+ * sheet lives in the mixed `other[]` list (alongside application notes),
+ * keyed by `type === "errata_sheet"`. The vendor data still serves http://
+ * URLs — upgrade them to https so the links open from a secure origin.
  */
-function parseDocs(docs: JsonDocs | undefined): McuDocs | undefined {
+function parseDocs(docs?: JsonDocs): McuDocs | undefined {
   if (!docs) return undefined;
-  const https = (u?: string): string | undefined =>
-    u ? u.replace(/^http:\/\//i, 'https://') : undefined;
+  const upgrade = (url?: string): string | undefined =>
+    url ? url.replace(/^http:\/\//i, 'https://') : undefined;
   const out: McuDocs = {
-    datasheet: https(docs.datasheet),
-    refmanual: https(docs.refmanual),
-    errata: https(docs.other?.find(o => o.type === 'errata_sheet')?.url),
+    datasheet: upgrade(docs.datasheet),
+    refmanual: upgrade(docs.refmanual),
+    errata: upgrade(docs.other?.find(o => o.type === 'errata_sheet')?.url),
   };
-  return out.datasheet || out.refmanual || out.errata ? out : undefined;
+  return (out.datasheet || out.refmanual || out.errata) ? out : undefined;
 }
 
+/** _C analog-switch siblings (dual-pad pins, e.g. PC2_C on H7). */
 const C_PIN_RE = /^P[A-Z]\d+_C$/;
-/** Signal types that reach a `_C` pad directly (switch open). */
+/** Peripheral types that use the analog switch path (not the digital AF mux). */
 const ANALOG_PERIPHERAL_TYPES = new Set(['ADC', 'DAC', 'OPAMP', 'COMP']);
 
 /**
@@ -267,25 +277,14 @@ function instanceNumberOf(name: string): number | undefined {
  * (collapseSignalName), so multi-token signal functions stay matchable
  * by constraint patterns like `SPI*_I2SCK`.
  */
-function buildSignalFromName(
-  rawName: string,
-  ioModes?: string,
-  multiTokenInstances?: string[],
-): Signal | null {
+function buildSignalFromName(rawName: string, ioModes?: string, multiTokenInstances?: string[]): Signal | null {
   if (!rawName) return null;
   const collapsed = collapseSignalName(rawName);
-
-  // Multi-token instance (USB_OTG_HS_ULPI_STP): keep the declared peripheral
-  // name on peripheralInstance instead of truncating at the first underscore,
-  // so the signal joins its peripherals[] entry instead of spawning a
-  // synthetic duplicate instance. The list is sorted longest-first by the
-  // caller so USB_OTG_HS wins over a hypothetical USB_OTG.
-  //
-  // signalFunction stays on the collapsed-name convention (everything after
-  // the FIRST underscore, e.g. "OTGFSDP") — constraint patterns like
-  // `USB*_OTGFSDP` match instancePart × signalFunction, so a shortened
-  // function ("DP") would break every existing pattern and the stdlib
-  // usb_port macro.
+  // Multi-token peripheral instances (USB_OTG_HS, USB_DEVICE): when the raw
+  // name starts with a declared instance, keep that instance verbatim
+  // instead of truncating at the first underscore. signalFunction stays on
+  // the collapsed convention (everything after the collapsed name's first
+  // underscore) so patterns like USB*_OTGFSDP keep matching.
   if (multiTokenInstances) {
     for (const inst of multiTokenInstances) {
       if (rawName.startsWith(inst + '_')) {
@@ -300,7 +299,6 @@ function buildSignalFromName(
       }
     }
   }
-
   // Split on first underscore to identify peripheral instance.
   const idx = collapsed.indexOf('_');
   if (idx === -1) {
@@ -419,10 +417,10 @@ function synthesizeDmaDataFromJson(doc: McuJsonDocument): DmaData | undefined {
       // Spec: when the signal field equals the peripheral name the entry is
       // an instance-level (whole-peripheral) DMA mapping. Bare instance key
       // populates `instanceToDmaStreams`; the buildDmaData helper at the
-      // bottom of this file detects "no underscore" → instance lookup.
+      // bottom of this file detects instance-level keys.
       const isInstanceLevel = entry.signal === p.name;
-      // Collapse like the pin-signal names, or a multi-token signal entry
-      // (I2S_CK → SPI1_I2SCK) never matches anything.
+      // Collapse the joined name the same way pin signals are collapsed so
+      // multi-token signal entries match: SPI1 + "I2S_CK" → "SPI1_I2SCK".
       const sigKey = isInstanceLevel ? p.name : collapseSignalName(`${p.name}_${entry.signal}`);
 
       for (const item of entry.dma) {
@@ -460,12 +458,12 @@ function buildDmaDataFromStreams(version: string, streams: DmaStreamInfo[]): Dma
         if (!arr.includes(stream)) arr.push(stream);
         signalToDmaStreams.set(sigName, arr);
       }
-      // Instance-level request: the key equals the instance name (covers
-      // underscored instances like USB_OTG_HS, which the dma-xml-parser's
-      // "no underscore" heuristic alone would miss). Index by instance for
+      // Mirror dma-xml-parser's heuristic: a signal name without an
+      // underscore is an instance-level request. Multi-token instances
+      // (USB_OTG_FS) contain underscores, so a key equal to the peripheral
+      // instance itself is also instance-level. Index by instance for
       // findDmaStreamsForSignal's fallback path.
-      if (req.signalNames.length === 1 &&
-          (req.signalNames[0] === req.peripheralInstance || !req.signalNames[0].includes('_'))) {
+      if (req.signalNames.length === 1 && (req.signalNames[0] === req.peripheralInstance || !req.signalNames[0].includes('_'))) {
         const arr = instanceToDmaStreams.get(req.peripheralInstance) ?? [];
         if (!arr.includes(stream)) arr.push(stream);
         instanceToDmaStreams.set(req.peripheralInstance, arr);
@@ -478,12 +476,6 @@ function buildDmaDataFromStreams(version: string, streams: DmaStreamInfo[]): Dma
 
 // Re-export for test suites that want to drive the synthesizer directly.
 export { synthesizeDmaDataFromJson };
-
-export interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-}
 
 /**
  * Parse a vendor JSON string into one Mcu per package variant.
@@ -503,7 +495,8 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   const line = doc.line ?? '';
 
   const cores = (doc.cores ?? []).map(c => c.type_full ?? c.name ?? '').filter(Boolean);
-  // Math.max() with no args is -Infinity — seed with 0 for core-less docs.
+  // Math.max() with no args is -Infinity — seed with 0 so an MCU without
+  // cores reports frequency 0.
   const freqMHz = Math.max(0, ...(doc.cores ?? []).map(c => c.freq_max_hz ?? 0)) / 1_000_000;
   const voltage = {
     min: doc.voltage?.min_v ?? 0,
@@ -547,8 +540,10 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
     });
   }
 
-  // Instance names containing underscores (USB_OTG_HS) — longest first so
-  // the most specific prefix wins in buildSignalFromName.
+  // Instance names containing underscores (USB_OTG_HS, USB_DEVICE, …) need
+  // special handling when splitting signal names into instance + function.
+  // Longest-first so "USB_OTG_HS_ULPI_STP" matches "USB_OTG_HS" before any
+  // shorter underscored prefix.
   const multiTokenInstances = peripherals
     .map(p => p.instanceName)
     .filter(n => n.includes('_'))
@@ -564,14 +559,14 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   for (const g of doc.gpios ?? []) {
     if (!g.name) continue;
     if (g.flags && Object.keys(g.flags).length > 0) flagsByPin.set(g.name, g.flags);
-    // Dual-pad analog pins (PC2_C) are a second pad joined to the base pin by a
-    // configurable analog switch. Only their dedicated analog channels are
-    // reachable on their own; the digital functions the data also lists are the
-    // base pin's, reachable solely with the switch closed (which shorts the two
-    // pads). Keep analog only — same rule as the XML parser.
+
+    // _C pins are the low-impedance side of a dual-pad analog switch
+    // (e.g. PC2 / PC2_C on H7). The pad has its own dedicated analog
+    // channels; the digital AFs the vendor data repeats on the `_C` entry
+    // belong to the base pin (reachable only with the switch closed), so
+    // drop everything non-analog — parity with the XML parser.
     const isCPin = C_PIN_RE.test(g.name);
     const list: Signal[] = [];
-
     const keep = (sig: Signal | null): void => {
       if (!sig) return;
       if (isCPin && (!sig.peripheralType || !ANALOG_PERIPHERAL_TYPES.has(sig.peripheralType))) return;
@@ -581,7 +576,9 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
     if (g.alternate_functions) {
       for (const [af, value] of Object.entries(g.alternate_functions)) {
         const signals = Array.isArray(value) ? value : [value];
-        for (const rawSig of signals) keep(buildSignalFromName(rawSig, `AF${af}`, multiTokenInstances));
+        for (const rawSig of signals) {
+          keep(buildSignalFromName(rawSig, `AF${af}`, multiTokenInstances));
+        }
       }
     }
     for (const rawSig of g.additional_functions ?? []) {
@@ -748,8 +745,8 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
     flash: a.flashKB,
     ram: a.ramKB,
     ccmRam: a.ccmKB,
-    // Count physical pads, not logical names — ALT remap variants share a
-    // pad with their default sibling (matches the vendor XML's IONb).
+    // Count physical pads with at least one assignable logical pin —
+    // remap variants on a shared bond pad count once (matches vendor IONb).
     ioCount: physicalPins.filter(p => p.logicals.some(l => l.isAssignable)).length,
     voltage: a.voltage,
     temperature: a.temperature,
@@ -817,17 +814,4 @@ function addLogical(
   };
   physical.logicals.push(lp);
   logicalPins.push(lp);
-}
-
-/**
- * Run the same structural checks `validateMcu` does after the JSON path —
- * we re-export so call sites can use one validator regardless of source.
- */
-export function validateMcuJsonResult(mcu: Mcu): ValidationResult {
-  const errors: string[] = [];
-  const warnings: string[] = [];
-  if (!mcu.refName) errors.push('Missing MCU refName');
-  if (!mcu.package) errors.push('Missing package');
-  if (mcu.logicalPins.length === 0) errors.push('No pins found');
-  return { valid: errors.length === 0, errors, warnings };
 }

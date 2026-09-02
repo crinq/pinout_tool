@@ -6,6 +6,7 @@
 // ============================================================
 
 import type { ProgramNode } from './parser/constraint-ast';
+import type { Mcu } from './types';
 import { escapeRegex } from './utils';
 import { getKv } from './kv';
 
@@ -98,6 +99,19 @@ export function matchesPatterns(value: string, patterns: string[]): boolean {
  * and the metadata is rewritten in-place so subsequent scans skip the
  * reparse.
  */
+/**
+ * Write the full mcu-meta record for one MCU. Every writer must use this —
+ * partial records (missing temp/voltage/cores) force listStoredMcuMetadata's
+ * XML-reparse backfill on the next `mcu:` filter.
+ */
+export async function writeMcuMeta(mcu: Mcu, tags: string[]): Promise<void> {
+  await getKv().set(`mcu-meta:${mcu.refName}`, JSON.stringify({
+    tags, package: mcu.package, ram: mcu.ram, flash: mcu.flash, frequency: mcu.frequency,
+    tempMin: mcu.temperature.min, tempMax: mcu.temperature.max,
+    voltageMin: mcu.voltage.min, voltageMax: mcu.voltage.max, cores: mcu.cores,
+  }));
+}
+
 export async function listStoredMcuMetadata(): Promise<McuMetadata[]> {
   const results: McuMetadata[] = [];
   const kv = getKv();

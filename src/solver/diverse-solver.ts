@@ -6,20 +6,16 @@
 // shuffled instance candidate orderings.
 // ============================================================
 
-import type { Mcu, Solution, SolverResult, SolverError, SolverStats } from '../types';
-import type { ProgramNode, RequireNode } from '../parser/constraint-ast';
-import { resolveTemplates } from '../parser/template-resolver';
-import { getStdlibTemplates } from '../parser/stdlib-macros';
-import { estimateCandidateCost } from './cost-functions';
+import type { Mcu, Solution, SolverResult, SolverError } from '../types';
+import type { ProgramNode } from '../parser/constraint-ast';
 import {
-  extractPorts, resolveReservePatterns, extractPinnedAssignments,
-  extractSharedPatterns, resolveAllVariables,
-  generateConfigCombinations,
+  prepareSolverContext,
   emptyResult, pushSolverWarnings, finalizeSolutions,
-  partitionGpioVariables, isGpioVariable,
-  configsHaveDma, pinnedOccupiedPins } from './solver';
+   isGpioVariable,
+   } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
+  costGuidedPhase2Sort,
   PHASE2_GROUP_STEP_BUDGET,
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
   groupFingerprint, sortInstanceDomainsByCost, orderByConfigBlock,
@@ -39,49 +35,11 @@ export function solveDiverseInstances(
   const startTime = performance.now();
   const errors: SolverError[] = [];
 
-  const { ast: expandedAst, errors: macroErrors } = resolveTemplates(ast, getStdlibTemplates());
-  for (const me of macroErrors) {
-    errors.push({ type: 'error', message: me.message, source: me.macroName });
-  }
-
-  const ports = extractPorts(expandedAst);
-  const reserved = resolveReservePatterns(expandedAst, mcu);
-  const pinnedAssignments = extractPinnedAssignments(expandedAst);
-  const sharedPatterns = extractSharedPatterns(expandedAst);
-
-  const reservedPinSet = new Set(reserved.pins);
-  for (const pa of pinnedAssignments) {
-    for (const p of pinnedOccupiedPins(pa)) reservedPinSet.add(p);
-  }
-  const reservedPeripheralSet = new Set(reserved.peripherals);
-
-  const configCombinations = generateConfigCombinations(ports);
-  const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
-  const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
-
-  if (allVariables.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
-  if (emptyVar) {
-    errors.push({
-      type: 'error',
-      message: `No matching signals for "${emptyVar.patternRaw}" (${emptyVar.portName}.${emptyVar.channelName} in config "${emptyVar.configName}")`,
-      source: `${emptyVar.portName}.${emptyVar.channelName}`,
-    });
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  const { solveVars, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(allVariables, !!config.skipGpioMapping);
-
-  if (solveVars.length === 0 && gpioVars.length === 0) {
-    return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
-  }
-
-  if (gpioVars.length > 0) {
-    errors.push({ type: 'warning', message: `Skipped GPIO mapping for ${gpioVars.length} IN/OUT variable(s) - verified pin availability only` });
-  }
+  const ctx = prepareSolverContext(ast, mcu, errors, config.skipGpioMapping);
+  if (!ctx) return emptyResult(mcu.refName, errors, 0, startTime);
+  const { ports, pinnedAssignments, sharedPatterns, configCombinations, dmaData, gpioVarsPerConfig, configRequiresMap } = ctx;
+  const reservedPins = ctx.reservedPins;
+  const solveVars = ctx.variables;
 
   // Build instance variables from non-GPIO solver variables only.
   // GPIO variables don't have meaningful peripheral instances for Phase 1.
@@ -90,15 +48,6 @@ export function solveDiverseInstances(
 
   // C3: Sort instance domains by ascending average pin cost
   sortInstanceDomainsByCost(allInstanceVars, config.costWeights);
-
-  const configRequiresMap = new Map<string, RequireNode[]>();
-  for (const [portName, port] of ports) {
-    for (const c of port.configs) {
-      if (c.requires.length > 0) {
-        configRequiresMap.set(`${portName}\0${c.name}`, c.requires);
-      }
-    }
-  }
 
   // ========== Phase 1: Multi-round diverse instance assignment ==========
   // Only accept instance groups that can actually be pin-routed (sound: the
@@ -188,40 +137,19 @@ export function solveDiverseInstances(
   }
 
   // ========== Phase 2: Pin assignment per group ==========
-  const stats: SolverStats = {
-    totalCombinations: configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: configCombinations.length,
-  };
+  const stats = ctx.stats;
 
   const solutions: Solution[] = [];
 
   // C1: Cost-guided variable ordering for Phase 2
   const costWeights = config.costWeights;
-  const phase2Sort = (vars: typeof solveVars) => {
-    const minCosts = new Map<typeof vars[0], number>();
-    for (const v of vars) {
-      let minCost = Infinity;
-      for (const ci of v.domain) {
-        const cost = estimateCandidateCost(v.candidates[ci], costWeights);
-        if (cost < minCost) minCost = cost;
-      }
-      minCosts.set(v, minCost);
-    }
-    vars.sort((a, b) => {
-      const sizeA = a.domain.length, sizeB = b.domain.length;
-      if (sizeA !== sizeB) return sizeA - sizeB;
-      return (minCosts.get(b) ?? 0) - (minCosts.get(a) ?? 0);
-    });
-  };
+  const phase2Sort = (vars: typeof solveVars): void => costGuidedPhase2Sort(vars, costWeights);
 
   const domainCache = new Map<string, number[]>();
   const solutionsPerRound = Math.max(1, Math.ceil(config.maxSolutionsPerGroup / 5));
   const solveGroup: GroupSolverFn = (group, maxSol, seed, pinUsage) =>
     solvePhase2ForGroup(
-      group, solveVars, ports, reserved.pins, pinnedAssignments,
+      group, solveVars, ports, reservedPins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
       phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage,
@@ -261,5 +189,5 @@ export function solveDiverseInstances(
 
   pushSolverWarnings(errors, solutions, config.maxSolutionsPerGroup * config.maxGroups, startTime, config.timeoutMs);
 
-  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reserved.pins, pinnedAssignments);
+  return finalizeSolutions(solutions, mcu, config.costWeights, errors, stats, startTime, gpioVarsPerConfig, reservedPins, pinnedAssignments);
 }

@@ -9,6 +9,7 @@
 import type { Mcu, SolverResult, SolverError, Solution, SolverStats } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import {
+  newStats,
   prepareSolverContext, solveBacktrack,
   emptyResult, pushSolverWarnings, finalizeSolutions, buildLastVarOfConfig,
   createPinTracker,
@@ -39,13 +40,7 @@ export function solveRandomizedRestarts(
   const allSolutions: Solution[] = [];
   const perRestart = Math.max(1, Math.ceil(config.maxSolutions / config.numRestarts));
 
-  const stats: SolverStats = {
-    totalCombinations: ctx.configCombinations.length,
-    evaluatedCombinations: 0,
-    validSolutions: 0,
-    solveTimeMs: 0,
-    configCombinations: ctx.configCombinations.length,
-  };
+  const stats: SolverStats = newStats(ctx.configCombinations.length);
 
   for (let r = 0; r < config.numRestarts; r++) {
     if (performance.now() - startTime > config.timeoutMs) break;

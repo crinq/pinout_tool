@@ -1,6 +1,7 @@
+import { pickPrimaryLogical, physicalAssignments } from './pin-render-common';
 import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
 import type { DivergentPin } from '../solution-compare';
-import { escapeHtml, isGeneralPurposePin } from '../utils';
+import { downloadBlob, escapeHtml, isGeneralPurposePin } from '../utils';
 import type { Panel, StateChange, HighlightStyle } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
@@ -21,32 +22,6 @@ interface PinRect {
   labelY: number;
   labelRotation: number;
   side: 'left' | 'top' | 'right' | 'bottom';
-}
-
-/** Pick the logical pin best representing a physical pad in the viewer. */
-function pickPrimaryLogical(
-  phys: PhysicalPin,
-  assignmentsByPin: Map<string, Assignment[]>,
-): LogicalPin {
-  for (const lp of phys.logicals) {
-    if (assignmentsByPin.has(lp.name) && assignmentsByPin.get(lp.name)!.length > 0) return lp;
-  }
-  for (const lp of phys.logicals) if (lp.isDefaultVariant && lp.isAssignable) return lp;
-  for (const lp of phys.logicals) if (lp.isAssignable) return lp;
-  return phys.logicals[0];
-}
-
-/** Aggregate assignments across every logical bonded to one physical pad. */
-function physicalAssignments(
-  phys: PhysicalPin,
-  assignmentsByPin: Map<string, Assignment[]>,
-): Assignment[] {
-  const out: Assignment[] = [];
-  for (const lp of phys.logicals) {
-    const arr = assignmentsByPin.get(lp.name);
-    if (arr) out.push(...arr);
-  }
-  return out;
 }
 
 /**
@@ -622,13 +597,7 @@ export class PackageViewer implements Panel {
   private exportSVG(): void {
     if (!this.mcu) return;
     const svg = exportSvg(this.mcu, this.assignments, this.portColors);
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${this.mcu.refName}_pinout.svg`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(svg, `${this.mcu.refName}_pinout.svg`, 'image/svg+xml');
   }
 
   private exportText(): void {
@@ -669,13 +638,7 @@ export class PackageViewer implements Panel {
       this.showExportToast('Copied to clipboard');
     }, () => {
       // Fallback: download as file
-      const blob = new Blob([text], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${this.mcu!.refName}_pinout.txt`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadBlob(text, `${this.mcu!.refName}_pinout.txt`, 'text/plain');
     });
   }
 
@@ -711,13 +674,7 @@ export class PackageViewer implements Panel {
     };
 
     const json = JSON.stringify(data, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${this.mcu.refName}_solution.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(json, `${this.mcu.refName}_solution.json`, 'application/json');
   }
 
   private executeCustomExport(fn: CustomExportFunction): void {
@@ -807,17 +764,32 @@ export class PackageViewer implements Panel {
   }
 
   private downloadResult(content: string, filename: string, mimeType: string): void {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(content, filename, mimeType);
   }
 
 
+  /**
+   * Theme colors snapshotted once per render pass. The per-pin loops used to
+   * call getComputedStyle up to 4x per pin per frame — thousands of style
+   * reads during the pulse animation.
+   */
+  private theme = { bg: '#f5f5f5', text: '#1a1a1a', conflict: '#ef4444', assigned: '#3b82f6', reserved: '#374151', unassigned: '#9ca3af' };
+
+  private snapshotTheme(): void {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name: string, fallback: string): string => cs.getPropertyValue(name).trim() || fallback;
+    this.theme = {
+      bg: v('--bg-secondary', '#f5f5f5'),
+      text: v('--text-primary', '#1a1a1a'),
+      conflict: v('--pin-conflict', '#ef4444'),
+      assigned: v('--pin-assigned', '#3b82f6'),
+      reserved: v('--pin-reserved', '#374151'),
+      unassigned: v('--pin-unassigned', '#9ca3af'),
+    };
+  }
+
   render(): void {
+    this.snapshotTheme();
     if (!this.mcu) {
       this.renderEmpty();
       return;
@@ -963,8 +935,8 @@ export class PackageViewer implements Panel {
     const chipY = (height - chipSize) / 2;
 
     // Draw chip body
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-secondary').trim() || '#f5f5f5';
-    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+    ctx.fillStyle = this.theme.bg;
+    ctx.strokeStyle = this.theme.text;
     ctx.lineWidth = 2;
     ctx.fillRect(chipX, chipY, chipSize, chipSize);
     ctx.strokeRect(chipX, chipY, chipSize, chipSize);
@@ -976,11 +948,11 @@ export class PackageViewer implements Panel {
     ctx.lineTo(chipX + notchSize, chipY);
     ctx.arc(chipX + notchSize, chipY + notchSize, notchSize, -Math.PI / 2, Math.PI, true);
     ctx.lineTo(chipX, chipY);
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+    ctx.fillStyle = this.theme.text;
     ctx.fill();
 
     // Draw MCU name in center
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+    ctx.fillStyle = this.theme.text;
     ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1076,15 +1048,15 @@ export class PackageViewer implements Panel {
       } else if (isSelected) {
         fillColor = '#f97316'; // orange
       } else if (isIncompat) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
+        fillColor = this.theme.conflict;
       } else if (pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
-        fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
+        fillColor = portColor || this.theme.assigned;
       } else if (!phys.logicals.some(isGeneralPurposePin)) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
+        fillColor = this.theme.reserved;
       } else {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
+        fillColor = this.theme.unassigned;
       }
 
       ctx.fillStyle = fillColor;
@@ -1094,7 +1066,7 @@ export class PackageViewer implements Panel {
         // Deferred to the foreground overlay so it stays visible over the tooltip.
         this.pendingRings.push({ kind: 'rect', x, y, a: pw, b: ph, color: hlColor, style: hl!.style });
       } else {
-        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+        ctx.strokeStyle = this.theme.text;
         ctx.lineWidth = 0.5;
         ctx.strokeRect(x, y, pw, ph);
       }
@@ -1115,7 +1087,7 @@ export class PackageViewer implements Panel {
       ctx.rotate(screenLabelRotation);
 
       const fontSize = Math.min(9, pinSpacing * 0.65);
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+      ctx.fillStyle = this.theme.text;
       ctx.font = `${fontSize}px monospace`;
       if (hlColor && hl!.style === 'pulse') {
         ctx.globalAlpha = this.getPulseIntensity();
@@ -1184,8 +1156,8 @@ export class PackageViewer implements Panel {
     const chipX = (width - chipWidth) / 2;
     const chipY = (height - chipHeight) / 2;
 
-    const textPri = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-secondary').trim() || '#f5f5f5';
+    const textPri = this.theme.text;
+    ctx.fillStyle = this.theme.bg;
     ctx.strokeStyle = textPri;
     ctx.lineWidth = 2;
     ctx.fillRect(chipX, chipY, chipWidth, chipHeight);
@@ -1264,15 +1236,15 @@ export class PackageViewer implements Panel {
       } else if (isSelected) {
         fillColor = '#f97316';
       } else if (isIncompat) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
+        fillColor = this.theme.conflict;
       } else if (pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
-        fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
+        fillColor = portColor || this.theme.assigned;
       } else if (!phys.logicals.some(isGeneralPurposePin)) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
+        fillColor = this.theme.reserved;
       } else {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
+        fillColor = this.theme.unassigned;
       }
 
       ctx.fillStyle = fillColor;
@@ -1375,11 +1347,11 @@ export class PackageViewer implements Panel {
     const originX = (width - gridW) / 2 + labelSpace / 2;
     const originY = (height - gridH) / 2 + labelSpace / 2;
 
-    const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#1a1a1a';
+    const textColor = this.theme.text;
 
     // Draw chip body
     const chipPad = cellSize * 0.4;
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg-secondary').trim() || '#f5f5f5';
+    ctx.fillStyle = this.theme.bg;
     ctx.strokeStyle = textColor;
     ctx.lineWidth = 2;
     ctx.fillRect(originX - chipPad, originY - chipPad, gridW + 2 * chipPad, gridH + 2 * chipPad);
@@ -1497,15 +1469,15 @@ export class PackageViewer implements Panel {
       } else if (isSelected) {
         fillColor = '#f97316';
       } else if (isIncompat) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-conflict').trim() || '#ef4444';
+        fillColor = this.theme.conflict;
       } else if (pinAssignments.length > 0) {
         const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
         const portColor = portName ? this.portColors.get(portName) : undefined;
-        fillColor = portColor || getComputedStyle(document.documentElement).getPropertyValue('--pin-assigned').trim() || '#3b82f6';
+        fillColor = portColor || this.theme.assigned;
       } else if (!phys.logicals.some(isGeneralPurposePin)) {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-reserved').trim() || '#374151';
+        fillColor = this.theme.reserved;
       } else {
-        fillColor = getComputedStyle(document.documentElement).getPropertyValue('--pin-unassigned').trim() || '#9ca3af';
+        fillColor = this.theme.unassigned;
       }
 
       ctx.beginPath();

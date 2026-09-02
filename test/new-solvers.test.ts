@@ -218,12 +218,16 @@ describe('adaptive solver', () => {
     const result = solveAdaptive(ast, mcu, { ...TP(8000), skipGpioMapping: true });
     expect(result.solutions.length).toBeGreaterThan(0);
     validateSolutions(result);
-  }, 15000);
+    // 30s harness cap: the solver budget is 8s, but under full-suite CPU load
+    // the wall-clock can exceed 15s while still solving within its budget.
+  }, 30000);
 
   it('solves the very hard case (h755i/ecat_more_complex)', () => {
     const { mcu, ast } = loadCase('h755i', 'ecat_more_complex');
     const result = solveAdaptive(ast, mcu, { ...TP(8000), skipGpioMapping: true });
     expect(result.solutions.length).toBeGreaterThan(0);
     validateSolutions(result);
-  }, 15000);
+    // 30s harness cap: the solver budget is 8s, but under full-suite CPU load
+    // the wall-clock can exceed 15s while still solving within its budget.
+  }, 30000);
 });

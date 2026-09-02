@@ -1,5 +1,5 @@
 import type { Panel, HighlightStyle } from './panel';
-import { parseConstraints } from '../parser/constraint-parser';
+import { parseConstraints, KEYWORDS } from '../parser/constraint-parser';
 import type { ParseError, ParseResult } from '../parser/constraint-ast';
 import type { Mcu, Assignment } from '../types';
 import { getStdlibMacroNames, getStdlibTemplates } from '../parser/stdlib-macros';
@@ -13,7 +13,6 @@ import { renderMarkdown } from './markdown';
 import syntaxHelpMd from './syntax-help.md?raw';
 import { createCodeEditor, type CodeEditor } from './code-editor';
 
-const KEYWORDS = new Set(['mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'shared', 'pin', 'port', 'channel', 'config', 'group', 'require', 'macro', 'color', 'from', 'settings']);
 const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
@@ -198,7 +197,8 @@ export function analyzeEditorContext(lines: string[], lineIdx: number): EditorCo
   }
   return { lineIdx, portIdx, configIdx, portHasConfig };
 }
-const DEBOUNCE_MS = 300;
+/** Parse debounce. Exported because app.ts's project-load guard must outlast it. */
+export const PARSE_DEBOUNCE_MS = 300;
 
 /** Syntax-highlight a single line of constraint code (no comment handling). */
 function highlightCodeLine(code: string): string {
@@ -325,9 +325,12 @@ export class ConstraintEditor implements Panel {
 
     // Editor shell (gutter + highlight overlay + scroll sync) is shared with
     // the library / export dialogs — see createCodeEditor.
+    // tabInsert: '' — this editor handles Tab in its own onKeyDown; the
+    // default would insert a second indent (Tab typed 4 spaces, not 2).
     this.codeEditor = createCodeEditor({
       highlighter: highlightConstraintCode,
       onInput: () => this.onInput(),
+      tabInsert: '',
     });
     const editorWrapper = this.codeEditor.wrapper;
     this.textarea = this.codeEditor.textarea;
@@ -398,8 +401,9 @@ export class ConstraintEditor implements Panel {
       statusWrap.classList.toggle('is-empty', this.solverStatusBar.textContent?.trim() === '');
     }).observe(this.solverStatusBar, { childList: true, subtree: true, characterData: true });
 
-    // Event listeners
-    this.textarea.addEventListener('input', () => this.onInput());
+    // Event listeners. NOTE: no 'input' listener here — createCodeEditor
+    // already calls the onInput option per keystroke; a second registration
+    // ran the full reparse/rehighlight twice per keystroke.
     this.textarea.addEventListener('scroll', () => this.syncScroll());
     this.textarea.addEventListener('keydown', (e) => this.onKeyDown(e));
     // Caret pin highlight. keyup covers arrow keys and typing, click and focus
@@ -781,7 +785,7 @@ export class ConstraintEditor implements Panel {
     }
     this.debounceTimer = setTimeout(() => {
       this.doParse();
-    }, DEBOUNCE_MS);
+    }, PARSE_DEBOUNCE_MS);
   }
 
   private doParse(): void {
