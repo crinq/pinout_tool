@@ -110,6 +110,14 @@ export class App implements DataManagerHost {
    * results into a state that has moved on.
    */
   private solveGen = 0;
+  /**
+   * Per-worker results collected as they arrive during the current run.
+   * On user abort, whatever completed solvers already produced is finalized
+   * and shown instead of being thrown away with the killed workers.
+   */
+  private runHarvest: LabeledSolverResult[] = [];
+  /** Snapshot context of the current run, for finalizing a harvest on abort. */
+  private runCtx: SolveRunContext | null = null;
   /** True from solve start until completion/cancel — closes the re-entrancy
    *  window in the async gaps before any worker or AbortController exists. */
   private solveInFlight = false;
@@ -558,6 +566,8 @@ export class App implements DataManagerHost {
     // snapshot (AST, MCU list, solver set) is what a dynamic-timeout retry
     // re-runs — never the live editor state, which may have changed.
     const ctx: SolveRunContext = { gen, ast: parseResult.ast!, mcuList, solverTypes };
+    this.runCtx = ctx;
+    this.runHarvest = [];
     const allResults: LabeledSolverResult[] = [];
     let mcuIdx = 0;
 
@@ -665,7 +675,9 @@ export class App implements DataManagerHost {
         const totalMs = receiveTime - workerStartTime;
         const transferMs = totalMs - solveMs;
         if (transferMs > 50) console.log(`[perf] ${jobLabel}: solve=${solveMs.toFixed(0)}ms, overhead≈${transferMs.toFixed(0)}ms, ${solverResult.solutions.length} solutions`);
-        results.push({ solverId: jobLabel, result: solverResult });
+        const labeled = { solverId: jobLabel, result: solverResult };
+        results.push(labeled);
+        this.runHarvest.push(labeled);
         const diag = this.diagnosticsByMcu.get(mcu.refName);
         for (const st of job.types) {
           this.debugOverlay.solverComplete(st, solverResult);
@@ -711,7 +723,9 @@ export class App implements DataManagerHost {
           errors: [{ type: 'error', message: `${jobLabel} crashed: ${detail}` }],
           statistics: { totalCombinations: 0, evaluatedCombinations: 0, validSolutions: 0, solveTimeMs: 0, configCombinations: 0 },
         };
-        results.push({ solverId: jobLabel, result: errorResult });
+        const labeledErr = { solverId: jobLabel, result: errorResult };
+        results.push(labeledErr);
+        this.runHarvest.push(labeledErr);
         for (const st of job.types) {
           this.debugOverlay.solverComplete(st, errorResult);
         }
@@ -814,6 +828,8 @@ export class App implements DataManagerHost {
     this.isDynamicTimeoutRetry = false;
     this.solveInFlight = false;
     this.setSolveButtonState(false);
+    this.runHarvest = [];
+    this.runCtx = null;
 
     this.debugOverlay.finalize(result.solutions);
 
@@ -966,8 +982,24 @@ export class App implements DataManagerHost {
       : this.fetchAbort ? 'Aborted MCU fetch'
       : this.solveInFlight || this.solverWorkers.length > 0 ? 'Solver aborted'
       : null;
+    const harvest = this.runHarvest;
+    const ctx = this.runCtx;
     this.cancelActiveSolve();
-    if (phase) this.showStatus(phase, 'info');
+    if (!phase) return;
+
+    // A mid-solve worker can't hand anything back (it is blocked inside the
+    // synchronous solver), but solvers that already finished did — show their
+    // solutions instead of discarding them with the killed workers.
+    const found = harvest.reduce((n, r) => n + r.result.solutions.length, 0);
+    if (ctx && found > 0) {
+      this.onAllSolversComplete(harvest, ctx);
+      this.showStatus(
+        `${phase} — showing ${found} solution(s) from ${harvest.length} completed solver run(s)`,
+        'info',
+      );
+    } else {
+      this.showStatus(phase, 'info');
+    }
   }
 
   /**
@@ -987,6 +1019,8 @@ export class App implements DataManagerHost {
     this.terminateWorkers();
     this.debugOverlay.stopRun();
     this.setSolveButtonState(false);
+    this.runHarvest = [];
+    this.runCtx = null;
   }
 
   private setSolveButtonState(solving: boolean): void {
