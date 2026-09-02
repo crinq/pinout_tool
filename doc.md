@@ -69,7 +69,7 @@ The tool needs MCU pin/peripheral data.
 If you have a hosted vendor JSON catalogue (the layout produced by the companion `mcu_data` project — `index.json` plus per-die files under `mcu/<die>.json`), open the **Data Manager**, paste the URL into the **Remote Data Source** field, and click **Save**. Local `file://` paths work for testing, GitHub raw / Pages URLs work for production. A remote repo with most of the STM32 lineup is set as default.
 
 - **Browse…** opens a search overlay listing every die in the index. Type to filter by name. Click a die to fetch + parse it. Multi-package dies present a variant picker before loading.
-- The fetched MCU becomes the **current MCU** and is held in an in-memory cache (10 dies / 500 KB, whichever fills first). This remote cache is transient — cleared on page reload. (MCUs you **Import** from XML are stored persistently; see [Loading MCU Data](#loading-mcu-data).) Opening a saved project whose MCU isn't stored locally will also auto-fetch it from this remote source — see [Project Management](#saving-and-loading).
+- The fetched MCU becomes the **current MCU** and is held in an in-memory cache (10 dies / 500 KB, whichever fills first). This remote cache is transient — cleared on page reload. (MCUs you **Import** from XML are stored persistently; see [Loading MCU Data](#loading-mcu-data-stm32cubemx).) Opening a saved project whose MCU isn't stored locally will also auto-fetch it from this remote source — see [Project Management](#saving-and-loading).
 
 ### Loading MCU Data: STM32CubeMX
 
@@ -95,7 +95,8 @@ The tool matches DMA files to MCUs automatically via the DMA IP version tag. Onc
 ### Multi-MCU Solving with `mcu:` filters
 
 When a constraint contains an `mcu:` filter (or `package:` / `ram:` /
-`rom:` / `freq:` filter), the solver iterates every MCU that matches.
+`rom:` / `freq:` / `temp:` / `voltage:` / `core:` filter), the solver
+iterates every MCU that matches.
 Sources are unioned:
 
 1. MCUs already imported via XML drag-drop (live in `localStorage`).
@@ -473,7 +474,7 @@ settings from "default":     # factory defaults, then override
 settings from "complex":     # tuned for hard problems; body is optional
 ```
 
-Available presets are `"default"` (the factory configuration) and `"complex"` (longer timeout, the heavier solver set, larger group limits). Edit them in `src/settings.ts` → `SETTINGS_PRESETS`.
+Available presets are `"default"` (the factory configuration) and `"complex"` (5 s timeout, a heavier solver set including conflict-directed/cegar/lns-repair, 400 restarts). Edit them in `src/settings.ts` → `SETTINGS_PRESETS`.
 
 Several blocks may appear; later ones fold onto earlier ones. Unknown keys, unknown presets and wrong value types are reported in the status bar and otherwise ignored.
 
@@ -617,8 +618,7 @@ require gpio_port(LED) == "GPIO2"
 | `\|` | OR | lowest |
 | `^` | XOR | |
 | `&` | AND | |
-| `==` `!=` | Equality | |
-| `<` `>` `<=` `>=` | Comparison | |
+| `==` `!=` `<` `>` `<=` `>=` | Equality / comparison (one level) | |
 | `+` `-` | Arithmetic | highest (binary) |
 | `!` | NOT (prefix) | highest (unary) |
 
@@ -736,7 +736,7 @@ Without a filter, `dma()` uses the channel's assigned signal name directly.
 
 The solver automatically verifies that a consistent DMA stream assignment exists across all channels that require DMA.
 
-**Note:** Using `dma()` requires DMA data for the MCU. For XML-imported MCUs that means also importing the matching DMA modes XML (separate from the pinout XML). If it is missing and a [remote data source](#loading-mcu-data-remote-catalogue-optional) is configured, the tool looks the same MCU up there and borrows its DMA data automatically — remote JSON MCUs always carry it. Only when neither is available does the solver report an error and stop.
+**Note:** Using `dma()` requires DMA data for the MCU. For XML-imported MCUs that means also importing the matching DMA modes XML (separate from the pinout XML). If it is missing and a [remote data source](#loading-mcu-data-remote-catalogue) is configured, the tool looks the same MCU up there and borrows its DMA data automatically — remote JSON MCUs always carry it. Only when neither is available does the solver report an error and stop.
 
 ### Macros
 
@@ -895,12 +895,13 @@ Pre-defined macros available in all projects. The macro library can be edited vi
 | `spi_port(MOSI, MISO, SCK)` | 3 channels | SPI master 3-wire, same instance |
 | `spi_port(MOSI, MISO, SCK, NSS)` | 4 channels | SPI master with chip select (overload) |
 | `i2c_port(SDA, SCL)` | 2 channels | I2C, same instance |
-| `encoder(A, B)` | 2 channels | Timer encoder CH1+CH2, same instance |
+| `encoder(A, B)` | 2 channels | Timer encoder CH1+CH2 on encoder-capable timers (TIM1-5/8/20), same instance |
 | `encoder(A, B, Z)` | 3 channels | Timer encoder with index CH3/4 (overload) |
 | `pwm(CH)` | 1 channel | PWM on any timer channel 1-4 |
 | `dac(OUT)` | 1 channel | DAC output 1-2 |
-| `adc(IN)` | 1 channel | ADC input 0-15 |
-| `can_port(TX, RX)` | 2 channels | CAN bus, same instance |
+| `adc(IN)` | 1 channel | ADC input 0-15 (also matches H7-style `INP` naming) |
+| `can_port(TX, RX)` | 2 channels | CAN / FDCAN bus, same instance |
+| `usb_port(DP, DM)` | 2 channels | USB FS/HS D+ and D−, same instance |
 
 ### Common-Error Lint
 
@@ -908,7 +909,7 @@ The editor runs a lint pass over the parsed AST that warns when a channel name a
 
 - Warning lines get a yellow wavy underline and a matching marker in the editor minimap.
 - Details show below the editor alongside parser errors (parser errors have priority when both appear on the same line).
-- The library is empty by default until seeded from **Data Manager > Common-error Lint Library**; use **Reset** to restore the shipped defaults.
+- The shipped default library is seeded automatically on first start; edit it via **Data Manager > Common-error Lint Library**, or use **Reset** to restore the shipped defaults.
 
 Library syntax: one group per line, tokens space-separated, `#` for comments. Every pair of tokens in a group is treated as a "swap": if a channel name contains token A and the signal pattern contains token B (or vice versa), a warning is raised.
 
@@ -1061,7 +1062,7 @@ The package viewer renders the MCU package with interactive pin display.
 - **Pan:** two-finger scroll / drag
 - **Rotate:** Rotate buttons (90° per click), or twist with two fingers — rotation snaps to 90° steps
 - **Reset:** Reset zoom, rotation and pan to defaults
-- **DATA / MAN / ERR:** open the datasheet, reference manual and errata sheet for the current MCU in a new tab. These links come from the [remote JSON catalogue](#loading-mcu-data-remote-catalogue-optional); a button is greyed out when the data has no link for that document (CubeMX  XML carries none, and a few dies are missing one)
+- **DATA / MAN / ERR:** open the datasheet, reference manual and errata sheet for the current MCU in a new tab. These links come from the [remote JSON catalogue](#loading-mcu-data-remote-catalogue); a button is greyed out when the data has no link for that document (CubeMX  XML carries none, and a few dies are missing one)
 
 **Touch gestures** (Settings → Viewer, on by default): two fingers on a touchpad or touchscreen pan, pinch to zoom (anchored on the cursor/pinch centre) and twist to rotate in 90° steps. Turn the setting off to restore the classic mouse behaviour, where the wheel zooms. Trackpad rotation needs gesture events, so it is available in Safari and on touchscreens; pan and pinch-zoom work in every browser.
 - **Search:** Type signal patterns to highlight matching pins with a pulsing glow
@@ -1194,7 +1195,7 @@ Solutions are ranked by weighted cost functions (configurable in Settings):
 | **pin_count** | Fewer pins used is better |
 | **port_spread** | Prefer pins clustered on fewer GPIO ports |
 | **peripheral_count** | Fewer distinct peripheral instances is better |
-| **debug_pin_penalty** | Penalize using debug pins (PA13/PA14/PA15/PB3/PB4) |
+| **debug_pin_penalty** | Penalize pins that carry SWD/JTAG signals (SWDIO, SWCLK, SWO, JTMS, JTCK, JTDI, JTDO, JTRST) — typically PA13/PA14/PA15/PB3/PB4 |
 | **pin_clustering** | Prefer numerically adjacent pins |
 | **pin_group_clustering** | Prefer a tight pin cluster within each [`group`](#groups) block, scored per group |
 | **pin_proximity** | Prefer pins that are physically close on the package |
@@ -1215,13 +1216,13 @@ port pin distances 1, 1, 10
 
 Access via the **Settings** button:
 
-- **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle). Default: two-phase, cost-guided, priority-backtracking, mrv-group, ratio-mrv-group, hybrid
-- **Max solutions** -- stop after finding this many (default: 5000)
-- **Max groups** -- limit the number of solution groups (default: 500)
+- **Solvers** -- checkbox list to select which solvers to run (with All/None quick-toggle). Default: two-phase, cost-guided, priority-backtracking, mrv-group, ratio-mrv-group, hybrid, dynamic-mrv, adaptive
+- **Max solutions** -- stop after finding this many (default: 2600)
+- **Max groups** -- limit the number of solution groups (default: 250)
 - **Max solutions per group** -- limit solutions within each group (default: 100)
 - **Num restarts** -- number of restarts for randomized-restarts solver (default: 150)
 - **Timeout** -- abort after this many milliseconds (default: 2500)
-- **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 5)
+- **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 3)
 - **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on)
 - **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
 - **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)
@@ -1330,7 +1331,7 @@ Each option lists its **cost change** and highlights the pins it would move when
 - **Project dropdown** -- switch between saved projects
 - **Import a project** -- drag & drop a project `.json` (from Data Manager → Projects → **Export**) anywhere, or pick it with the **Import** button. You are asked for a name, defaulting to the one stored in the file; importing under an existing project's name appends its versions instead of overwriting, exactly like **Save As** with that name
 
-Each project keeps a history of versions (constraint text + MCU + saved solutions per version), so re-saving under the same name never loses earlier work. Projects store the constraint text, the referenced MCU, and any saved solutions in localStorage. When you open a project whose MCU isn't in local storage, the tool automatically fetches it from the configured [remote data source](#loading-mcu-data-remote-catalogue-optional) (if one is set) so the project opens without a manual re-import.
+Each project keeps a history of versions (constraint text + MCU + saved solutions per version), so re-saving under the same name never loses earlier work. Projects store the constraint text, the referenced MCU, and any saved solutions in localStorage. When you open a project whose MCU isn't in local storage, the tool automatically fetches it from the configured [remote data source](#loading-mcu-data-remote-catalogue) (if one is set) so the project opens without a manual re-import.
 
 ### Data Manager
 

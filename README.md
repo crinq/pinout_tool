@@ -12,7 +12,7 @@ A browser-based tool for automatic STM32 pin assignment using constraint-based s
 - **Reserve by GPIO name OR package position** -- `reserve: PA0`, `reserve: 11`, `reserve: A1` are all valid; position-based reservations lock every logical bonded to that pad.
 - **Remote MCU catalogue** -- point the Data Manager at a hosted vendor JSON catalogue (`index.json` + per-die files); browse with a live filter overlay, or let `mcu:` filters auto-fetch matching dies during solve. Fetches are cancellable via the solver Abort button. Cache is in-memory (10 dies / 500 KB), cleared on reload.
 - **Cost-optimized solutions** -- ranked by pin count, port spread, clustering, proximity, and more
-- **Multi-MCU search** -- solve across multiple MCU variants with `mcu:`, `package:`, `ram:`, `rom:` filters
+- **Multi-MCU search** -- solve across multiple MCU variants with `mcu:`, `package:`, `ram:`, `rom:`, `freq:`, `temp:`, `voltage:`, `core:` filters
 - **Grouped solution browser** -- solutions grouped by peripheral assignment, keyboard-navigable
 - **Pin group highlighting** -- hover/click port names or peripheral instances to highlight pins on the viewer
 - **Project management** -- save/load projects, store MCU data in browser localStorage
@@ -74,7 +74,7 @@ Click **Export** in the viewer toolbar to choose a format:
 - **Custom** -- user-defined JavaScript export functions (manage via Data Manager)
 
 ### Skill
-You can use this [skill](https://github.com/crinq/skills/tree/master/pinout-constraints) to generate constraints from porject description and user feedback.
+You can use this [skill](https://github.com/crinq/skills/tree/master/pinout-constraints) to generate constraints from project description and user feedback.
 
 ## Documentation
 

@@ -30,6 +30,10 @@ Solutions are ranked by a weighted cost function (see [Settings](#settings)).
 | `mrv-group` | MRV Group | Three-phase | Complex problems where priority-group fails |
 | `ratio-mrv-group` | Ratio MRV Group | Three-phase | Complex problems with varying port sizes |
 | `hybrid` | Hybrid (Single-Phase + Two-Phase) | Hybrid | Problems where two-phase Phase 1 fails but single-phase succeeds |
+| `conflict-directed` | Conflict-Directed (CBJ + dom/wdeg) | Single-phase | Very complex problems with blocking constraints, fast first solution |
+| `cegar` | CEGAR Instance-Refinement | Closed-loop two-phase | Very complex problems needing structural diversity |
+| `lns-repair` | LNS Repair (Min-Conflicts) | Local search | Fastest first solution on very complex problems |
+| `adaptive` | Adaptive Portfolio | Pipeline | One-stop solver: races LNS/conflict-directed, then CEGAR diversity |
 
 ---
 
@@ -217,21 +221,97 @@ Four-stage pipeline:
 
 ---
 
+## Complex-Problem Solvers
+
+Designed for problems where many peripheral constraints block each other. All share two foundations:
+**F2 same_instance propagation** (a `same_instance(...)` require prunes sibling domains
+as soon as its *first* channel is assigned, instead of being checked when the last one
+is) and the **F1 matching oracle** (bipartite matching proves a fixed instance group
+pin-infeasible in microseconds — no search needed).
+
+### Conflict-Directed (CBJ + dom/wdeg)
+
+Single-phase search with conflict-directed backjumping: when a variable dead-ends, the
+solver jumps straight to the deepest decision that pruned it, skipping unrelated
+assignments in between. Variables collect weight each time they participate in a
+conflict; selection minimizes `domainSize / (1 + weight)` (dom/wdeg-lite), so the search
+learns which ports are hard and decides them first. Luby-scheduled restarts carry the
+weights and last-good values (phase saving) across rounds; after the first solution,
+anti-phase ordering diversifies subsequent ones.
+
+**Strengths**: Fastest systematic solver on heavily constrained problems — solves
+ecat_complex-class cases where all static-ordering solvers time out. Subsumes what
+priority ordering approximates statically, but adapts per problem.
+**Weaknesses**: Diversity is a side effect (anti-phase restarts), not a guarantee.
+Conflict sets are safe supersets — some backjumps degrade to chronological steps.
+
+**Settings**: `maxSolutions`, `timeoutMs`, `costWeights`, `skipGpioMapping`.
+
+### CEGAR Instance-Refinement
+
+Two-phase solving as a closed abstraction-refinement loop. Discovered instance groups
+are triaged by the matching oracle: provably unroutable groups die instantly and their
+Hall violator (the over-subscribed channel/pin pool) is minimized into a *certified
+instance nogood* that constrains all future Phase 1 discovery. Survivors are probed with
+a small backtrack budget that grows Luby-style on re-queue — no fixed Phase 1/Phase 2
+time split; compute flows to whichever phase is productive. Proven-routable groups get
+permuted (Phase 1.5) and re-mined for pin diversity with the remaining budget.
+
+**Strengths**: Finds structurally diverse groups on problems where classic two/three-phase
+solvers waste their whole budget disproving infeasible instance guesses (the h755x failure
+mode). Learned nogoods make discovery smarter as the run progresses.
+**Weaknesses**: Higher setup overhead than plain two-phase on easy problems. Nogood
+learning only fires for matching-provable conflicts (require/DMA failures just skip the group).
+
+**Settings**: `maxGroups`, `maxSolutionsPerGroup`, `timeoutMs`, `costWeights`, `skipGpioMapping`.
+
+### LNS Repair (Min-Conflicts)
+
+Local search over *complete* assignments: greedy construction (conflicts allowed), then
+min-conflicts repair with tabu + noise. On stagnation, the most-conflicted ports are
+destroyed and re-repaired (large-neighborhood move). Solutions are verified with the full
+constraint evaluation before emission. After each solution, the incumbent instance of a
+random port is banned and the port rebuilt — the destroy operator doubles as a structural
+diversity engine.
+
+**Strengths**: Fastest time-to-first-solution on very hard problems — never pays the
+deep-backtrack cost that kills DFS. Anytime by construction.
+**Weaknesses**: Incomplete — cannot prove infeasibility, and pathological instances can
+make it wander. Pair with `conflict-directed` or `cegar` in a portfolio.
+
+**Settings**: `maxSolutions`, `timeoutMs`, `costWeights`, `skipGpioMapping`.
+
+### Adaptive Portfolio
+
+Event-driven pipeline over the three solvers above. Easy problems go straight to
+`two-phase` (no scheduling overhead). Otherwise: LNS gets a short anytime slice, then
+conflict-directed a learning slice, then CEGAR the remaining budget — *seeded with the
+instance groups extracted from the race solutions*, so known-routable structures probe
+first. Unused slice time rolls forward to later phases.
+
+**Strengths**: Best default for unknown/hard problems — first solution as fast as the
+fastest specialist, diversity from CEGAR, one solver id instead of three.
+**Weaknesses**: Sequential slices — a phase that could use more time only gets leftovers.
+
+**Settings**: `maxGroups`, `maxSolutionsPerGroup`, `timeoutMs`, `costWeights`, `skipGpioMapping`.
+
+---
+
 ## Settings Reference
 
 ### Solver Selection
 
-**Solver types** (`solverTypes`): Select which solvers to run. Multiple solvers run in parallel (each in a web worker). Results are merged and deduplicated. Default: `two-phase`.
+**Solver types** (`solverTypes`): Select which solvers to run. Multiple solvers run in parallel (each in a web worker). Results are merged and deduplicated. Default: `two-phase`, `cost-guided`, `priority-backtracking`, `mrv-group`, `ratio-mrv-group`, `hybrid`, `dynamic-mrv`, `adaptive`.
 
 ### Solution Limits
 
-**Max solutions** (`maxSolutions`): Global cap on solutions per solver. For two-phase solvers, this is `maxGroups × maxSolutionsPerGroup`. For single-phase solvers, this is the direct limit. Default: **5000**.
+**Max solutions** (`maxSolutions`): Global cap on solutions per solver. For two-phase solvers, this is `maxGroups × maxSolutionsPerGroup`. For single-phase solvers, this is the direct limit. Default: **2600**.
 
-**Max groups** (`maxGroups`): Maximum number of instance groups for two-phase/three-phase solvers. Each group represents a different peripheral instance assignment. Default: **100**.
+**Max groups** (`maxGroups`): Maximum number of instance groups for two-phase/three-phase solvers. Each group represents a different peripheral instance assignment. Default: **250**.
 
-**Max solutions/group** (`maxSolutionsPerGroup`): Maximum pin-mapping solutions to find per instance group. Default: **25**.
+**Max solutions/group** (`maxSolutionsPerGroup`): Maximum pin-mapping solutions to find per instance group. Default: **100**.
 
-**Restarts** (`numRestarts`): Number of rounds for randomized-restarts and priority-diverse solvers. More restarts = more diversity but slower. Default: **25**.
+**Restarts** (`numRestarts`): Number of rounds for randomized-restarts and priority-diverse solvers. More restarts = more diversity but slower. Default: **150**.
 
 ### Timeout
 
@@ -251,9 +331,12 @@ Cost functions rank solutions after solving. Weight of 0 disables a function; we
 | **Pin Count** | Fewer unique pins used is better. | 1.0 |
 | **Port Spread** | Fewer GPIO ports used is better (simpler PCB routing). | 0.2 |
 | **Peripheral Count** | Fewer peripheral instances used is better (preserves peripherals for other uses). | 0.5 |
-| **Debug Pin Penalty** | Penalty for using SWD/JTAG pins (PA13, PA14, PA15, PB3, PB4). | 0.0 |
+| **Debug Pin Penalty** | Penalty for pins carrying SWD/JTAG signals (typically PA13, PA14, PA15, PB3, PB4). | 0.0 |
 | **Pin Clustering** | Bonus for keeping pins on the same GPIO port. | 0.0 |
+| **Pin Group Clustering** | Tight physical pin cluster within each `group` block, scored per group. | 1.0 |
 | **Pin Proximity** | Closer physical pin placement within a port is better. | 1.0 |
+| **Pin Anchor** | Pull each pin toward its `@ ~...` placement hint. | 1.0 |
+| **Optional Fulfillment** | Prefer solutions satisfying more optional mappings (`?=`) and `require?` constraints. | 5.0 |
 
 ### DMA Constraints
 
@@ -273,7 +356,7 @@ The **cost-guided** solver also uses port spread, debug pin penalty, and pin pro
 
 This dramatically speeds up solving for constraint files with many IN/OUT channels, since GPIO variables have very large candidate domains (every assignable pin on the MCU).
 
-When disabled (default), GPIO pins are assigned like any other signal - each IN/OUT channel gets a specific pin.
+When disabled, GPIO pins are assigned like any other signal - each IN/OUT channel gets a specific pin. Default: **enabled**.
 
 ---
 
@@ -290,6 +373,12 @@ When disabled (default), GPIO pins are assigned like any other signal - each IN/
 **Scarce peripherals**: `priority-backtracking` or `priority-diverse`. Constrained ports get first pick of pins.
 
 **Complex problems with many peripherals**: `mrv-group` or `ratio-mrv-group`. Three-phase decomposition with instance permutation discovers groups that other solvers miss. Dynamic MRV in Phase 2 handles the pin assignment robustly. Use `ratio-mrv-group` when ports have varying numbers of channels for better priority normalization.
+
+**Very complex problems (many blocking constraints)**: `adaptive` (or its parts:
+`lns-repair` for the fastest first solution, `conflict-directed` for systematic search
+that learns from conflicts, `cegar` for maximum structural diversity). These solve the
+ecat_complex / ecat_more_complex class in well under a second where classic solvers
+time out or collapse to one group.
 
 **Symmetric ports with instance diversity issues**: `hybrid`. When multiple ports use the same peripheral type (e.g. 3 encoder ports each needing SPI) and two-phase solvers find only trivial variations, the hybrid solver extracts working instance groups from single-phase solutions and permutes them. Produces significantly more structural diversity.
 
