@@ -49,7 +49,7 @@ export function solvePriorityBacktracking(
     ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
-    ctx.dmaData
+    ctx.dmaData, undefined, undefined, ctx.mcuInfo
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);

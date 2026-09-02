@@ -17,7 +17,7 @@ import {
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
-  type PortSpec, type PinnedAssignment, type PinTracker,
+  type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
   type SameInstancePropagator,
 } from './solver';
 
@@ -60,7 +60,7 @@ export function solveDynamicMRV(
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats,
     ctx.configRequiresMap, configVarIndices, 0, n,
     pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
-    ctx.dmaData, sameInstance
+    ctx.dmaData, sameInstance, ctx.mcuInfo
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -93,7 +93,8 @@ export function solveBacktrackDynamic(
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   sharedPatterns: PatternPart[],
   dmaData?: DmaData,
-  sameInstance?: SameInstancePropagator
+  sameInstance?: SameInstancePropagator,
+  mcuInfo?: EvalMcuInfo
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -102,7 +103,7 @@ export function solveBacktrackDynamic(
     // All variables assigned - check all config combinations
     stats.evaluatedCombinations++;
     const dmaOut1: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1, undefined, sharedPatterns)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut1, mcuInfo, sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut1
       );
@@ -134,25 +135,40 @@ export function solveBacktrackDynamic(
       // All assigned - this shouldn't happen (depth check above catches it)
       return;
     }
-    // All unassigned variables have empty domains - check if it's a real wipeout
-    // or if they're all for inactive configs. Either way, we can't proceed with
-    // normal assignment. Try to complete the solution with remaining vars "skipped".
-    // Mark all empty-domain vars as assigned and try to evaluate.
+    // All unassigned variables have empty domains. A mandatory one means its
+    // (port, config) is wiped out — a combo activating that config would be
+    // emitted with missing pins, so restrict evaluation to combos avoiding
+    // every wiped config. Optional (`?=`) vars are legally skippable anywhere.
     const skipped: number[] = [];
+    const wiped = new Set<string>();
     for (let i = 0; i < totalVars; i++) {
-      if (!assigned[i]) { assigned[i] = true; skipped.push(i); }
+      if (!assigned[i]) {
+        assigned[i] = true;
+        skipped.push(i);
+        if (!variables[i].optional) wiped.add(`${variables[i].portName}\0${variables[i].configName}`);
+      }
     }
-    stats.evaluatedCombinations++;
-    const dmaOut2: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut2, undefined, sharedPatterns)) {
-      const solution = buildSolution(
-        current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut2
-      );
-      solutions.push(solution);
-      stats.validSolutions++;
-      const elapsed2 = performance.now() - startTime;
-      if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed2;
-      stats.lastSolutionMs = elapsed2;
+    const viableCombos = wiped.size === 0
+      ? configCombinations
+      : configCombinations.filter(combo => {
+          for (const [port, cfg] of combo) {
+            if (wiped.has(`${port}\0${cfg}`)) return false;
+          }
+          return true;
+        });
+    if (viableCombos.length > 0) {
+      stats.evaluatedCombinations++;
+      const dmaOut2: Map<string, string>[] = [];
+      if (evaluateAllConstraints(current, viableCombos, ports, dmaData, dmaOut2, mcuInfo, sharedPatterns)) {
+        const solution = buildSolution(
+          current, viableCombos, ports, pinnedAssignments, solutions.length, dmaOut2
+        );
+        solutions.push(solution);
+        stats.validSolutions++;
+        const elapsed2 = performance.now() - startTime;
+        if (stats.firstSolutionMs === undefined) stats.firstSolutionMs = elapsed2;
+        stats.lastSolutionMs = elapsed2;
+      }
     }
     for (const i of skipped) assigned[i] = false;
     return;
@@ -197,7 +213,7 @@ export function solveBacktrackDynamic(
           if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
             continue;
           }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
             if (req.optional) continue;
             pruned = true;
             break;
@@ -224,7 +240,7 @@ export function solveBacktrackDynamic(
           solutions, maxSolutions, startTime, timeoutMs, stats,
           configRequiresMap, configVarIndices, depth + 1, totalVars,
           pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData, sameInstance
+          dmaData, sameInstance, mcuInfo
         );
         undoPropagateShared(removed, domains);
       }
@@ -233,6 +249,19 @@ export function solveBacktrackDynamic(
 
     current.pop();
     unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
+  }
+
+  // Optional variable: also explore leaving it unassigned — a fully
+  // conflicting `?=` channel must not kill branches valid without it.
+  if (v.optional && solutions.length < maxSolutions) {
+    solveBacktrackDynamic(
+      variables, assigned, domains, tracker, current,
+      configCombinations, ports, pinnedAssignments,
+      solutions, maxSolutions, startTime, timeoutMs, stats,
+      configRequiresMap, configVarIndices, depth + 1, totalVars,
+      pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
+      dmaData, sameInstance, mcuInfo
+    );
   }
 
   assigned[vi] = false;

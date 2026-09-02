@@ -62,7 +62,7 @@ export function solveDiverseInstances(
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',

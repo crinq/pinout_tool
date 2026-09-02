@@ -21,7 +21,7 @@ import {
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
-  type PortSpec, type PinnedAssignment, type PinTracker,
+  type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
   type SameInstancePropagator,
 } from './solver';
 import type { PatternPart } from '../parser/constraint-ast';
@@ -55,7 +55,7 @@ export function solveAC3(
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
     domains, pinToVarCandidates, instanceToVarCandidates, ctx.sharedPatterns,
-    ctx.dmaData, sameInstance
+    ctx.dmaData, sameInstance, ctx.mcuInfo
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -83,7 +83,8 @@ function solveBacktrackAC3(
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   sharedPatterns: PatternPart[],
   dmaData?: DmaData,
-  sameInstance?: SameInstancePropagator
+  sameInstance?: SameInstancePropagator,
+  mcuInfo?: EvalMcuInfo
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -96,7 +97,7 @@ function solveBacktrackAC3(
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
     const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, undefined, sharedPatterns)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, mcuInfo, sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );
@@ -148,7 +149,7 @@ function solveBacktrackAC3(
           if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
             continue;
           }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
             if (req.optional) continue;
             pruned = true;
             break;
@@ -178,7 +179,7 @@ function solveBacktrackAC3(
           solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
           lastVarOfConfig, configRequiresMap,
           domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData, sameInstance
+          dmaData, sameInstance, mcuInfo
         );
         undoPropagateShared(removed, domains);
       }
@@ -188,5 +189,19 @@ function solveBacktrackAC3(
 
     current.pop();
     unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
+  }
+
+  // Optional variable: also explore leaving it unassigned (mirrors
+  // solveBacktrack's skip branch) — a fully-conflicting `?=` channel must
+  // not kill branches that are valid without it.
+  if (v.optional) {
+    solveBacktrackAC3(
+      variables, varIndex + 1, tracker, current,
+      configCombinations, ports, pinnedAssignments,
+      solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
+      lastVarOfConfig, configRequiresMap,
+      domains, pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
+      dmaData, sameInstance, mcuInfo
+    );
   }
 }

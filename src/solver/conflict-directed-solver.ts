@@ -30,7 +30,7 @@ import {
   canAssignPin, assignPin, unassignPin, evaluateExpr,
   propagateShared, undoPropagateShared, buildPinLookups,
   buildSameInstancePropagator, propagateSameInstance,
-  createPinTracker, isOptionalRequireVacuous,
+  createPinTracker, isOptionalRequireVacuous, coupledBasePin,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   type SolverConfig, type VariableAssignment,
   type SameInstancePropagator,
@@ -279,6 +279,13 @@ function searchOnce(
         }
         // Continue enumeration chronologically from the deepest frame.
         // Reasons unknown at leaf level → conservative full conflict set.
+        // Skipped-optional frames (candIdx === -2) carry no candidate to
+        // re-try: undoing one only gets it re-skipped and the same leaf
+        // re-emitted forever. Pop them down to the deepest real assignment.
+        while (frames.length > 0 && frames[frames.length - 1].candIdx === -2) {
+          const sf = frames.pop()!;
+          assigned[sf.vi] = false;
+        }
         if (frames.length === 0) return 'exhausted';
         const top = frames[frames.length - 1];
         addAllLevels(top.conflictSet);
@@ -324,6 +331,16 @@ function searchOnce(
         // Attribute the rejection: cross-port owners + same-port assignments
         const pl = pinLevel.get(c.pin.name);
         if (pl !== undefined) f.conflictSet.add(pl);
+        // _C analog-switch coupling: the rejection may come from the coupled
+        // base pin's owner, or from the base pin's _C sibling — pinLevel only
+        // keys the owner's own name, so look both up explicitly.
+        const coupled = coupledBasePin(c.pin.name, c.signalName);
+        if (coupled !== undefined) {
+          const cl = pinLevel.get(coupled);
+          if (cl !== undefined) f.conflictSet.add(cl);
+        }
+        const sibl = pinLevel.get(c.pin.name + '_C');
+        if (sibl !== undefined) f.conflictSet.add(sibl);
         const phl = physLevel.get(c.pin.physical.position);
         if (phl !== undefined) f.conflictSet.add(phl);
         if (c.peripheralInstance) {

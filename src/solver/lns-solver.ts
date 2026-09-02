@@ -25,7 +25,7 @@ import type { Mcu, Solution, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import {
   prepareSolverContext, evaluateAllConstraints, buildSolution,
-  evaluateExpr, isOptionalRequireVacuous, isSharedInstance,
+  evaluateExpr, isOptionalRequireVacuous, isSharedInstance, coupledBasePin,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions, solutionDedupKey,
   type SolverConfig, type VariableAssignment, type SolverContext,
 } from './solver';
@@ -125,6 +125,16 @@ function runLns(
       if (a.channelName !== b.channelName) return true;      // one channel per pin within a port
       if (sameConfig) return true;                            // pin once per (port, config)
       return false;                                           // same channel, other config: legal reuse
+    }
+    // _C analog-switch coupling: a non-ADC signal on X_C also claims X
+    // (closing the switch shorts the two pads) — same rules as a shared pin.
+    const claimA = coupledBasePin(ca.pin.name, ca.signalName);
+    const claimB = coupledBasePin(cb.pin.name, cb.signalName);
+    if ((claimA !== undefined && claimA === cb.pin.name) ||
+        (claimB !== undefined && claimB === ca.pin.name)) {
+      if (!samePort) return true;
+      if (a.channelName !== b.channelName) return true;
+      if (sameConfig) return true;
     }
     const pa = ca.pin.physical.position, pb = cb.pin.physical.position;
     if (pa && pa === pb) {

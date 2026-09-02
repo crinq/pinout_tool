@@ -22,7 +22,7 @@ import {
   createPinTracker,
   partitionGpioVariables, isGpioVariable,
   configsHaveDma, buildPinLookups, buildSameInstancePropagator,
-  type SolverVariable, type PinnedAssignment, type PortSpec, pinnedOccupiedPins } from './solver';
+  type SolverVariable, type PinnedAssignment, type PortSpec, type EvalMcuInfo, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
   buildInstanceVariables, solvePhase1,
@@ -104,6 +104,7 @@ function solvePhase2MRV(
   dmaData?: DmaData,
   shuffleSeed?: number,
   pinUsageCount?: Map<string, number>,
+  mcuInfo?: EvalMcuInfo,
 ): Solution[] {
   // Filter each variable's domain to only candidates matching the group's instance
   const filteredVars: SolverVariable[] = allVariables.map(sv => {
@@ -123,7 +124,7 @@ function solvePhase2MRV(
 
   // Skip groups where filtering eliminated all candidates for some variable
   // that belongs to at least one active config
-  const emptyVar = filteredVars.find(v => v.domain.length === 0);
+  const emptyVar = filteredVars.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) return [];
 
   // D6: Randomized candidate ordering within each variable's domain
@@ -179,7 +180,7 @@ function solvePhase2MRV(
     solutions, maxSolutions, startTime, timeoutMs, stats,
     configRequiresMap, configVarIndices, 0, n,
     pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-    dmaData, sameInstance
+    dmaData, sameInstance, mcuInfo
   );
 
   return solutions;
@@ -216,13 +217,17 @@ export function solveMrvGroup(
 
   const configCombinations = generateConfigCombinations(ports);
   const dmaData = mcu.dma && configsHaveDma(ports) ? mcu.dma : undefined;
+  // Geometry require functions need package + pin positions.
+  const pinByName = new Map<string, { position: string }>();
+  for (const pin of mcu.logicalPins) pinByName.set(pin.name, { position: pin.physical.position });
+  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
   const allVariables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
 
   if (allVariables.length === 0) {
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',
@@ -391,7 +396,7 @@ export function solveMrvGroup(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
-      dmaData, seed, pinUsage
+      dmaData, seed, pinUsage, mcuInfo
     );
 
   const orderedDiscovered = orderByDiversity(discoveredGroups);

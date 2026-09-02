@@ -103,24 +103,56 @@ export function buildVarsByChannel(variables: SolverVariable[]): Map<string, Sol
   return varsByChannel;
 }
 
-/** Reconstruct variable assignments for a solution from its config-combo assignments. */
+/**
+ * Reconstruct variable assignments for a solution from its config-combo
+ * assignments. Within a (port, config, channel) the assignments are matched
+ * to the channel's variables with augmenting paths — greedy first-fit can
+ * bind an assignment to the only variable a later assignment matches,
+ * silently dropping that assignment (and the truncated, cheaper solution
+ * would then win the post-optimize cost comparison).
+ */
 export function reconstructAssignments(
   sol: Solution,
   varsByChannel: Map<string, SolverVariable[]>,
 ): Map<SolverVariable, SignalCandidate> {
   const assigned = new Map<SolverVariable, SignalCandidate>();
+
+  const byKey = new Map<string, { pinName: string; signalName: string }[]>();
   for (const ca of sol.configAssignments) {
     for (const a of ca.assignments) {
       if (a.portName === '<pinned>') continue;
-      const vs = varsByChannel.get(`${a.portName}\0${a.configurationName}\0${a.channelName}`);
-      if (!vs) continue;
-      for (const v of vs) {
-        if (assigned.has(v)) continue;
-        const c = v.candidates.find(cc => cc.pin.name === a.pinName && cc.signalName === a.signalName);
-        if (c) { assigned.set(v, c); break; }
+      const key = `${a.portName}\0${a.configurationName}\0${a.channelName}`;
+      let list = byKey.get(key);
+      if (!list) { list = []; byKey.set(key, list); }
+      if (!list.some(x => x.pinName === a.pinName && x.signalName === a.signalName)) {
+        list.push({ pinName: a.pinName, signalName: a.signalName });
       }
     }
   }
+
+  for (const [key, asgs] of byKey) {
+    const vs = varsByChannel.get(key);
+    if (!vs) continue;
+    const cand: (SignalCandidate | null)[][] = asgs.map(a =>
+      vs.map(v => v.candidates.find(c => c.pin.name === a.pinName && c.signalName === a.signalName) ?? null));
+    const matchVar = new Array<number>(vs.length).fill(-1); // var j → assignment i
+    const tryMatch = (i: number, seen: boolean[]): boolean => {
+      for (let j = 0; j < vs.length; j++) {
+        if (!cand[i][j] || seen[j]) continue;
+        seen[j] = true;
+        if (matchVar[j] === -1 || tryMatch(matchVar[j], seen)) {
+          matchVar[j] = i;
+          return true;
+        }
+      }
+      return false;
+    };
+    for (let i = 0; i < asgs.length; i++) tryMatch(i, new Array(vs.length).fill(false));
+    for (let j = 0; j < vs.length; j++) {
+      if (matchVar[j] !== -1) assigned.set(vs[j], cand[matchVar[j]][j]!);
+    }
+  }
+
   return assigned;
 }
 

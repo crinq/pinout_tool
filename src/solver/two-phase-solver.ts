@@ -21,7 +21,7 @@ import { getStdlibTemplates } from '../parser/stdlib-macros';
 import { estimateCandidateCost, createIncrementalCostTracker } from './cost-functions';
 import type { SignalCandidate } from './pattern-matcher';
 import type {
-  SolverVariable, VariableAssignment, PortSpec, PinnedAssignment,
+  SolverVariable, VariableAssignment, PortSpec, PinnedAssignment, EvalMcuInfo,
 } from './solver';
 import {
   extractPorts, resolveReservePatterns, extractPinnedAssignments,
@@ -128,7 +128,7 @@ export function solveTwoPhase(
   }
 
   // Check for empty domains
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',
@@ -499,6 +499,7 @@ export function solvePhase1(
   }
 
   const v = variables[varIndex];
+  let anyAdvanced = false;
 
   for (const candidateIdx of v.domain) {
     if (groups.length >= maxGroups) return;
@@ -537,6 +538,11 @@ export function solvePhase1(
           if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
             continue;
           }
+          // Pin-level functions (geometry, pin numbers, flags) cannot be
+          // evaluated before pins exist — evaluating them with placeholder
+          // values wrongly prunes whole instance groups. Phase 2 checks
+          // these requires for real.
+          if (mentionsPinLevelFn(req.expression)) continue;
           const result = evaluateExprPhase1(req.expression, v.portName, channelInfo, dmaData);
           if (result === false) {
             if (req.optional) continue;
@@ -558,6 +564,7 @@ export function solvePhase1(
     }
 
     if (!pruned) {
+      anyAdvanced = true;
       solvePhase1(
         variables, varIndex + 1, tracker, current,
         ports, groups, maxGroups,
@@ -568,6 +575,18 @@ export function solvePhase1(
 
     current.pop();
     unassignInstance(tracker, instance, v.portName);
+  }
+
+  // Optional variable that could not advance anywhere (no matching instance,
+  // or every instance conflicts): explore leaving it unassigned instead of
+  // dead-ending Phase 1 — solutions that drop a `?=` channel are valid.
+  if (!anyAdvanced && v.originalVariable.optional) {
+    solvePhase1(
+      variables, varIndex + 1, tracker, current,
+      ports, groups, maxGroups,
+      startTime, timeoutMs, lastVarOfConfig, configRequiresMap,
+      dmaData, isBlocked, acceptGroup
+    );
   }
 }
 
@@ -598,6 +617,22 @@ function syntheticVariableAssignment(ia: InstanceAssignment): VariableAssignment
       peripheralType: periType,
     } as SignalCandidate,
   };
+}
+
+/** Functions whose value only exists after pin assignment. */
+const PIN_LEVEL_FNS = new Set(['pin_row', 'pin_col', 'pin_distance', 'pin_number', 'flag', 'gpio_pin', 'gpio_port']);
+
+function mentionsPinLevelFn(expr: ConstraintExprNode): boolean {
+  switch (expr.type) {
+    case 'function_call':
+      return PIN_LEVEL_FNS.has(expr.name) || expr.args.some(mentionsPinLevelFn);
+    case 'binary_expr':
+      return mentionsPinLevelFn(expr.left) || mentionsPinLevelFn(expr.right);
+    case 'unary_expr':
+      return mentionsPinLevelFn(expr.operand);
+    default:
+      return false;
+  }
 }
 
 function evaluateExprPhase1(
@@ -875,8 +910,10 @@ export function solvePhase2ForGroup(
     return { ...sv, domain: filteredDomain };
   });
 
-  // Skip groups where filtering eliminated all candidates for some variable
-  const emptyVar = filteredVars.find(v => v.domain.length === 0);
+  // Skip groups where filtering eliminated all candidates for some variable.
+  // Optional (`?=`) variables may legally stay unassigned — solveBacktrack
+  // has a skip path for them, so they never disqualify a group.
+  const emptyVar = filteredVars.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) return [];
 
   // Sort variables (custom sort or default MRV)
@@ -930,12 +967,21 @@ export function solvePhase2ForGroup(
     ? createIncrementalCostTracker(mcu, costWeights, maxSolutions)
     : undefined;
 
+  // Geometry require functions (pin_row/pin_col/pin_distance) need the
+  // package + pin positions — without them they silently evaluate to 0.
+  let mcuInfo: EvalMcuInfo | undefined;
+  if (mcu) {
+    const pinByName = new Map<string, { position: string }>();
+    for (const pin of mcu.logicalPins) pinByName.set(pin.name, { position: pin.physical.position });
+    mcuInfo = { package: mcu.package, pinByName };
+  }
+
   solveBacktrack(
     filteredVars, 0, tracker, [],
     configCombinations, ports, pinnedAssignments,
     solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
     lastVarOfConfig, configRequiresMap,
-    dmaData, propagationCtx, costTracker, undefined, budget
+    dmaData, propagationCtx, costTracker, mcuInfo, budget
   );
 
   return solutions;
@@ -1058,7 +1104,7 @@ export function runSharedPhase1(
 
   if (allVariables.length === 0) return null;
 
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',

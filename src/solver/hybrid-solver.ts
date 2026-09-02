@@ -63,10 +63,12 @@ export function extractInstanceGroupsFromSolutions(
       const assignments = new Map<string, string>();
 
       for (const a of cca.assignments) {
-        // Extract peripheral instance from signal name (e.g. "SPI1_MOSI" → "SPI1")
-        const match = a.signalName.match(/^([A-Z]+\d*)/);
-        if (!match) continue;
-        const instance = match[1];
+        // Extract peripheral instance from signal name (e.g. "SPI1_MOSI" →
+        // "SPI1"). Split at the first underscore — a prefix regex truncates
+        // I2C1 to "I2" and the instance never matches instanceCandidates.
+        const us = a.signalName.indexOf('_');
+        const instance = us === -1 ? a.signalName : a.signalName.substring(0, us);
+        if (!instance) continue;
 
         // Find matching instance variables
         const configName = a.configurationName;
@@ -172,7 +174,7 @@ export function solveHybrid(
     return emptyResult(mcu.refName, errors, configCombinations.length, startTime);
   }
 
-  const emptyVar = allVariables.find(v => v.domain.length === 0);
+  const emptyVar = allVariables.find(v => v.domain.length === 0 && !v.optional);
   if (emptyVar) {
     errors.push({
       type: 'error',

@@ -273,9 +273,11 @@ export function hasPortWipeout(
   domains: number[][],
   isAssigned: (idx: number) => boolean
 ): boolean {
+  // Optional (`?=`) variables are legally skippable — an emptied domain on
+  // one never blocks its config, so counting them here prunes valid branches.
   const emptyVarPorts = new Set<string>();
   for (let i = 0; i < variables.length; i++) {
-    if (!isAssigned(i) && domains[i].length === 0) {
+    if (!isAssigned(i) && domains[i].length === 0 && !variables[i].optional) {
       emptyVarPorts.add(variables[i].portName);
     }
   }
@@ -293,7 +295,7 @@ export function hasPortWipeout(
       }
       if (!isAssigned(i)) {
         configHasUnassigned.set(cfg, true);
-        if (domains[i].length === 0) configHasEmpty.set(cfg, true);
+        if (domains[i].length === 0 && !variables[i].optional) configHasEmpty.set(cfg, true);
       }
     }
     let anyViable = false;
@@ -1211,12 +1213,16 @@ export function validateGpioAvailability(
       const restricted: string[][] = [];
       for (const v of activeVars) {
         const pads = padsOf(v);
-        if (pads === null) { unrestricted++; continue; }
+        if (pads === null) {
+          if (!v.optional) unrestricted++;    // optionals may stay unplaced
+          continue;
+        }
         const usable = pads.filter(p => freeSet.has(p));
         if (usable.length === 0) {
           if (v.optional) continue;
           return false;                       // restricted channel has no legal pad left
         }
+        if (v.optional) continue;             // never claims a pad in the pigeonhole count
         if (usable.length === freePads.length) unrestricted++;
         else restricted.push(usable);
       }
@@ -2903,22 +2909,28 @@ function evaluateFunctionCall(
   }
 }
 
+/**
+ * QFP pin number → (x, y) on the package rectangle, matching real LQFP
+ * numbering and pin-anchors.ts buildGeom: pin 1 top-left, down the left
+ * edge, along the bottom, up the right, across the top. Units 0..side.
+ */
+function qfpXY(pin: number, total: number): { x: number; y: number } {
+  const side = total / 4;
+  const u = (pin - 1) / side; // 0..4 around the perimeter
+  if (u < 1) return { x: 0, y: u * side };
+  if (u < 2) return { x: (u - 1) * side, y: side };
+  if (u < 3) return { x: side, y: (3 - u) * side };
+  return { x: (4 - u) * side, y: 0 };
+}
+
 /** QFP x-component: pin number to x position on a rectangle */
 function qfpX(pin: number, total: number): number {
-  const side = total / 4;
-  if (pin <= side) return pin;              // bottom: left to right
-  if (pin <= 2 * side) return side;         // right side
-  if (pin <= 3 * side) return 3 * side - pin; // top: right to left
-  return 0;                                  // left side
+  return qfpXY(pin, total).x;
 }
 
 /** QFP y-component: pin number to y position on a rectangle */
 function qfpY(pin: number, total: number): number {
-  const side = total / 4;
-  if (pin <= side) return 0;                // bottom
-  if (pin <= 2 * side) return pin - side;   // right: bottom to top
-  if (pin <= 3 * side) return side;         // top
-  return 4 * side - pin;                    // left: top to bottom
+  return qfpXY(pin, total).y;
 }
 
 // ============================================================
@@ -3541,11 +3553,12 @@ export function extractPeripherals(assignments: Assignment[]): Map<string, Set<s
     if (!result.has(a.portName)) {
       result.set(a.portName, new Set());
     }
-    // Extract peripheral instance from signal name
-    const match = a.signalName.match(/^([A-Z]+\d*)/);
-    if (match) {
-      result.get(a.portName)!.add(match[1]);
-    }
+    // Instance = everything before the first underscore of the collapsed
+    // signal name ("I2C1_SDA" → "I2C1"). A prefix regex like [A-Z]+\d*
+    // truncates I2C1/I2S1 to "I2" and merges distinct instances.
+    const us = a.signalName.indexOf('_');
+    const inst = us === -1 ? a.signalName : a.signalName.substring(0, us);
+    if (inst) result.get(a.portName)!.add(inst);
   }
   return result;
 }

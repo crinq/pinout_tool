@@ -77,7 +77,7 @@ export function solveRandomizedRestarts(
       ctx.configCombinations, ctx.ports, ctx.pinnedAssignments,
       restartSolutions, limit, startTime, config.timeoutMs, stats, deepest,
       lastVarOfConfig, ctx.configRequiresMap,
-      ctx.dmaData
+      ctx.dmaData, undefined, undefined, ctx.mcuInfo
     );
 
     allSolutions.push(...restartSolutions);

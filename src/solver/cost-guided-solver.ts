@@ -18,7 +18,7 @@ import {
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions,
   isOptionalRequireVacuous,
   type SolverConfig, type SolverVariable, type VariableAssignment,
-  type PortSpec, type PinnedAssignment, type PinTracker,
+  type PortSpec, type PinnedAssignment, type PinTracker, type EvalMcuInfo,
 } from './solver';
 
 export function solveCostGuided(
@@ -49,7 +49,7 @@ export function solveCostGuided(
     solutions, cfg.maxSolutions, startTime, cfg.timeoutMs, ctx.stats, ctx.deepest,
     ctx.lastVarOfConfig, ctx.configRequiresMap,
     mcu, isBGA, totalPins, wSpread, wDebug, wProximity,
-    ctx.dmaData
+    ctx.dmaData, ctx.mcuInfo
   );
 
   pushSolverWarnings(errors, solutions, cfg.maxSolutions, startTime, cfg.timeoutMs);
@@ -155,7 +155,8 @@ function solveBacktrackCostGuided(
   wSpread: number,
   wDebug: number,
   wProximity: number,
-  dmaData?: DmaData
+  dmaData?: DmaData,
+  mcuInfo?: EvalMcuInfo
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
@@ -168,7 +169,7 @@ function solveBacktrackCostGuided(
   if (varIndex === variables.length) {
     stats.evaluatedCombinations++;
     const dmaOut: Map<string, string>[] = [];
-    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, undefined, tracker.sharedPatterns)) {
+    if (evaluateAllConstraints(current, configCombinations, ports, dmaData, dmaOut, mcuInfo, tracker.sharedPatterns)) {
       const solution = buildSolution(
         current, configCombinations, ports, pinnedAssignments, solutions.length, dmaOut
       );
@@ -223,7 +224,7 @@ function solveBacktrackCostGuided(
           if (isOptionalRequireVacuous(req.expression, v.portName, channelInfo)) {
             continue;
           }
-          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData)) {
+          if (!evaluateExpr(req.expression, v.portName, channelInfo, dmaData, mcuInfo)) {
             if (req.optional) continue;
             pruned = true;
             break;
@@ -239,11 +240,25 @@ function solveBacktrackCostGuided(
         solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
         lastVarOfConfig, configRequiresMap,
         mcu, isBGA, totalPins, wSpread, wDebug, wProximity,
-        dmaData
+        dmaData, mcuInfo
       );
     }
 
     current.pop();
     unassignPin(tracker, candidate.pin.name, v.portName, v.configName, candidate.peripheralInstance, candidate.signalName, candidate.pin.physical.position);
+  }
+
+  // Optional variable: also explore leaving it unassigned (mirrors
+  // solveBacktrack's skip branch) — a fully-conflicting `?=` channel must
+  // not kill branches that are valid without it.
+  if (v.optional) {
+    solveBacktrackCostGuided(
+      variables, varIndex + 1, tracker, current,
+      configCombinations, ports, pinnedAssignments,
+      solutions, maxSolutions, startTime, timeoutMs, stats, deepest,
+      lastVarOfConfig, configRequiresMap,
+      mcu, isBGA, totalPins, wSpread, wDebug, wProximity,
+      dmaData, mcuInfo
+    );
   }
 }
