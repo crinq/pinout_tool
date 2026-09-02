@@ -25,8 +25,9 @@ export interface McuMetadata {
 
 /**
  * Convert a glob pattern to a case-insensitive RegExp.
- * Supports: * (any chars), ? (single char), [a,b,c] (alternatives).
- * Implicit * appended at end if not already present.
+ * Supports: * (any chars), ? (single char), [a,b,c] (alternatives),
+ * [4-7] / [1-5,8,20] (numeric ranges, expanded — same syntax as signal
+ * patterns). Implicit * appended at end if not already present.
  */
 export function globToRegex(pattern: string): RegExp {
   let p = pattern.trim();
@@ -49,7 +50,21 @@ export function globToRegex(pattern: string): RegExp {
         i++;
       } else {
         const inner = p.substring(i + 1, close);
-        const alts = inner.split(',').map(s => escapeRegex(s.trim()));
+        const alts: string[] = [];
+        for (const part of inner.split(',').map(s => s.trim())) {
+          // Numeric range: [4-7] → 4|5|6|7 (like signal patterns). Reversed
+          // or absurdly wide ranges fall back to the literal text.
+          const range = part.match(/^(\d+)-(\d+)$/);
+          if (range) {
+            const lo = parseInt(range[1], 10);
+            const hi = parseInt(range[2], 10);
+            if (hi >= lo && hi - lo <= 100) {
+              for (let v = lo; v <= hi; v++) alts.push(String(v));
+              continue;
+            }
+          }
+          alts.push(escapeRegex(part));
+        }
         re += '(' + alts.join('|') + ')';
         i = close + 1;
       }

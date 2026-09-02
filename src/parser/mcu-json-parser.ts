@@ -267,9 +267,34 @@ function instanceNumberOf(name: string): number | undefined {
  * (collapseSignalName), so multi-token signal functions stay matchable
  * by constraint patterns like `SPI*_I2SCK`.
  */
-function buildSignalFromName(rawName: string, ioModes?: string): Signal | null {
+function buildSignalFromName(
+  rawName: string,
+  ioModes?: string,
+  multiTokenInstances?: string[],
+): Signal | null {
   if (!rawName) return null;
   const collapsed = collapseSignalName(rawName);
+
+  // Multi-token instance (USB_OTG_HS_ULPI_STP): keep the declared peripheral
+  // name on peripheralInstance instead of truncating at the first underscore,
+  // so the signal joins its peripherals[] entry instead of spawning a
+  // synthetic duplicate instance. The list is sorted longest-first by the
+  // caller so USB_OTG_HS wins over a hypothetical USB_OTG.
+  if (multiTokenInstances) {
+    for (const inst of multiTokenInstances) {
+      if (rawName.startsWith(inst + '_')) {
+        return {
+          name: collapsed,
+          peripheralInstance: inst,
+          peripheralType: typeFromInstance(inst, '').type,
+          instanceNumber: instanceNumberOf(inst),
+          signalFunction: rawName.substring(inst.length + 1).replace(/_/g, ''),
+          ioModes,
+        };
+      }
+    }
+  }
+
   // Split on first underscore to identify peripheral instance.
   const idx = collapsed.indexOf('_');
   if (idx === -1) {
@@ -390,7 +415,9 @@ function synthesizeDmaDataFromJson(doc: McuJsonDocument): DmaData | undefined {
       // populates `instanceToDmaStreams`; the buildDmaData helper at the
       // bottom of this file detects "no underscore" → instance lookup.
       const isInstanceLevel = entry.signal === p.name;
-      const sigKey = isInstanceLevel ? p.name : `${p.name}_${entry.signal}`;
+      // Collapse like the pin-signal names, or a multi-token signal entry
+      // (I2S_CK → SPI1_I2SCK) never matches anything.
+      const sigKey = isInstanceLevel ? p.name : collapseSignalName(`${p.name}_${entry.signal}`);
 
       for (const item of entry.dma) {
         const token = typeof item === 'string' ? item : item.dma;
@@ -427,10 +454,12 @@ function buildDmaDataFromStreams(version: string, streams: DmaStreamInfo[]): Dma
         if (!arr.includes(stream)) arr.push(stream);
         signalToDmaStreams.set(sigName, arr);
       }
-      // Mirror dma-xml-parser's heuristic: a signal name without an
-      // underscore is an instance-level request. Index by instance for
+      // Instance-level request: the key equals the instance name (covers
+      // underscored instances like USB_OTG_HS, which the dma-xml-parser's
+      // "no underscore" heuristic alone would miss). Index by instance for
       // findDmaStreamsForSignal's fallback path.
-      if (req.signalNames.length === 1 && !req.signalNames[0].includes('_')) {
+      if (req.signalNames.length === 1 &&
+          (req.signalNames[0] === req.peripheralInstance || !req.signalNames[0].includes('_'))) {
         const arr = instanceToDmaStreams.get(req.peripheralInstance) ?? [];
         if (!arr.includes(stream)) arr.push(stream);
         instanceToDmaStreams.set(req.peripheralInstance, arr);
@@ -468,7 +497,8 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
   const line = doc.line ?? '';
 
   const cores = (doc.cores ?? []).map(c => c.type_full ?? c.name ?? '').filter(Boolean);
-  const freqMHz = Math.max(...(doc.cores ?? []).map(c => c.freq_max_hz ?? 0)) / 1_000_000 || 0;
+  // Math.max() with no args is -Infinity — seed with 0 for core-less docs.
+  const freqMHz = Math.max(0, ...(doc.cores ?? []).map(c => c.freq_max_hz ?? 0)) / 1_000_000;
   const voltage = {
     min: doc.voltage?.min_v ?? 0,
     max: doc.voltage?.max_v ?? 0,
@@ -511,6 +541,13 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
     });
   }
 
+  // Instance names containing underscores (USB_OTG_HS) — longest first so
+  // the most specific prefix wins in buildSignalFromName.
+  const multiTokenInstances = peripherals
+    .map(p => p.instanceName)
+    .filter(n => n.includes('_'))
+    .sort((a, b) => b.length - a.length);
+
   // Pre-index pin↔signal mappings by GPIO name. The vendor JSON keeps
   // these on the GPIO entry: `alternate_functions` is keyed by AF
   // number and stores one or more signal names; `additional_functions`
@@ -538,11 +575,11 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
     if (g.alternate_functions) {
       for (const [af, value] of Object.entries(g.alternate_functions)) {
         const signals = Array.isArray(value) ? value : [value];
-        for (const rawSig of signals) keep(buildSignalFromName(rawSig, `AF${af}`));
+        for (const rawSig of signals) keep(buildSignalFromName(rawSig, `AF${af}`, multiTokenInstances));
       }
     }
     for (const rawSig of g.additional_functions ?? []) {
-      keep(buildSignalFromName(rawSig, undefined));
+      keep(buildSignalFromName(rawSig, undefined, multiTokenInstances));
     }
 
     if (list.length > 0) signalsByPin.set(g.name, list);
@@ -705,7 +742,9 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
     flash: a.flashKB,
     ram: a.ramKB,
     ccmRam: a.ccmKB,
-    ioCount: logicalPins.filter(l => l.isAssignable).length,
+    // Count physical pads, not logical names — ALT remap variants share a
+    // pad with their default sibling (matches the vendor XML's IONb).
+    ioCount: physicalPins.filter(p => p.logicals.some(l => l.isAssignable)).length,
     voltage: a.voltage,
     temperature: a.temperature,
     hasPowerPad: false,

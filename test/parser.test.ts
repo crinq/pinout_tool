@@ -942,8 +942,9 @@ reserve: PA0`;
       parseErr('ram: abc');
     });
 
-    it('rejects `?` in an mcu glob (not a supported glob char at parse level)', () => {
-      parseErr('mcu: STM32F40?');
+    it('accepts `?` in an mcu glob (single-character wildcard)', () => {
+      const result = parseConstraints('mcu: STM32F40?');
+      expect(result.errors).toHaveLength(0);
     });
 
     it('rejects an empty reserve list', () => {

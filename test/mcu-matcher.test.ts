@@ -161,10 +161,12 @@ describe('glob engine', () => {
     expect(globToRegex('STM32F40?').test('STM32F401')).toBe(true);
     expect(globToRegex('STM32F40?').test('STM32F4')).toBe(false); // nothing for the ?
   });
-  it('[a-b] is a literal, NOT a numeric range', () => {
-    // `-` inside brackets is escaped, so [405-407] matches the literal "405-407".
-    expect(matchesPatterns('STM32F406', ['STM32F[405-407]'])).toBe(false);
-    expect(matchesPatterns('STM32F405-407X', ['STM32F[405-407]*'])).toBe(true);
+  it('[n-m] is a numeric range, like signal patterns', () => {
+    expect(matchesPatterns('STM32F406', ['STM32F[405-407]'])).toBe(true);
+    expect(matchesPatterns('STM32F404', ['STM32F[405-407]'])).toBe(false);
+    expect(matchesPatterns('STM32F405RG', ['STM32F[4-7]*'])).toBe(true);
+    // Reversed / non-numeric ranges stay literal.
+    expect(matchesPatterns('STM32F405-403X', ['STM32F[405-403]*'])).toBe(true);
   });
 });
 

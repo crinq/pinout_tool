@@ -88,6 +88,9 @@ interface Token {
   column: number;
 }
 
+/** Upper bound on values a `[n-m]` range may expand to. */
+const MAX_RANGE_VALUES = 1024;
+
 const KEYWORDS = new Set([
   'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings', 'group',
 ]);
@@ -144,8 +147,9 @@ function tokenize(source: string, lineMap?: number[]): { tokens: Token[]; errors
     while (col < line.length) {
       const ch = line[col];
 
-      // Skip spaces within a line
-      if (ch === ' ' || ch === '\t') {
+      // Skip spaces within a line (\r for CRLF input tokenized directly,
+      // without going through the preprocessor)
+      if (ch === ' ' || ch === '\t' || ch === '\r') {
         col++;
         continue;
       }
@@ -733,7 +737,8 @@ class Parser {
       const tok = this.peek();
       if (tok.type === 'IDENT' || tok.type === 'KEYWORD' || tok.type === 'STAR' ||
           tok.type === 'NUMBER' || tok.type === 'DASH' || tok.type === 'UNDERSCORE' ||
-          tok.type === 'LBRACKET' || tok.type === 'RBRACKET' || tok.type === 'COMMA') {
+          tok.type === 'LBRACKET' || tok.type === 'RBRACKET' || tok.type === 'COMMA' ||
+          tok.type === 'QUESTION') {
         result += tok.value;
         this.advance();
       } else {
@@ -1000,7 +1005,7 @@ class Parser {
         return { anchor: { kind: 'near_pos', target } };
       }
       const raw = this.parsePinName(); // IDENT + optional NUMBER
-      if (/^P[A-K]\d+$/i.test(raw)) return { anchor: { kind: 'near_pin', target: raw.toUpperCase() } };
+      if (/^P[A-Z]\d+$/i.test(raw)) return { anchor: { kind: 'near_pin', target: raw.toUpperCase() } };
       if (/^[NSEWC]+$/i.test(raw)) return { anchor: { kind: 'near_region', target: raw.toUpperCase() } };
       if (/^[A-Z]+\d+$/i.test(raw)) return { anchor: { kind: 'near_pos', target: raw.toUpperCase() } };
       this.error(`Invalid anchor '~${raw}' (expected a pin like ~PA1, a position like ~1, or a region like ~NW)`, this.peek());
@@ -1352,11 +1357,23 @@ class Parser {
   }
 
   private parseRangeElem(values: number[]): void {
+    const startTok = this.peek();
     const n = this.expectNumber();
 
     if (this.check('DASH')) {
       this.advance();
       const m = this.expectNumber();
+      // Ranges materialize into an array — an unbounded or reversed range
+      // must be an error, not a tab-freezing 1e9-element loop (the editor
+      // reparses on every keystroke).
+      if (m < n) {
+        this.error(`Invalid range [${n}-${m}]: end is less than start`, startTok);
+        return;
+      }
+      if (m - n + 1 > MAX_RANGE_VALUES) {
+        this.error(`Range [${n}-${m}] too large (max ${MAX_RANGE_VALUES} values)`, startTok);
+        return;
+      }
       for (let i = n; i <= m; i++) {
         values.push(i);
       }

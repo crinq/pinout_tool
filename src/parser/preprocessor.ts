@@ -87,6 +87,17 @@ const MACRO_HEADER = /^(\s*)macro\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*:\s
 const MACRO_CALL = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*(?:#.*)?$/;
 
 /**
+ * Statement heads that can legally be followed by `(...)` — most notably
+ * `require (A & B)`. Without this exemption MACRO_CALL swallows the line
+ * and reports "Unknown macro 'require'". Mirrors the parser's KEYWORDS set.
+ */
+const STATEMENT_KEYWORDS = new Set([
+  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve',
+  'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared',
+  'from', 'settings', 'group',
+]);
+
+/**
  * `channel NAME(args)` — shorthand for declaring the argument channels and
  * then applying the macro to them, so
  *
@@ -110,7 +121,12 @@ const indentOf = (text: string): number => text.length - text.trimStart().length
 const isBlank = (text: string): boolean => text.trim() === '';
 
 function splitLines(source: string): SourceLine[] {
-  return source.split('\n').map((text, i) => ({ text, line: i + 1 }));
+  // Strip CRLF carriage returns — Windows-authored files otherwise leave a
+  // trailing \r on every line that the tokenizer rejects.
+  return source.split('\n').map((text, i) => ({
+    text: text.endsWith('\r') ? text.slice(0, -1) : text,
+    line: i + 1,
+  }));
 }
 
 /**
@@ -331,7 +347,7 @@ function expandLines(
     }
 
     const call = MACRO_CALL.exec(trimmed);
-    if (!call || !balanced(call[2])) {
+    if (!call || STATEMENT_KEYWORDS.has(call[1]) || !balanced(call[2])) {
       out.push(line);
       continue;
     }
