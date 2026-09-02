@@ -44,9 +44,15 @@ export interface EditCandidate {
 
 type Assignment = Map<SolverVariable, SignalCandidate>;
 
-/** cross-port variable identity (config+channel+exprIndex), for matching swaps. */
+/**
+ * Cross-port variable identity (config+channel+exprIndex), for matching swaps.
+ * Inline-mapping ports get an implicit config named after the PORT, which
+ * would make two structurally-identical inline ports (ECAT vs GD) never
+ * match — normalize that case to an empty config name.
+ */
 function chanKey(v: SolverVariable): string {
-  return `${v.configName}\0${v.channelName}\0${v.exprIndex}`;
+  const cfg = v.configName === v.portName ? '' : v.configName;
+  return `${cfg}\0${v.channelName}\0${v.exprIndex}`;
 }
 
 export class SolutionEditor {

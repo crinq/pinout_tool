@@ -20,6 +20,7 @@ import {
   configsHaveDma, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
+  PHASE2_GROUP_STEP_BUDGET,
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
   groupFingerprint, sortInstanceDomainsByCost,
   type InstanceGroup, type InstanceTracker,
@@ -194,7 +195,8 @@ export function solvePriorityTwoPhase(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage
+      phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage,
+      { steps: PHASE2_GROUP_STEP_BUDGET }
     );
   solutions.push(...runPhase2Diverse(groups, solveGroup, {
     maxSolutionsPerGroup: config.maxSolutionsPerGroup,

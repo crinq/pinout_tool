@@ -65,6 +65,35 @@ interface SearchShared {
   weight: Float64Array;               // dom/wdeg-lite variable weights
   lastValue: Map<number, number>;     // phase saving: vi -> candIdx
   antiPhase: boolean;                 // after first solution: diversify
+  /** Solutions emitted per instance-assignment fingerprint (see GROUP_CAP). */
+  groupCounts: Map<string, number>;
+}
+
+/**
+ * Per-instance-group emission cap. Chronological enumeration visits
+ * neighboring leaves first — pin shuffles of ONE instance assignment — and
+ * without a cap they fill maxSolutions before any restart can reach a
+ * different peripheral combination. Skipped leaves still backtrack, so the
+ * Luby restarts + anti-phase ordering go looking for other groups.
+ */
+const GROUP_CAP = 100;
+
+/**
+ * Emission quota per restart. Chronological enumeration varies the LAST
+ * (loosest) variables first, so one region yields hundreds of near-identical
+ * solutions while the tight early assignments (the scarce peripherals) never
+ * change. Forcing a restart after a quota lets the anti-phase value ordering
+ * steer the next descent into a different peripheral combination.
+ */
+const RESTART_EMIT_QUOTA = 50;
+
+/** Instance-assignment fingerprint of a full assignment. */
+function instanceFingerprint(current: VariableAssignment[]): string {
+  const parts: string[] = [];
+  for (const va of current) {
+    parts.push(`${va.variable.portName}\0${va.variable.configName}\0${va.variable.channelName}=${va.candidate.peripheralInstance}`);
+  }
+  return parts.sort().join('|');
 }
 
 export function solveConflictDirected(
@@ -86,6 +115,7 @@ export function solveConflictDirected(
     weight: new Float64Array(ctx.variables.length),
     lastValue: new Map(),
     antiPhase: false,
+    groupCounts: new Map(),
   };
 
   let restart = 0;
@@ -144,6 +174,7 @@ function searchOnce(
   const variables = ctx.variables;
   const n = variables.length;
   const rng = mulberry32(0x9E3779B9 ^ (restartIdx * 2654435761));
+  let emittedThisRestart = 0;
 
   // Fresh per-restart state
   const domains: number[][] = variables.map(v => [...v.domain]);
@@ -268,14 +299,21 @@ function searchOnce(
         ctx.stats.evaluatedCombinations++;
         const dmaOut: Map<string, string>[] = [];
         if (evaluateAllConstraints(current, ctx.configCombinations, ctx.ports, ctx.dmaData, dmaOut, ctx.mcuInfo, ctx.sharedPatterns)) {
-          solutions.push(buildSolution(
-            current, ctx.configCombinations, ctx.ports, ctx.pinnedAssignments, solutions.length, dmaOut
-          ));
-          ctx.stats.validSolutions++;
-          const elapsed = performance.now() - startTime;
-          if (ctx.stats.firstSolutionMs === undefined) ctx.stats.firstSolutionMs = elapsed;
-          ctx.stats.lastSolutionMs = elapsed;
+          const gfp = instanceFingerprint(current);
+          const emitted = shared.groupCounts.get(gfp) ?? 0;
+          if (emitted < GROUP_CAP) {
+            shared.groupCounts.set(gfp, emitted + 1);
+            solutions.push(buildSolution(
+              current, ctx.configCombinations, ctx.ports, ctx.pinnedAssignments, solutions.length, dmaOut
+            ));
+            ctx.stats.validSolutions++;
+            emittedThisRestart++;
+            const elapsed = performance.now() - startTime;
+            if (ctx.stats.firstSolutionMs === undefined) ctx.stats.firstSolutionMs = elapsed;
+            ctx.stats.lastSolutionMs = elapsed;
+          }
           shared.antiPhase = true;
+          if (emittedThisRestart >= RESTART_EMIT_QUOTA) { unwindTo(-1); return 'restart'; }
         }
         // Continue enumeration chronologically from the deepest frame.
         // Reasons unknown at leaf level → conservative full conflict set.

@@ -3136,13 +3136,50 @@ function computeGlobalDmaAssignment(
     }
   }
 
+  // Pigeonhole pre-check. Streams are owned per port (or shared group)
+  // across ALL combos, and within a combo each non-shared requirement needs
+  // its own stream — so each port permanently claims max-per-combo streams,
+  // and each shared trigger claims one. If those claims exceed the stream
+  // count, the set is infeasible; refuting that by search below is
+  // exponential (it hung the tab for hours on DMA-heavy files).
+  {
+    const perPortPerCombo = new Map<string, number>(); // "port\0combo" → count
+    const sharedTriggers = new Set<string>();
+    for (const req of allReqs) {
+      if (sharedTriggerGroup.has(req.triggerName)) {
+        sharedTriggers.add(req.triggerName);
+      } else {
+        const k = `${req.portName}\0${req.comboIdx}`;
+        perPortPerCombo.set(k, (perPortPerCombo.get(k) ?? 0) + 1);
+      }
+    }
+    const perPortMax = new Map<string, number>();
+    for (const [k, n] of perPortPerCombo) {
+      const port = k.substring(0, k.indexOf('\0'));
+      perPortMax.set(port, Math.max(perPortMax.get(port) ?? 0, n));
+    }
+    let needed = sharedTriggers.size;
+    for (const n of perPortMax.values()) needed += n;
+    if (needed > dmaData.streams.length) {
+      dmaCache.set(cacheKey, null);
+      return null;
+    }
+  }
+
   // Backtracking assignment
   const assigned = new Array<DmaStreamInfo | null>(allReqs.length).fill(null);
   const streamOwner = new Map<string, string>();       // stream → owner (port or shared group)
   const comboUsed = new Map<number, Set<string>>();    // combo → used streams
   const sharedTriggerStream = new Map<string, string>(); // shared trigger → assigned stream
 
+  // Backstop against exponential refutation: the search runs synchronously
+  // inside a leaf evaluation, so an unbounded exhaustive proof freezes the
+  // worker. On exhaustion the set is treated as infeasible (incomplete but
+  // sound — a solution is never fabricated, only possibly missed).
+  let solveSteps = 2_000_000;
+
   function solve(idx: number): boolean {
+    if (--solveSteps < 0) return false;
     if (idx === allReqs.length) return true;
     const req = allReqs[idx];
     const sharedGroup = sharedTriggerGroup.get(req.triggerName);

@@ -94,10 +94,12 @@ export function solveBacktrackDynamic(
   sharedPatterns: PatternPart[],
   dmaData?: DmaData,
   sameInstance?: SameInstancePropagator,
-  mcuInfo?: EvalMcuInfo
+  mcuInfo?: EvalMcuInfo,
+  budget?: { steps: number }
 ): void {
   if (performance.now() - startTime > timeoutMs) return;
   if (solutions.length >= maxSolutions) return;
+  if (budget && --budget.steps < 0) return;
 
   if (depth === totalVars) {
     // All variables assigned - check all config combinations
@@ -240,7 +242,7 @@ export function solveBacktrackDynamic(
           solutions, maxSolutions, startTime, timeoutMs, stats,
           configRequiresMap, configVarIndices, depth + 1, totalVars,
           pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-          dmaData, sameInstance, mcuInfo
+          dmaData, sameInstance, mcuInfo, budget
         );
         undoPropagateShared(removed, domains);
       }
@@ -260,7 +262,7 @@ export function solveBacktrackDynamic(
       solutions, maxSolutions, startTime, timeoutMs, stats,
       configRequiresMap, configVarIndices, depth + 1, totalVars,
       pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-      dmaData, sameInstance, mcuInfo
+      dmaData, sameInstance, mcuInfo, budget
     );
   }
 

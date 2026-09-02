@@ -39,6 +39,15 @@ import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
 // Two-Phase Config
 // ============================================================
 
+/**
+ * Per-group step budget for Phase 2. A group whose configs cannot all fit
+ * (e.g. one config's instances have no free pins left) otherwise burns the
+ * entire solver timeout proving it — and the feasible groups behind it in
+ * the queue are never visited, killing instance diversity. cegar's probe
+ * ladder tops out at 32k steps; 100k is generous for a feasible group.
+ */
+export const PHASE2_GROUP_STEP_BUDGET = 100_000;
+
 export interface TwoPhaseConfig {
   maxGroups: number;
   maxSolutionsPerGroup: number;
@@ -237,7 +246,8 @@ export function solveTwoPhase(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage
+      phase2Sort, dmaData, domainCache, mcu, costWeights, seed, pinUsage,
+      { steps: PHASE2_GROUP_STEP_BUDGET }
     );
   const runPhase2 = (gs: InstanceGroup[]): Solution[] => runPhase2Diverse(gs, solveGroup, {
     maxSolutionsPerGroup: config.maxSolutionsPerGroup,
@@ -1182,7 +1192,8 @@ export function runPhase2Only(
       group, phase1.solveVars, phase1.ports, phase1.reservedPins,
       phase1.pinnedAssignments, phase1.sharedPatterns, phase1.configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
-      sortVariables, phase1.dmaData, domainCache, mcu, config.costWeights, seed, pinUsage
+      sortVariables, phase1.dmaData, domainCache, mcu, config.costWeights, seed, pinUsage,
+      { steps: PHASE2_GROUP_STEP_BUDGET }
     );
   const solutions = runPhase2Diverse(phase1.groups, solveGroup, {
     maxSolutionsPerGroup: config.maxSolutionsPerGroup,

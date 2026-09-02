@@ -24,6 +24,7 @@ import {
   configsHaveDma, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
+  PHASE2_GROUP_STEP_BUDGET,
   buildInstanceVariables, solvePhase1, solvePhase2ForGroup,
   groupFingerprint, varKey,
   type InstanceGroup, type InstanceTracker,
@@ -293,7 +294,8 @@ export function solvePriorityGroup(
       group, solveVars, ports, reserved.pins, pinnedAssignments,
       sharedPatterns, configCombinations,
       maxSol, startTime, config.timeoutMs, stats,
-      phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage
+      phase2Sort, dmaData, domainCache, mcu, config.costWeights, seed, pinUsage,
+      { steps: PHASE2_GROUP_STEP_BUDGET }
     );
 
   const orderedDiscovered = orderByDiversity(discoveredGroups);

@@ -25,6 +25,7 @@ import {
   type SolverVariable, type PinnedAssignment, type PortSpec, type EvalMcuInfo, pinnedOccupiedPins } from './solver';
 import type { TwoPhaseConfig } from './two-phase-solver';
 import {
+  PHASE2_GROUP_STEP_BUDGET,
   buildInstanceVariables, solvePhase1,
   groupFingerprint, varKey,
   type InstanceGroup, type InstanceTracker,
@@ -180,7 +181,7 @@ function solvePhase2MRV(
     solutions, maxSolutions, startTime, timeoutMs, stats,
     configRequiresMap, configVarIndices, 0, n,
     pinToVarCandidates, instanceToVarCandidates, sharedPatterns,
-    dmaData, sameInstance, mcuInfo
+    dmaData, sameInstance, mcuInfo, { steps: PHASE2_GROUP_STEP_BUDGET }
   );
 
   return solutions;
