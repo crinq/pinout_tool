@@ -17,7 +17,7 @@ import { getSolvers } from './solver/solver-registry';
 import { SolutionEditor, type EditCandidate } from './solver/solution-editor';
 import { renderMarkdown } from './ui/markdown';
 import docMd from '../doc.md?raw';
-import { classifyProjectSolutions } from './solver/solution-status';
+import { classifyProjectSolutions, type SolutionVerdict } from './solver/solution-status';
 import type { Mcu, Assignment, Solution, SolverResult, SolverError, DmaData, CompatibilityResult } from './types';
 import type { ProgramNode } from './parser/constraint-ast';
 import { parseConstraints } from './parser/constraint-parser';
@@ -1769,13 +1769,33 @@ export class App implements DataManagerHost {
   private updateProjectSolutionValidity(): void {
     const sols = this.projectSolutions.getSolutions();
     const ast = this.constraintEditor.getParseResult()?.ast;
-    if (sols.length === 0 || !ast || !this.currentMcu) {
+    if (sols.length === 0 || !ast) {
       this.projectSolutions.setValidity(new Map());
       return;
     }
     try {
-      this.projectSolutions.setValidity(
-        classifyProjectSolutions(sols, ast, this.currentMcu, this.settings.skipGpioMapping));
+      // Classify every solution against ITS OWN MCU (session cache), not just
+      // whichever MCU happens to be loaded — the classifier skips other-MCU
+      // solutions, so badges used to freeze on the previously loaded MCU when
+      // clicking between solutions saved for different parts.
+      const byMcu = new Map<Mcu, Solution[]>();
+      for (const sol of sols) {
+        const mcu = sol.mcuRef
+          ? this.mcuCache.get(sol.mcuRef)
+            ?? (this.currentMcu?.refName === sol.mcuRef ? this.currentMcu : undefined)
+          : this.currentMcu ?? undefined;   // legacy solutions without an mcuRef
+        if (!mcu) continue;                 // MCU not loaded this session → no badge
+        const list = byMcu.get(mcu) ?? [];
+        list.push(sol);
+        byMcu.set(mcu, list);
+      }
+      const merged = new Map<Solution, SolutionVerdict>();
+      for (const [mcu, group] of byMcu) {
+        for (const [sol, verdict] of classifyProjectSolutions(group, ast, mcu, this.settings.skipGpioMapping)) {
+          merged.set(sol, verdict);
+        }
+      }
+      this.projectSolutions.setValidity(merged);
     } catch (err) {
       console.warn('Solution validity check failed:', err);
       this.projectSolutions.setValidity(new Map());
