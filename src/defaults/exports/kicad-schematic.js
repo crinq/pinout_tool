@@ -9,6 +9,8 @@
 // param: v33a string = +3.3VA | VDDA net | Power symbol name used for VDDA
 // param: loadcap string = 12pF | Load caps | Crystal load capacitor value
 // param: rseries string = 1k | Crystal series R | Series resistor value between crystal and OSC_OUT
+// param: hier bool = false | Hierarchical labels | Sheet-interface column left of the CPU: hierarchical label + short trace + net label for every channel
+// param: nc bool = true | No-connects | Mark unused GPIO / misc pins with a no-connect cross
 // param: footprint string = | Footprint | KiCad footprint override (empty = derive from package name)
 
 // ---------------------------------------------------------------
@@ -1241,6 +1243,13 @@ const note = (text, x, y, justify) =>
 const junction = (x, y) =>
   graphics.push('\t(junction\n\t\t(at ' + mm(x) + ' ' + mm(y) + ')\n\t\t(diameter 0)\n\t\t(color 0 0 0 0)\n\t\t(uuid "' + uuid() + '")\n\t)');
 
+const hlabel = (text, x, y) =>
+  graphics.push('\t(hierarchical_label "' + esc(text) + '"\n\t\t(shape bidirectional)\n\t\t(at ' + mm(x) + ' ' + mm(y) + ' 180)\n'
+    + '\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t\t(justify right)\n\t\t)\n\t\t(uuid "' + uuid() + '")\n\t)');
+
+const noConnect = (x, y) =>
+  graphics.push('\t(no_connect\n\t\t(at ' + mm(x) + ' ' + mm(y) + ')\n\t\t(uuid "' + uuid() + '")\n\t)');
+
 // Power symbol whose connection point sits exactly at (x, y). The value text
 // is tucked to the free side depending on where the symbol sits.
 const PWR_VAL_AT = {
@@ -1280,7 +1289,9 @@ const padXY = (pad) => {
 const textW = (s) => s.length * 1.1;         // rough text extent at 1.27 font
 
 // A short stub wire out of a pin with a net label at its end.
+const usedPads = new Set();                  // pads with a label / symbol attached
 function pinLabel(pad, text) {
+  usedPads.add(pad.number);
   const c = padXY(pad);
   if (c.edge === 180) {           // right edge
     wire(c.x, c.y, c.x + P, c.y);
@@ -1308,6 +1319,66 @@ for (const [pinName, a] of assignByPin) {
   if (!a.channelComment) continue;
   if (c.edge === 180) note(a.channelComment, c.x + P + textW(text) + P, c.y, 'left bottom');
   else if (c.edge === 0) note(a.channelComment, c.x - P - textW(text) - P, c.y, 'right bottom');
+}
+
+// --- channel column left of the CPU --------------------------------
+// With `hier` on: every channel (grouped by port, one free row between
+// ports) gets a hierarchical label, a short trace and a matching net label —
+// the sheet interface. With `hier` off, only channels that got no pin (e.g.
+// skipped GPIO in/out) are placed as dangling net labels to drag onto pins.
+const mappedCh = new Set();
+for (const a of assignments) if (a.portName !== '<pinned>') mappedCh.add(a.portName + '.' + a.channelName);
+const columnCh = [];
+for (const port of (ports || [])) {
+  for (const ch of (port.channels || [])) {
+    const key = port.name + '.' + ch.name;
+    if (params.hier || !mappedCh.has(key)) {
+      columnCh.push({ key, comment: mappedCh.has(key) ? null : (ch.comment || null), port: port.name });
+    }
+  }
+}
+if (columnCh.length > 0) {
+  // clear of the left-edge pin labels and their comments
+  let leftExtent = MX - halfW - PIN_LEN - P;
+  for (const [pinName, a] of assignByPin) {
+    const pad = padByLogical.get(pinName);
+    if (!pad || pinSheet.get(pad.number).edge !== 0) continue;
+    let e = MX - halfW - PIN_LEN - P - textW(labelFor(a));
+    if (a.channelComment) e -= 2 * P + textW(a.channelComment);
+    if (e < leftExtent) leftExtent = e;
+  }
+  const maxW = Math.max(...columnCh.map(u => textW(u.key)));
+  // hier rows: hlabel — 2.54 trace — net label (text runs right, keep it clear)
+  const colX = mm(Math.floor((leftExtent - 2 * P - (params.hier ? maxW + P : 0)) / 1.27) * 1.27);
+  let ly = MY - bodyTop + 12.7;
+  let prevPort = null;
+  for (const u of columnCh) {
+    if (prevPort !== null && u.port !== prevPort) ly += P;   // gap between ports
+    prevPort = u.port;
+    if (params.hier) {
+      hlabel(u.key, colX, mm(ly));
+      wire(colX, mm(ly), colX + P, mm(ly));
+      label(u.key, colX + P, mm(ly), 0, 'left bottom');
+      if (u.comment) note(u.comment, colX - 2 * P, mm(ly), 'right bottom');
+    } else {
+      label(u.key, colX, mm(ly), 180, 'right bottom');
+      if (u.comment) note(u.comment, colX - textW(u.key) - 2 * P, mm(ly), 'right bottom');
+    }
+    ly += P;
+  }
+  // With the interface column in place, the unmapped channels still need
+  // free (unconnected) labels to drag onto pins — a second block below it.
+  if (params.hier) {
+    const unmapped = columnCh.filter(u => !mappedCh.has(u.key));
+    prevPort = null;
+    ly += P;
+    for (const u of unmapped) {
+      if (prevPort !== null && u.port !== prevPort) ly += P;
+      prevPort = u.port;
+      label(u.key, colX, mm(ly), 180, 'right bottom');
+      ly += P;
+    }
+  }
 }
 
 // --- power pins --------------------------------------------------
@@ -1434,6 +1505,18 @@ if (params.crystal && oscIn && oscOut) {
     { refAt: [qx + 7.62 + 3.048, qy + 6.35 - 2.286, 0], valAt: [qx + 7.62 + 3.302, qy + 6.35 + 2.032, 0] });
   wire(qx + 7.62, qy + 10.16, qx + 7.62, qy + 12.7);
   placePower(params.gnd, qx + 7.62, qy + 12.7, 'rowBottom');
+}
+
+// --- no-connect crosses on unused I/O pins -------------------------
+// Placed last so every labeled pin is known. Only side-edge pins (GPIO /
+// misc / reset / boot) — power pins that still need manual wiring keep
+// their ERC reminder instead.
+if (params.nc) {
+  for (const pad of [...groups.gpio, ...groups.misc, ...groups.reset, ...groups.boot]) {
+    if (usedPads.has(pad.number)) continue;
+    const c = padXY(pad);
+    noConnect(c.x, c.y);
+  }
 }
 
 // ---------------------------------------------------------------

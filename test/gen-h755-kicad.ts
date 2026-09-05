@@ -36,7 +36,11 @@ if (oscIn && oscOut) {
     { pinName: oscOut.name, signalName: oscOut.signals.find(s => /OSC_?OUT/.test(s.name))!.name, portName: 'clock', channelName: 'OUT', configurationName: 'c', channelComment: null } as never,
   );
 }
-const out = exec(mcu.refName, mcu.package, assignments, mcu.peripherals, pins, [], {},
-  defaultParamValues(params), null, 'test header', `${mcu.refName} | ${mcu.package} | 480MHz`);
+const testPorts = [
+  { name: 'GPIO', channels: [{ name: 'IN', comment: 'spare input' }, { name: 'OUT', comment: null }] },
+  { name: 'CMD', channels: [{ name: 'TX', comment: null }, { name: 'RX', comment: null }] },
+];
+const out = exec(mcu.refName, mcu.package, assignments, mcu.peripherals, pins, testPorts, {},
+  { ...defaultParamValues(params), hier: true }, null, 'test header', `${mcu.refName} | ${mcu.package} | 480MHz`);
 writeFileSync(join(process.cwd(), 'node_modules/.cache/h755-sample.kicad_sch'), out.content);
 console.log('written', out.filename, out.content.length, 'osc:', oscIn?.name, oscOut?.name);

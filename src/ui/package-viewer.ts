@@ -7,7 +7,7 @@ import {
   type ExportParam, type ExportParamValues,
 } from '../export-params';
 import type { Panel, StateChange, HighlightStyle } from './panel';
-import { parseSearchPattern } from '../parser/constraint-parser';
+import { parseSearchPattern, parseConstraints } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
 import { lookupDmaStream } from '../solver/solver';
 import { exportSvg } from './svg-export';
@@ -56,6 +56,30 @@ interface GestureLikeEvent {
   clientX: number;
   clientY: number;
   preventDefault(): void;
+}
+
+/**
+ * All declared channels per port, resolving `port X from Y` inheritance
+ * (child first, then the ancestor chain; cycle-safe). Raw parse, no macro
+ * expansion — the same fidelity the app uses to collect channel comments.
+ */
+export function declaredPortChannels(source: string): Map<string, string[]> {
+  const ast = parseConstraints(source).ast;
+  const decls = new Map<string, { name: string; template?: string; channels: { name: string }[] }>();
+  for (const stmt of ast?.statements ?? []) {
+    if (stmt.type === 'port_decl') decls.set(stmt.name, stmt);
+  }
+  const out = new Map<string, string[]>();
+  for (const [name, decl] of decls) {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (let d = decl; d && !seen.has(d.name); d = d.template !== undefined ? decls.get(d.template)! : undefined!) {
+      seen.add(d.name);
+      for (const ch of d.channels) if (!names.includes(ch.name)) names.push(ch.name);
+    }
+    out.set(name, names);
+  }
+  return out;
 }
 
 export class PackageViewer implements Panel {
@@ -812,6 +836,19 @@ export class PackageViewer implements Panel {
       if (!configs) { configs = new Set(); channels.set(a.channelName, configs); }
       configs.add(a.configurationName);
     }
+    // Merge in declared ports/channels from the constraints so exports also
+    // see channels that never got a pin (e.g. skipped GPIO in/out). Parsed
+    // the same way the app collects comments: raw text, no macro expansion.
+    try {
+      for (const [name, chNames] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
+        let channels = portMap.get(name);
+        if (!channels) { channels = new Map(); portMap.set(name, channels); }
+        for (const ch of chNames) {
+          if (!channels.has(ch)) channels.set(ch, new Set());
+        }
+      }
+    } catch { /* unparsable constraints: exports see mapped channels only */ }
+
     const ports = [...portMap.entries()].map(([name, channels]) => ({
       name,
       color: this.portColors.get(name) || null,

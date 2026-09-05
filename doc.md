@@ -1351,7 +1351,7 @@ Create custom export functions via the Data Manager to generate any output forma
 - `assignments` -- array of `{pinName, signalName, portName, channelName, configurationName, portComment, channelComment, pinComment}`
 - `peripherals` -- array of `{instanceName, type, version}`
 - `pins` -- array with pin details and all available signals
-- `ports` -- array of `{name, color, comment, channels: [{name, comment}], configurations}`
+- `ports` -- array of `{name, color, comment, channels: [{name, comment}], configurations}`; includes all declared ports and channels, also those without a pin assignment (e.g. skipped GPIO in/out)
 - `pinComments` -- object `{pinName: comment}` from `pin` declarations
 - `params` -- object `{key: value}` of the function's user-set parameters (see below)
 - `docs` -- MCU documentation links `{datasheet?, refmanual?, errata?}` or `null`

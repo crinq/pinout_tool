@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { parseMcuXml } from '../src/parser/mcu-xml-parser';
+import { declaredPortChannels } from '../src/ui/package-viewer';
 import { parseExportParams, defaultParamValues } from '../src/export-params';
 import type { Mcu } from '../src/types';
 
@@ -15,7 +16,7 @@ function loadMcu(folder: string): Mcu {
 const fnSource = readFileSync(join(__dirname, '../src/defaults/exports/kicad-schematic.js'), 'utf-8');
 const params = parseExportParams(fnSource);
 
-function run(mcu: Mcu, assignments: object[], overrides: Record<string, unknown> = {}) {
+function run(mcu: Mcu, assignments: object[], overrides: Record<string, unknown> = {}, ports: object[] = []) {
   const exec = new Function(
     'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
     'docs', 'constraintsHeader', 'mcuInfo',
@@ -30,7 +31,7 @@ function run(mcu: Mcu, assignments: object[], overrides: Record<string, unknown>
     })),
   }));
   return exec(
-    mcu.refName, mcu.package, assignments, mcu.peripherals, pins, [], {},
+    mcu.refName, mcu.package, assignments, mcu.peripherals, pins, ports, {},
     { ...defaultParamValues(params), ...overrides },
     { datasheet: 'https://example.com/ds.pdf' }, 'servo drive controller\nsecond line',
     `${mcu.refName} | ${mcu.package} | 168MHz`,
@@ -102,6 +103,38 @@ describe('KiCad schematic export', () => {
     expect(out.content).toContain('(text "to host"');
   });
 
+  it('adds dangling labels + comments for unmapped channels', () => {
+    const o = run(mcu, ASSIGN, {}, [
+      { name: 'GPIO', channels: [{ name: 'IN', comment: 'spare input' }, { name: 'OUT', comment: null }] },
+      { name: 'CMD', channels: [{ name: 'TX', comment: null }, { name: 'RX', comment: null }] },
+    ]);
+    expect(o.content).toContain('(label "GPIO.IN"');
+    expect(o.content).toContain('(label "GPIO.OUT"');
+    expect(o.content).toContain('(text "spare input"');
+    // mapped channels keep exactly their pin label, no extra dangling one
+    expect((o.content.match(/\(label "CMD\.TX"/g) ?? []).length).toBe(1);
+  });
+
+  it('hierarchical-label column and no-connect crosses', () => {
+    const ports = [
+      { name: 'CMD', channels: [{ name: 'TX', comment: null }, { name: 'RX', comment: null }] },
+      { name: 'GPIO', channels: [{ name: 'IN', comment: 'spare' }] },
+    ];
+    const o = run(mcu, ASSIGN, { hier: true }, ports);
+    expect(o.content).toContain('(hierarchical_label "CMD.TX"');
+    expect(o.content).toContain('(hierarchical_label "GPIO.IN"');
+    // mapped channel: label at the pin AND in the interface column
+    expect((o.content.match(/\(label "CMD\.TX"/g) ?? []).length).toBe(2);
+    // unmapped channel: interface column AND a free drag-target label below it
+    expect((o.content.match(/\(label "GPIO\.IN"/g) ?? []).length).toBe(2);
+    expect((o.content.match(/\(hierarchical_label "GPIO\.IN"/g) ?? []).length).toBe(1);
+    // nc defaults on: all unused GPIO/misc pins get a cross, mapped pins none
+    expect((o.content.match(/\(no_connect/g) ?? []).length).toBeGreaterThan(50);
+    const off = run(mcu, ASSIGN, { hier: false, nc: false });
+    expect(off.content).not.toContain('(hierarchical_label');
+    expect(off.content).not.toContain('(no_connect');
+  });
+
   it('places power symbols, decoupling bank, VCAP caps and crystal', () => {
     const gndCount = (out.content.match(/\(lib_id "power:GND"\)/g) ?? []).length;
     expect(gndCount).toBeGreaterThan(mcu.logicalPins.filter(p => p.name.startsWith('VSS')).length);
@@ -136,5 +169,22 @@ describe('KiCad schematic export', () => {
     expect(o.content).toContain('(lib_id "power:GNDD")');
     expect(o.content).toContain('(symbol "power:+3V3"');
     expect(o.content).not.toContain('(lib_id "power:GND")');
+  });
+});
+
+describe('declaredPortChannels', () => {
+  it('resolves `port X from Y` inheritance, child channels first', () => {
+    const src = [
+      'port ENC0:',
+      '  channel MA = SPI*_SCK',
+      '  channel SL = SPI*_MISO',
+      'port ENC1 from ENC0:',
+      'port ENC2 from ENC0:',
+      '  channel MO_txen = OUT',
+      '',
+    ].join('\n');
+    const m = declaredPortChannels(src);
+    expect(m.get('ENC1')).toEqual(['MA', 'SL']);
+    expect(m.get('ENC2')).toEqual(['MO_txen', 'MA', 'SL']);
   });
 });
