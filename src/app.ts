@@ -296,6 +296,7 @@ export class App implements DataManagerHost {
     });
 
     // Pin assignment popup -> constraint editor
+    this.packageViewer.setConstraintsSource(() => this.constraintEditor.getText());
     this.packageViewer.setPinDeclLookup((pinName) =>
       this.constraintEditor.getPinDeclarationSignal(pinName)
     );

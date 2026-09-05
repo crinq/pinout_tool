@@ -2,6 +2,10 @@ import { pickPrimaryLogical, physicalAssignments } from './pin-render-common';
 import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
 import type { DivergentPin } from '../solution-compare';
 import { downloadBlob, escapeHtml, isGeneralPurposePin } from '../utils';
+import {
+  parseExportParams, loadParamValues, saveParamValues, coerceParamValue, defaultParamValues,
+  type ExportParam, type ExportParamValues,
+} from '../export-params';
 import type { Panel, StateChange, HighlightStyle } from './panel';
 import { parseSearchPattern } from '../parser/constraint-parser';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
@@ -676,7 +680,124 @@ export class PackageViewer implements Panel {
     downloadBlob(json, `${this.mcu.refName}_solution.json`, 'application/json');
   }
 
+  /** Source getter for the constraints text (set by the app). */
+  private constraintsSource: (() => string) | null = null;
+
+  setConstraintsSource(fn: () => string): void {
+    this.constraintsSource = fn;
+  }
+
+  /** Leading `#` comment block of the constraints file, unprefixed. */
+  private constraintsHeader(): string {
+    const src = this.constraintsSource?.() ?? '';
+    const out: string[] = [];
+    for (const line of src.split('\n')) {
+      const t = line.trim();
+      if (t.startsWith('#')) out.push(t.replace(/^#\s?/, ''));
+      else if (t === '' && out.length === 0) continue;
+      else break;
+    }
+    return out.join('\n');
+  }
+
   private executeCustomExport(fn: CustomExportFunction): void {
+    if (!this.mcu || this.assignments.length === 0) return;
+    const params = parseExportParams(fn.code);
+    if (params.length === 0) {
+      this.runCustomExport(fn, {});
+      return;
+    }
+    this.showExportParamsDialog(fn, params);
+  }
+
+  /**
+   * Parameter dialog for an export function that declares `// param:` lines:
+   * one input per parameter (checkbox / dropdown / number / text), doc string
+   * as tooltip, and the user's last values restored from localStorage.
+   */
+  private showExportParamsDialog(fn: CustomExportFunction, params: ExportParam[]): void {
+    const values = loadParamValues(fn.id, params);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'export-overlay';
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    const inputHtml = (p: ExportParam, v: boolean | string | number): string => {
+      switch (p.type) {
+        case 'bool':
+          return `<input type="checkbox" data-param="${escapeHtml(p.key)}" ${v ? 'checked' : ''}/>`;
+        case 'enum':
+          return `<select data-param="${escapeHtml(p.key)}">${p.options!
+            .map(o => `<option value="${escapeHtml(o)}" ${o === v ? 'selected' : ''}>${escapeHtml(o)}</option>`)
+            .join('')}</select>`;
+        case 'int':
+          return `<input type="number" step="1" data-param="${escapeHtml(p.key)}" value="${escapeHtml(String(v))}"/>`;
+        case 'float':
+          return `<input type="number" step="any" data-param="${escapeHtml(p.key)}" value="${escapeHtml(String(v))}"/>`;
+        case 'string':
+          return `<input type="text" data-param="${escapeHtml(p.key)}" value="${escapeHtml(String(v))}"/>`;
+      }
+    };
+
+    const modal = document.createElement('div');
+    modal.className = 'export-modal export-params-modal';
+    modal.innerHTML = `
+      <div class="export-header">
+        <strong>${escapeHtml(fn.name)}</strong>
+        <button class="btn btn-small ep-cancel">Cancel</button>
+      </div>
+      <div class="export-body">
+        ${params.map(p => `
+          <label class="ep-row" title="${escapeHtml(p.doc)}">
+            <span class="ep-label">${escapeHtml(p.label)}</span>
+            ${inputHtml(p, values[p.key])}
+          </label>`).join('')}
+        <div class="ep-buttons">
+          <button class="btn btn-small ep-restore" title="Reset every parameter to its declared default">Restore defaults</button>
+          <span class="ep-spacer"></span>
+          <button class="btn btn-small ep-cancel">Cancel</button>
+          <button class="btn btn-small btn-primary ep-ok">OK</button>
+        </div>
+      </div>
+    `;
+
+    const inputFor = (p: ExportParam): HTMLInputElement | HTMLSelectElement =>
+      modal.querySelector(`[data-param="${CSS.escape(p.key)}"]`)!;
+
+    const setInputs = (vals: ExportParamValues): void => {
+      for (const p of params) {
+        const el = inputFor(p);
+        if (p.type === 'bool') (el as HTMLInputElement).checked = vals[p.key] as boolean;
+        else el.value = String(vals[p.key]);
+      }
+    };
+
+    const readInputs = (): ExportParamValues => {
+      const out: ExportParamValues = {};
+      for (const p of params) {
+        const el = inputFor(p);
+        const raw = p.type === 'bool' ? (el as HTMLInputElement).checked : el.value;
+        out[p.key] = coerceParamValue(p, raw) ?? p.default;
+      }
+      return out;
+    };
+
+    modal.querySelectorAll('.ep-cancel').forEach(b => b.addEventListener('click', () => overlay.remove()));
+    modal.querySelector('.ep-restore')!.addEventListener('click', () => setInputs(defaultParamValues(params)));
+    modal.querySelector('.ep-ok')!.addEventListener('click', () => {
+      const vals = readInputs();
+      saveParamValues(fn.id, vals);
+      overlay.remove();
+      this.runCustomExport(fn, vals);
+    });
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+  }
+
+  private runCustomExport(fn: CustomExportFunction, paramValues: ExportParamValues): void {
     if (!this.mcu || this.assignments.length === 0) return;
 
     const mcu = this.mcu;
@@ -721,6 +842,8 @@ export class PackageViewer implements Panel {
       })),
       peripherals: mcu.peripherals,
       pinComments,
+      docs: mcu.docs ?? null,
+      constraintsHeader: this.constraintsHeader(),
       pins: mcu.logicalPins.map(p => ({
         name: p.name,
         position: p.physical.position,
@@ -740,12 +863,14 @@ export class PackageViewer implements Panel {
 
     try {
       const executor = new Function(
-        'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments',
+        'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
+        'docs', 'constraintsHeader',
         fn.code,
       );
       const result = executor(
         context.mcuName, context.mcuPackage, context.assignments,
         context.peripherals, context.pins, context.ports, context.pinComments,
+        paramValues, context.docs, context.constraintsHeader,
       );
 
       if (typeof result === 'string') {

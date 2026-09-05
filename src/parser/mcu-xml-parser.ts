@@ -235,7 +235,9 @@ export function parseMcuXml(xmlString: string): Mcu {
     // analog (ADC) channels. Keep them as separate logical pins with only analog signals.
     const isCPin = /^P[A-Z]\d+_C$/.test(rawName);
     const gpioMatch = rawName.match(/^(P[A-Z]\d+)/);
-    const name = isCPin ? rawName : (gpioMatch ? gpioMatch[1] : rawName.split('-')[0]);
+    // Strip "-SUFFIX" decorations (e.g. "PH3-BOOT0"), but keep a bare trailing
+    // "-" — it is part of the name for pins like "VREF-".
+    const name = isCPin ? rawName : (gpioMatch ? gpioMatch[1] : (/-.+$/.test(rawName) ? rawName.split('-')[0] : rawName));
 
     const signals: Signal[] = [];
     const signalEls = pinEl.querySelectorAll('Signal');

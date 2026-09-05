@@ -1353,6 +1353,33 @@ Create custom export functions via the Data Manager to generate any output forma
 - `pins` -- array with pin details and all available signals
 - `ports` -- array of `{name, color, comment, channels: [{name, comment}], configurations}`
 - `pinComments` -- object `{pinName: comment}` from `pin` declarations
+- `params` -- object `{key: value}` of the function's user-set parameters (see below)
+- `docs` -- MCU documentation links `{datasheet?, refmanual?, errata?}` or `null`
+- `constraintsHeader` -- leading `#` comment block of the constraints file (without `#`), or `null`
+
+#### Export Parameters
+
+An export function can declare user-adjustable parameters as comment lines in its code:
+
+```
+// param: <key> <type> = <default> | <Label> | <doc string>
+```
+
+`<type>` is one of `bool`, `string`, `int`, `float`, or `enum(option1,option2,…)`:
+
+```
+// param: header bool = true | Header row | Include the MCU name and column headers
+// param: fmt enum(csv,tsv,md) = csv | Format | Output format of the table
+// param: sep string = , | Separator | Column separator character
+// param: width int = 20 | Column width | Pad columns to this many characters
+```
+
+When a function with parameters is invoked from the Export modal, a dialog shows one
+input per parameter (checkbox for `bool`, dropdown for `enum`, number/text fields
+otherwise) with the label next to it and the doc string as tooltip. **OK** runs the
+export with the chosen values, **Cancel** aborts, **Restore defaults** resets the
+inputs to the declared defaults. The last-used values are remembered per function
+in the browser. Functions without `param:` lines run immediately, as before.
 
 Inline `#` comments on `port`, `channel`, and `pin` declarations are forwarded to the export function:
 

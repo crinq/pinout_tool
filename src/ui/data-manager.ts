@@ -641,7 +641,14 @@ pins        - Array of {name, position, type, gpioPort,
 ports       - Array of {name, color, comment,
               channels:[{name, comment}],
               configurations:[]}
-pinComments - Object {pinName: comment} from pin decls</pre>
+pinComments - Object {pinName: comment} from pin decls
+params      - Object {key: value} of your declared parameters
+docs        - {datasheet, refmanual, errata} URLs or null
+constraintsHeader - leading # comment block of the constraints</pre>
+            <strong>Parameters:</strong> declare with comment lines; the user
+            gets an input dialog before the export runs (last values are remembered):
+            <pre>// param: &lt;key&gt; &lt;bool|string|int|float&gt; = &lt;default&gt; | &lt;Label&gt; | &lt;doc&gt;
+// param: fmt enum(csv,tsv,md) = csv | Format | Output format</pre>
             <strong>Return value:</strong>
             <pre>return "text"  → copies to clipboard
 return {filename:"f.csv", content:"...", mimeType:"text/csv"}
@@ -671,7 +678,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
         try {
           const code = codeEl.value;
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', code);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', code);
           errorEl.style.display = '';
           errorEl.style.color = 'var(--success)';
           errorEl.textContent = 'Syntax OK';
@@ -697,7 +704,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         }
 
         try {
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', codeVal);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', codeVal);
         } catch (err) {
           errorEl.style.display = '';
           errorEl.style.color = 'var(--error)';

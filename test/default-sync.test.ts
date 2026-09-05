@@ -45,7 +45,8 @@ describe('syncDefaults', () => {
   it('seeds a fresh install with no pending updates', async () => {
     expect(await syncDefaults()).toEqual([]);
     expect(await kv.get('macro-library')).toBe(MACRO.text);
-    expect((await loadCustomExports()).map(f => f.id)).toEqual(DEFAULT_EXPORTS.map(f => f.id));
+    // loadCustomExports sorts by display name, DEFAULT_EXPORTS by id — compare as sets.
+    expect((await loadCustomExports()).map(f => f.id).sort()).toEqual(DEFAULT_EXPORTS.map(f => f.id).sort());
   });
 
   it('is idempotent', async () => {

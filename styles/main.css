@@ -1241,6 +1241,54 @@
   cursor: default;
 }
 
+/* Export parameter dialog */
+.export-params-modal .export-body {
+  padding: 10px 14px;
+}
+
+.ep-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 0;
+  font-size: 12px;
+  cursor: help;
+}
+
+.ep-label {
+  color: var(--text-primary);
+}
+
+.ep-row input[type="text"],
+.ep-row input[type="number"],
+.ep-row select {
+  width: 160px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.ep-row input[type="number"] {
+  width: 80px;
+}
+
+.ep-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ep-spacer {
+  flex: 1;
+}
+
 .export-option-title {
   font-size: 13px;
   font-weight: 600;
