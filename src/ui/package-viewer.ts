@@ -627,6 +627,22 @@ export class PackageViewer implements Panel {
     downloadBlob(svg, `${this.mcu.refName}_pinout.svg`, 'image/svg+xml');
   }
 
+  /** Declared `PORT.CHANNEL`s without a pin assignment, in declaration order. */
+  private unmappedChannels(): string[] {
+    const mapped = new Set(this.assignments
+      .filter(a => a.portName !== '<pinned>')
+      .map(a => `${a.portName}.${a.channelName}`));
+    const out: string[] = [];
+    try {
+      for (const [port, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
+        for (const ch of chs) {
+          if (!mapped.has(`${port}.${ch}`)) out.push(`${port}.${ch}`);
+        }
+      }
+    } catch { /* unparsable constraints */ }
+    return out;
+  }
+
   private exportText(): void {
     if (!this.mcu || this.assignments.length === 0) return;
 
@@ -658,6 +674,12 @@ export class PackageViewer implements Panel {
     lines.push(w.map(n => '-'.repeat(n)).join('  '));
     for (const r of rows) {
       lines.push(r.map((c, i) => c.padEnd(w[i])).join('  '));
+    }
+
+    const unmapped = this.unmappedChannels();
+    if (unmapped.length > 0) {
+      lines.push('', 'Unmapped channels:');
+      for (const ch of unmapped) lines.push(`  ${ch}`);
     }
 
     const text = lines.join('\n') + '\n';
@@ -698,6 +720,7 @@ export class PackageViewer implements Panel {
         return entry;
       }),
       portColors: Object.fromEntries(this.portColors),
+      unmappedChannels: this.unmappedChannels(),
     };
 
     const json = JSON.stringify(data, null, 2);

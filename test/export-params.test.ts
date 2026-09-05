@@ -98,7 +98,7 @@ describe('end to end: built-in example export', () => {
     const params = parseExportParams(fn.code);
     expect(params.map(p => p.key)).toEqual(['sortby', 'header']);
 
-    const run = (values: Record<string, unknown>): string => {
+    const run = (values: Record<string, unknown>, ports: object[] = []): string => {
       const exec = new Function(
         'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
         fn.code,
@@ -109,7 +109,7 @@ describe('end to end: built-in example export', () => {
           { pinName: 'PB1', signalName: 'USART1_RX', portName: 'U', channelName: 'RX', configurationName: 'c' },
           { pinName: 'PA9', signalName: 'USART1_TX', portName: 'U', channelName: 'TX', configurationName: 'c' },
         ],
-        [], [], [], {}, values,
+        [], [], ports, {}, values,
       ) as string;
     };
 
@@ -124,5 +124,15 @@ describe('end to end: built-in example export', () => {
     expect(bare).not.toContain('Pin ');
     // port order: U.RX (PB1) before U.TX (PA9)
     expect(bare.indexOf('PB1')).toBeLessThan(bare.indexOf('PA9'));
+
+    // declared-but-unmapped channels are listed; mapped ones are not repeated
+    const withPorts = run(defaultParamValues(params), [
+      { name: 'U', channels: [{ name: 'RX' }, { name: 'TX' }] },
+      { name: 'GPIO', channels: [{ name: 'IN' }, { name: 'OUT' }] },
+    ]);
+    expect(withPorts).toContain('Unmapped channels:');
+    expect(withPorts).toContain('GPIO.IN');
+    expect(withPorts).toContain('GPIO.OUT');
+    expect((withPorts.match(/U\.RX/g) ?? []).length).toBe(1);
   });
 });

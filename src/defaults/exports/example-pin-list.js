@@ -32,4 +32,17 @@ for (const r of rows) {
   lines.push([r.pin.padEnd(w[0]), r.port.padEnd(w[1]), [...r.signals].join(', ')].join('  '));
 }
 
+// Channels declared in the constraints that got no pin (e.g. skipped GPIO)
+const mapped = new Set(assignments.map(a => a.portName + '.' + a.channelName));
+const unmapped = [];
+for (const port of (ports || [])) {
+  for (const ch of (port.channels || [])) {
+    if (!mapped.has(port.name + '.' + ch.name)) unmapped.push(port.name + '.' + ch.name);
+  }
+}
+if (unmapped.length > 0) {
+  lines.push('', 'Unmapped channels:');
+  for (const ch of unmapped) lines.push('  ' + ch);
+}
+
 return lines.join('\n');
