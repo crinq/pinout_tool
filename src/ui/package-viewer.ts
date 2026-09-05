@@ -1,7 +1,7 @@
 import { pickPrimaryLogical, physicalAssignments } from './pin-render-common';
 import type { Mcu, LogicalPin, PhysicalPin, Assignment, CompatibilityResult, CustomExportFunction, Solution } from '../types';
 import type { DivergentPin } from '../solution-compare';
-import { downloadBlob, escapeHtml, isGeneralPurposePin } from '../utils';
+import { downloadBlob, escapeHtml, isGeneralPurposePin, mcuInfoLine } from '../utils';
 import {
   parseExportParams, loadParamValues, saveParamValues, coerceParamValue, defaultParamValues,
   type ExportParam, type ExportParamValues,
@@ -844,6 +844,7 @@ export class PackageViewer implements Panel {
       pinComments,
       docs: mcu.docs ?? null,
       constraintsHeader: this.constraintsHeader(),
+      mcuInfo: mcuInfoLine(mcu),
       pins: mcu.logicalPins.map(p => ({
         name: p.name,
         position: p.physical.position,
@@ -864,13 +865,13 @@ export class PackageViewer implements Panel {
     try {
       const executor = new Function(
         'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
-        'docs', 'constraintsHeader',
+        'docs', 'constraintsHeader', 'mcuInfo',
         fn.code,
       );
       const result = executor(
         context.mcuName, context.mcuPackage, context.assignments,
         context.peripherals, context.pins, context.ports, context.pinComments,
-        paramValues, context.docs, context.constraintsHeader,
+        paramValues, context.docs, context.constraintsHeader, context.mcuInfo,
       );
 
       if (typeof result === 'string') {

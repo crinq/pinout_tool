@@ -970,7 +970,9 @@ function powerDef(def, stockName, userName) {
             .split('\\"' + stockName + '\\"').join('\\"' + esc(userName) + '\\"');
 }
 
-// Best-effort KiCad footprint from the vendor package name.
+// Best-effort KiCad footprint from the vendor package name (stock lib names;
+// the "footprint" param overrides). BGA counts follow ST's "+25" convention
+// where the KiCad layout includes the extra center balls.
 function kicadFootprint(pkg) {
   const m = /^LQFP(\d+)$/.exec(pkg);
   if (m) {
@@ -978,7 +980,21 @@ function kicadFootprint(pkg) {
     const s = sizes[m[1]];
     if (s) return 'Package_QFP:LQFP-' + m[1] + '_' + s[0] + 'mm_P' + s[1] + 'mm';
   }
-  return '';
+  const table = {
+    UFQFPN32: 'Package_DFN_QFN:UFQFPN-32-1EP_5x5mm_P0.5mm_EP3.5x3.5mm',
+    UFQFPN48: 'Package_DFN_QFN:UFQFPN-48-1EP_7x7mm_P0.5mm_EP5.6x5.6mm',
+    UFBGA64: 'Package_BGA:UFBGA-64_5x5mm_Layout8x8_P0.5mm',
+    UFBGA100: 'Package_BGA:UFBGA-100_7x7mm_Layout12x12_P0.5mm',
+    UFBGA132: 'Package_BGA:UFBGA-132_7x7mm_Layout12x12_P0.5mm',
+    UFBGA144: 'Package_BGA:UFBGA-144_7x7mm_Layout12x12_P0.5mm',
+    UFBGA169: 'Package_BGA:UFBGA-169_7x7mm_Layout13x13_P0.5mm',
+    UFBGA176: 'Package_BGA:UFBGA-201_10x10mm_Layout15x15_P0.65mm',
+    TFBGA64: 'Package_BGA:TFBGA-64_5x5mm_Layout8x8_P0.5mm',
+    TFBGA100: 'Package_BGA:TFBGA-100_8x8mm_Layout10x10_P0.8mm',
+    TFBGA216: 'Package_BGA:TFBGA-216_13x13mm_Layout15x15_P0.8mm',
+    TFBGA240: 'Package_BGA:TFBGA-265_14x14mm_Layout17x17_P0.8mm',
+  };
+  return table[pkg] || '';
 }
 
 // ---------------------------------------------------------------
@@ -1145,7 +1161,10 @@ for (const [h, vis] of stackAt) {
 
 const mcuLibId = 'pinout_tool:' + mcuName;
 const datasheet = (typeof docs === 'object' && docs && docs.datasheet) ? docs.datasheet : '';
-const description = (typeof constraintsHeader === 'string' ? constraintsHeader : '').split('\n')[0] || '';
+// MCU summary line (as shown in the app header); constraints doc header as fallback.
+const description = (typeof mcuInfo === 'string' && mcuInfo)
+  ? mcuInfo
+  : ((typeof constraintsHeader === 'string' ? constraintsHeader : '').split('\n')[0] || '');
 const fpProp = params.footprint || kicadFootprint(mcuPackage);
 
 const prop = (name, value, px, py, hide) =>
@@ -1201,8 +1220,9 @@ function placeSymbol(libId, ref, value, x, y, pinNums, opts) {
     + '\t\t(uuid "' + uuid() + '")\n'
     + iprop('Reference', ref, refAt[0], refAt[1], ref.startsWith('#'), refAt[2]) + '\n'
     + iprop('Value', value, valAt[0], valAt[1], false, valAt[2]) + '\n'
-    + iprop('Footprint', '', x, y, true) + '\n'
-    + iprop('Datasheet', '', x, y, true) + '\n'
+    + iprop('Footprint', o.footprint || '', x, y, true) + '\n'
+    + iprop('Datasheet', o.datasheet || '', x, y, true) + '\n'
+    + iprop('Description', o.description || '', x, y, false) + '\n'
     + pinLines + '\n'
     + instBlock(ref) + '\n\t)');
 }
@@ -1249,7 +1269,8 @@ for (const [pinName, a] of assignByPin) {
     pinAlt.set(String(pad.number), a.signalName);
   }
 }
-placeSymbol(mcuLibId, 'U1', mcuName, MX, MY, [...pads.values()].map(p => p.number), { pinAlt });
+placeSymbol(mcuLibId, 'U1', mcuName, MX, MY, [...pads.values()].map(p => p.number),
+  { pinAlt, footprint: fpProp, datasheet, description });
 
 // sheet-coordinate connection point of a pad (lib y flips)
 const padXY = (pad) => {
@@ -1314,11 +1335,20 @@ if (params.power) {
 for (const pad of groups.vcap) pinLabel(pad, pad.names[0]);
 
 // --- support bank: decoupling / VCAP / NRST / BOOT0 --------------
-// Parts are arranged in rows below the MCU: net on top, part, GND below,
-// everything joined by short stub wires on the grid.
-const bankX0 = mm(MX - halfW - 1.27);
-const row0Y = mm(MY - bodyBot + PIN_LEN + P + 26.67);
-const ROW_DY = 31.75, COL_DX = 10.16, MAX_COLS = 22;
+// Parts are arranged in rows to the right of the MCU (clear of the right-edge
+// labels and comments): net on top, part, GND below, everything joined by
+// short stub wires on the grid.
+let rightExtent = MX + halfW + PIN_LEN + P;
+for (const [pinName, a] of assignByPin) {
+  const pad = padByLogical.get(pinName);
+  if (!pad || pinSheet.get(pad.number).edge !== 180) continue;
+  let e = MX + halfW + PIN_LEN + P + textW(labelFor(a));
+  if (a.channelComment) e += 2 * P + textW(a.channelComment);
+  if (e > rightExtent) rightExtent = e;
+}
+const bankX0 = mm(Math.ceil((rightExtent + 2 * P) / 1.27) * 1.27);
+const row0Y = mm(MY - bodyTop + 12.7);       // first row starts at the MCU's top edge
+const ROW_DY = 31.75, COL_DX = 10.16, MAX_COLS = 8;
 let col = 0, row = 0;
 const nextCol = () => {
   if (col >= MAX_COLS) { col = 0; row++; }

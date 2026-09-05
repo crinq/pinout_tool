@@ -1,6 +1,11 @@
 export { escapeHtml, escapeRegex } from '../ts_lib/src/utils';
 import { createModal as _createModal } from '../ts_lib/src/utils';
-import type { LogicalPin } from './types';
+import type { LogicalPin, Mcu } from './types';
+
+/** One-line MCU summary, as shown in the header bar and given to exports. */
+export function mcuInfoLine(mcu: Mcu): string {
+  return `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+}
 
 /**
  * Whether a pin is a general-purpose I/O the user can freely spend.

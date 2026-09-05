@@ -38,7 +38,7 @@ import { initTheme, cycleThemeMode, getThemeMode, themeModeLabel, onThemeChange 
 import { seedMacroLibrary, primeStdlibSource } from './parser/stdlib-macros';
 import { seedPeripheralLibrary, primePeripheralSource } from './parser/peripheral-lib';
 
-import { escapeHtml as escHtml, createModal, downloadBlob } from './utils';
+import { escapeHtml as escHtml, createModal, downloadBlob, mcuInfoLine } from './utils';
 import { PARSE_DEBOUNCE_MS } from './ui/constraint-editor';
 import { getTutorialSteps } from './ui/tutorial-steps';
 import { DataManager, type DataManagerHost } from './ui/data-manager';
@@ -2059,7 +2059,7 @@ export class App implements DataManagerHost {
   private setMcuHeader(mcu: Mcu): void {
     const mcuInfo = document.getElementById('mcu-info');
     if (mcuInfo) {
-      mcuInfo.textContent = `${mcu.refName} | ${mcu.package} | ${mcu.cores.join(' + ')} @ ${mcu.frequency}MHz | ${mcu.flash}KB Flash | ${mcu.ram}KB RAM`;
+      mcuInfo.textContent = mcuInfoLine(mcu);
     }
   }
 

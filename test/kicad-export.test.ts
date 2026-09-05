@@ -18,7 +18,7 @@ const params = parseExportParams(fnSource);
 function run(mcu: Mcu, assignments: object[], overrides: Record<string, unknown> = {}) {
   const exec = new Function(
     'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
-    'docs', 'constraintsHeader',
+    'docs', 'constraintsHeader', 'mcuInfo',
     fnSource,
   );
   const pins = mcu.logicalPins.map(p => ({
@@ -33,6 +33,7 @@ function run(mcu: Mcu, assignments: object[], overrides: Record<string, unknown>
     mcu.refName, mcu.package, assignments, mcu.peripherals, pins, [], {},
     { ...defaultParamValues(params), ...overrides },
     { datasheet: 'https://example.com/ds.pdf' }, 'servo drive controller\nsecond line',
+    `${mcu.refName} | ${mcu.package} | 168MHz`,
   ) as { filename: string; content: string; mimeType: string };
 }
 
@@ -79,7 +80,8 @@ describe('KiCad schematic export', () => {
     expect(out.content).toContain(`(symbol "pinout_tool:${mcu.refName}"`);
     expect(out.content).toContain(`(property "Value" "${mcu.refName}"`);
     expect(out.content).toContain('(property "Datasheet" "https://example.com/ds.pdf"');
-    expect(out.content).toContain('(property "Description" "servo drive controller"');
+    // Description carries the MCU summary line; constraints header is the fallback.
+    expect(out.content).toContain(`(property "Description" "${mcu.refName} | ${mcu.package} | 168MHz"`);
     expect(out.content).toContain('(property "Footprint" "Package_QFP:LQFP-100_14x14mm_P0.5mm"');
   });
 

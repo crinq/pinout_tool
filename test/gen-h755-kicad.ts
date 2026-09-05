@@ -16,7 +16,7 @@ const params = parseExportParams(fnSource);
 
 const exec = new Function(
   'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
-  'docs', 'constraintsHeader',
+  'docs', 'constraintsHeader', 'mcuInfo',
   fnSource,
 );
 const pins = mcu.logicalPins.map(p => ({
@@ -37,6 +37,6 @@ if (oscIn && oscOut) {
   );
 }
 const out = exec(mcu.refName, mcu.package, assignments, mcu.peripherals, pins, [], {},
-  defaultParamValues(params), null, 'test header');
+  defaultParamValues(params), null, 'test header', `${mcu.refName} | ${mcu.package} | 480MHz`);
 writeFileSync(join(process.cwd(), 'node_modules/.cache/h755-sample.kicad_sch'), out.content);
 console.log('written', out.filename, out.content.length, 'osc:', oscIn?.name, oscOut?.name);

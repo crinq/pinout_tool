@@ -1356,6 +1356,7 @@ Create custom export functions via the Data Manager to generate any output forma
 - `params` -- object `{key: value}` of the function's user-set parameters (see below)
 - `docs` -- MCU documentation links `{datasheet?, refmanual?, errata?}` or `null`
 - `constraintsHeader` -- leading `#` comment block of the constraints file (without `#`), or `null`
+- `mcuInfo` -- one-line MCU summary as shown in the header bar (name | package | cores @ MHz | flash | RAM)
 
 #### Export Parameters
 

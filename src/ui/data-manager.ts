@@ -644,7 +644,8 @@ ports       - Array of {name, color, comment,
 pinComments - Object {pinName: comment} from pin decls
 params      - Object {key: value} of your declared parameters
 docs        - {datasheet, refmanual, errata} URLs or null
-constraintsHeader - leading # comment block of the constraints</pre>
+constraintsHeader - leading # comment block of the constraints
+mcuInfo     - one-line MCU summary (name | package | cores | flash | ram)</pre>
             <strong>Parameters:</strong> declare with comment lines; the user
             gets an input dialog before the export runs (last values are remembered):
             <pre>// param: &lt;key&gt; &lt;bool|string|int|float&gt; = &lt;default&gt; | &lt;Label&gt; | &lt;doc&gt;
@@ -678,7 +679,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         const errorEl = modal.querySelector('#export-editor-error') as HTMLElement;
         try {
           const code = codeEl.value;
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', code);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', 'mcuInfo', code);
           errorEl.style.display = '';
           errorEl.style.color = 'var(--success)';
           errorEl.textContent = 'Syntax OK';
@@ -704,7 +705,7 @@ return {filename:"f.csv", content:"...", mimeType:"text/csv"}
         }
 
         try {
-          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', codeVal);
+          new Function('mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params', 'docs', 'constraintsHeader', 'mcuInfo', codeVal);
         } catch (err) {
           errorEl.style.display = '';
           errorEl.style.color = 'var(--error)';
