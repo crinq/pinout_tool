@@ -1156,8 +1156,14 @@ export class PackageViewer implements Panel {
     // Left side: top→bottom, Bottom side: left→right, Right side: bottom→top, Top side: right→left
     this.pinRects = [];
 
-    // Sort physicals by position
-    const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+    // Sort physicals by position. Pins past the perimeter count (or with a
+    // non-numeric position) are not perimeter pins — QFN-style data ships the
+    // exposed center pad that way (e.g. position "49" on a UFQFPN48).
+    const posNum = (p: PhysicalPin) => parseInt(p.position, 10);
+    const sortedPins = mcu.physicalPins
+      .filter(p => Number.isFinite(posNum(p)) && posNum(p) <= packagePinCount)
+      .sort((a, b) => posNum(a) - posNum(b));
+    const centerPad = mcu.physicalPins.find(p => !sortedPins.includes(p));
 
     for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
       const phys = sortedPins[i];
@@ -1312,6 +1318,54 @@ export class PackageViewer implements Panel {
 
       ctx.fillText(label, 0, 0);
       ctx.restore();
+    }
+
+    // Exposed center pad (QFN-style packages, when present in the data).
+    if (centerPad && /QFN|QFPN|DFN/i.test(mcu.package)) {
+      const phys = centerPad;
+      const primary = pickPrimaryLogical(phys, assignmentsByPin);
+      const padSize = Math.max(28, chipSize * 0.4);
+      const px = chipX + (chipSize - padSize) / 2;
+      const py = chipY + (chipSize - padSize) / 2;
+
+      const pinAssignments = physicalAssignments(phys, assignmentsByPin);
+      const hl = phys.logicals.map(l => this.getPinHighlight(l.name)).find(h => h) ?? null;
+      let fillColor: string;
+      if (this.hoveredPhys === phys) fillColor = '#fbbf24';
+      else if (this.selectedPhys === phys) fillColor = '#f97316';
+      else if (pinAssignments.length > 0 && phys.logicals.some(l => this.isIncompatiblePin(l.name))) fillColor = this.theme.conflict;
+      else if (pinAssignments.length > 0) {
+        const portName = pinAssignments.find(a => a.portName !== '<pinned>')?.portName;
+        fillColor = (portName ? this.portColors.get(portName) : undefined) || this.theme.assigned;
+      } else if (!phys.logicals.some(isGeneralPurposePin)) fillColor = this.theme.reserved;
+      else fillColor = this.theme.unassigned;
+
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(px, py, padSize, padSize);
+      if (hl?.color) {
+        this.pendingRings.push({ kind: 'rect', x: px, y: py, a: padSize, b: padSize, color: hl.color, style: hl.style });
+      } else {
+        ctx.strokeStyle = this.theme.text;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(px, py, padSize, padSize);
+      }
+
+      // The pad covers the chip center: redraw the name on top, plus the
+      // pad's own designator along its lower edge.
+      ctx.fillStyle = this.theme.text;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(mcu.refName, chipX + chipSize / 2, chipY + chipSize / 2 - 8);
+      ctx.font = '10px monospace';
+      ctx.fillText(mcu.package, chipX + chipSize / 2, chipY + chipSize / 2 + 8);
+      ctx.font = '9px monospace';
+      ctx.fillText(`${primary.name} ${phys.position}`, chipX + chipSize / 2, py + padSize - 8);
+
+      this.pinRects.push({
+        x: px, y: py, width: padSize, height: padSize, phys, primary,
+        labelX: chipX + chipSize / 2, labelY: py + padSize - 8, labelRotation: 0, side: 'left',
+      });
     }
   }
 

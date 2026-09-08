@@ -301,6 +301,32 @@ export function parseMcuXml(xmlString: string): Mcu {
     logicalPins.push(logical);
   }
 
+  // ST XMLs omit the exposed center pad on QFN-style packages. Synthesize it
+  // as a ground pin one past the perimeter count (the -1EP footprint pad
+  // number) so the viewer and the exports can show it.
+  const perimMatch = packageName.match(/(\d+)/);
+  const perimCount = perimMatch ? parseInt(perimMatch[1], 10) : 0;
+  if (/QFN|QFPN|DFN/i.test(packageName) && perimCount > 0) {
+    const hasPad = [...physicalPinByPosition.keys()]
+      .some(pos => !Number.isFinite(parseInt(pos, 10)) || parseInt(pos, 10) > perimCount);
+    if (!hasPad) {
+      const position = String(perimCount + 1);
+      const physical: PhysicalPin = { position, logicals: [] };
+      const logical: LogicalPin = {
+        name: 'VSS',
+        type: 'Power',
+        signals: [],
+        isAssignable: false,
+        isDefaultVariant: true,
+        variantGroup: undefined,
+        physical,
+      };
+      physical.logicals.push(logical);
+      physicalPinByPosition.set(position, physical);
+      logicalPins.push(logical);
+    }
+  }
+
   const physicalPins = Array.from(physicalPinByPosition.values());
 
   // Build derived lookup tables

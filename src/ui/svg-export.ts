@@ -189,9 +189,26 @@ function renderLQFPSvg(opts: SvgExportOptions): string {
   parts.push(`<text x="${cx}" y="${cy - 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-weight="bold" font-size="11" fill="${colors.text}">${esc(mcu.refName)}</text>`);
   parts.push(`<text x="${cx}" y="${cy + 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="10" fill="${colors.text}">${esc(mcu.package)}</text>`);
 
-  // Pins
-  const sortedPins = [...mcu.physicalPins].sort((a, b) => parseInt(a.position, 10) - parseInt(b.position, 10));
+  // Pins. Positions past the perimeter count (or non-numeric) are not
+  // perimeter pins — QFN-style data ships the exposed center pad that way.
+  const posNum = (p: PhysicalPin) => parseInt(p.position, 10);
+  const sortedPins = mcu.physicalPins
+    .filter(p => Number.isFinite(posNum(p)) && posNum(p) <= packagePinCount)
+    .sort((a, b) => posNum(a) - posNum(b));
+  const centerPad = mcu.physicalPins.find(p => !sortedPins.includes(p));
   const fontSize = Math.min(9, pinSpacing * 0.65);
+
+  if (centerPad && /QFN|QFPN|DFN/i.test(mcu.package)) {
+    const padSize = Math.max(28, chipSize * 0.4);
+    const px = chipX + (chipSize - padSize) / 2;
+    const py = chipY + (chipSize - padSize) / 2;
+    const fill = pinColor(centerPad, assignmentsByPin, portColors, colors);
+    parts.push(`<rect x="${px}" y="${py}" width="${padSize}" height="${padSize}" fill="${fill}" stroke="${colors.text}" stroke-width="0.5"/>`);
+    // pad covers the chip center: redraw the name on top + pad designator
+    parts.push(`<text x="${cx}" y="${cy - 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-weight="bold" font-size="11" fill="${colors.text}">${esc(mcu.refName)}</text>`);
+    parts.push(`<text x="${cx}" y="${cy + 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="10" fill="${colors.text}">${esc(mcu.package)}</text>`);
+    parts.push(`<text x="${cx}" y="${py + padSize - 8}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="9" fill="${colors.text}">${esc(`${centerPad.logicals[0]?.name ?? ''} ${centerPad.position}`)}</text>`);
+  }
 
   for (let i = 0; i < sortedPins.length && i < packagePinCount; i++) {
     const phys = sortedPins[i];
