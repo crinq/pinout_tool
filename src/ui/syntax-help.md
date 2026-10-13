@@ -171,9 +171,16 @@ channel D{0-7}  = FMC_D{7-0}              # descending
 channel LED{01-12} = OUT                  # zero-padded: LED01 ... LED12
 require same_instance(A{0-1}, D{0-1})     # one require per copy
 uart_port(TX{1-2}, RX{1-2})               # one macro call per copy
+
+port ENC{0-3}:                            # copies the whole port block
+  channel A
+  channel B
+  channel IDX{0-1}                        # each port gets IDX0, IDX1
+
+port M{0-2} from encoder_port color "{red, green, blue}"
 ```
 
-Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. Allowed on channel, mapping, `require` and macro call lines only. `{0-3}` makes four lines; `[0-3]` in a signal pattern makes one line that matches any of four.
+Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. Allowed on port, channel, mapping, `require` and macro call lines only. A ranged port copies its body unchanged; ranges inside the body expand within each copy. `{0-3}` makes four lines; `[0-3]` in a signal pattern makes one line that matches any of four.
 
 ### Built-in Functions
 

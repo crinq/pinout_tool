@@ -142,30 +142,11 @@ function collectDefs(
       continue;
     }
 
-    const [, indent, name, rawParams] = header;
+    const [, , name, rawParams] = header;
     const params = rawParams.trim() === ''
       ? []
       : rawParams.split(',').map(p => p.trim()).filter(p => p !== '');
-    const headerIndent = indent.length;
-
-    // Body: every following line indented deeper than the header. Blank lines
-    // belong to the body only when a deeper line follows them, so trailing
-    // blanks are not dragged in.
-    const body: SourceLine[] = [];
-    let j = i + 1;
-    let pendingBlanks: SourceLine[] = [];
-    while (j < lines.length) {
-      const line = lines[j];
-      if (isBlank(line.text)) {
-        pendingBlanks.push(line);
-        j++;
-        continue;
-      }
-      if (indentOf(line.text) <= headerIndent) break;
-      body.push(...pendingBlanks, line);
-      pendingBlanks = [];
-      j++;
-    }
+    const { body, next } = blockAt(lines, i);
 
     if (body.length === 0) {
       errors.push({
@@ -185,10 +166,35 @@ function collectDefs(
       line: fromLibrary ? 0 : lines[i].line,
     });
 
-    i = j - 1;
+    i = next - 1;
   }
 
   return { defs, rest };
+}
+
+/**
+ * The block under the header `lines[i]`: every following line indented deeper
+ * than it. Blank lines belong to the body only when a deeper line follows
+ * them, so trailing blanks are not dragged in. `next` is the index after it.
+ */
+function blockAt(lines: SourceLine[], i: number): { body: SourceLine[]; next: number } {
+  const headerIndent = indentOf(lines[i].text);
+  const body: SourceLine[] = [];
+  let j = i + 1;
+  let pendingBlanks: SourceLine[] = [];
+  while (j < lines.length) {
+    const line = lines[j];
+    if (isBlank(line.text)) {
+      pendingBlanks.push(line);
+      j++;
+      continue;
+    }
+    if (indentOf(line.text) <= headerIndent) break;
+    body.push(...pendingBlanks, line);
+    pendingBlanks = [];
+    j++;
+  }
+  return { body, next: j };
 }
 
 // ------------------------------------------------------------
@@ -279,15 +285,16 @@ function balanced(raw: string): boolean {
 //
 // Items are numeric ranges (`0-12`, descending `7-0`, zero-padded
 // `00-15`), letter ranges (`A-H`) or literal names, mixed freely:
-// `{TX, RX, 0-1}` is 4 values. Only channel, mapping, require and macro
-// call lines take ranges — a block header would be copied without its body. `${...}` (macro parameters, comment
+// `{TX, RX, 0-1}` is 4 values. Only port, channel, mapping, require and
+// macro call lines take ranges. A port header copies its whole block; config
+// and group headers are refused, as they would be copied without their body. `${...}` (macro parameters, comment
 // interpolation) is never a range.
 // ------------------------------------------------------------
 
 const RANGE_GROUP = /(?<!\$)\{([^{}]*)\}/g;
 
-/** Lines a range may stand on: `channel ...`, `require ...`, `NAME = ...` / `NAME ?= ...`, `macro(args)`. */
-const RANGE_LINE = /^(?:channel|require)\b|^\w+\s*\??=(?!=)|^\w+\s*\(/;
+/** Lines a range may stand on: `port ...`, `channel ...`, `require ...`, `NAME = ...` / `NAME ?= ...`, `macro(args)`. */
+const RANGE_LINE = /^(?:port|channel|require)\b|^\w+\s*\??=(?!=)|^\w+\s*\(/;
 
 /** `text` up to its `#` comment; a `#` inside a string does not count. */
 function codeOf(text: string): string {
@@ -382,7 +389,8 @@ function expandLines(
 
   const out: SourceLine[] = [];
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.text.trim();
     if (trimmed === '' || trimmed.startsWith('#')) {
       out.push(line);
@@ -395,12 +403,20 @@ function expandLines(
     // and expanded — along with it.
     const rangeAt = codeOf(line.text).search(RANGE_GROUP);
     if (rangeAt >= 0) {
+      // A port header takes its whole block along — consumed even when the
+      // range is bad, so the body does not dangle as stray indented lines.
+      // Ranges inside the body expand per line within each copy, independent
+      // of the header's.
+      const block = /^port\b/.test(trimmed) ? blockAt(lines, i) : { body: [], next: i + 1 };
+      i = block.next - 1;
       try {
         const copies = expandRanges(line.text);
         if (!RANGE_LINE.test(copies[0].trim())) {
-          throw new Error('Ranges {...} are only allowed on channel, mapping, require and macro call lines');
+          throw new Error('Ranges {...} are only allowed on port, channel, mapping, require and macro call lines');
         }
-        out.push(...expandLines(copies.map(text => ({ text, line: line.line })), macros, stack, depth, errors));
+        for (const text of copies) {
+          out.push(...expandLines([{ text, line: line.line }, ...block.body], macros, stack, depth, errors));
+        }
       } catch (e) {
         errors.push({ message: (e as Error).message, line: line.line, column: rangeAt + 1 });
       }

@@ -1853,7 +1853,18 @@ export function parseConstraints(source: string, opts?: ParseOptions): ParseResu
   const pre = preprocess(source, opts?.macroLibrary);
   const { tokens, errors: lexErrors } = tokenize(pre.text, pre.lineMap);
   const parser = new Parser(tokens, [...pre.errors, ...lexErrors]);
-  return parser.parse();
+  const result = parser.parse();
+  // Copies from a range or repeated macro call share their source line, so the
+  // same problem would otherwise be reported once per copy.
+  return { ...result, errors: uniqueByPos(result.errors), warnings: uniqueByPos(result.warnings) };
+}
+
+function uniqueByPos<T extends ParseWarning>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter(e => {
+    const key = `${e.line}:${e.column}:${e.message}`;
+    return !seen.has(key) && !!seen.add(key);
+  });
 }
 
 /**

@@ -263,11 +263,10 @@ export class ConstraintMinimap {
     if (!this.ast) return this.totalLines;
 
     const stmts = this.ast.statements;
-    const myIdx = stmts.indexOf(port);
-    if (myIdx >= 0 && myIdx < stmts.length - 1) {
-      return stmts[myIdx + 1].loc.line - 1;
-    }
-    return this.totalLines;
+    // Skip statements on the same line: a ranged `port ENC{0-3}:` (or a macro
+    // call) yields several ports sharing one header line and one body.
+    const next = stmts.slice(stmts.indexOf(port) + 1).find(s => s.loc.line > port.loc.line);
+    return next ? next.loc.line - 1 : this.totalLines;
   }
 
   private getConfigEndLine(config: ConfigDeclNode, port: PortDeclNode): number {

@@ -413,7 +413,6 @@ port P:
     expect(errorsOf(`  channel A{0-2} = FMC_A{0-1}`)[0]).toMatch(/same length/);
     expect(errorsOf(`  channel A{A-3}`)[0]).toMatch(/Invalid range item/);
     expect(errorsOf(`  channel A{0-5000}`)[0]).toMatch(/too large/);
-    expect(errorsOf(`port P{0-1}:`)[0]).toMatch(/only allowed/);
     expect(errorsOf(`  config "C{0-1}":`)[0]).toMatch(/only allowed/);
     expect(errorsOf(`  group G{0-1}:`)[0]).toMatch(/only allowed/);
   });
@@ -428,6 +427,49 @@ port P:
 port P:
   m(X{0-1}, Y{A-B})`);
     expect(channelNames(p)).toEqual(['X0', 'YA', 'X1', 'YB']);
+  });
+
+  it('copies a whole port block, body ranges expanding inside each copy', () => {
+    const ports = parseOk(`port ENC{0-1}:
+  channel A
+  channel D{0-1}
+
+  config "q":
+    A = TIM*_CH1
+    D{0-1} = OUT
+
+port LAST:
+  channel X`).statements.filter((s): s is PortDeclNode => s.type === 'port_decl');
+    expect(ports.map(p => [p.name, channelNames(p), p.configs.map(c => c.name)])).toEqual([
+      ['ENC0', ['A', 'D0', 'D1'], ['q']],
+      ['ENC1', ['A', 'D0', 'D1'], ['q']],
+      ['LAST', ['X'], []],
+    ]);
+  });
+
+  it('copies a body-less template port, ranges in strings included', () => {
+    const ports = parseOk(`port enc:
+  channel A
+
+port ENC{0-2} from enc color "{red, green, blue}"`).statements
+      .filter((s): s is PortDeclNode => s.type === 'port_decl');
+    expect(ports.map(p => [p.name, p.template, p.color])).toEqual([
+      ['enc', undefined, undefined],
+      ['ENC0', 'enc', 'red'], ['ENC1', 'enc', 'green'], ['ENC2', 'enc', 'blue'],
+    ]);
+  });
+
+  it('drops the body of a port whose range is bad', () => {
+    const r = parseConstraints(`port P{0-1}{A-C}:
+  channel X`, { macroLibrary: '' });
+    expect(r.errors.map(e => e.message)).toEqual(['Ranges on one line must have the same length (got 2, 3)']);
+  });
+
+  it('reports a body error once, not once per copy', () => {
+    const r = parseConstraints(`port P{0-2}:
+  channel A
+  channel X{0-1}{0-2}`, { macroLibrary: '' });
+    expect(r.errors.map(e => e.message)).toEqual(['Ranges on one line must have the same length (got 2, 3)']);
   });
 
   it('zero-pads when a bound has a leading zero', () => {

@@ -409,7 +409,8 @@ expands to `channel A0 = FMC_A0`, `channel A1 = FMC_A1`, ... `channel A12 = FMC_
 | `{TX, RX, 0-1}` | `TX`, `RX`, `0`, `1` (a list; items mix freely) |
 
 - **All groups on a line step together** (1:1), so they must expand to the same length: `channel S{0-3} = SPI1_{MOSI, MISO, SCK, NSS}` gives `S0 = SPI1_MOSI`, ... `S3 = SPI1_NSS`. Text without a group (`$bus`, `@ ~NW`, `FMC_A*`) is repeated on every copy.
-- **Allowed on** channel declarations, mappings (`=` / `?=`), `require` lines and macro calls. A port, config or group header would be copied without its body, so a range there is an error.
+- **Allowed on** port headers, channel declarations, mappings (`=` / `?=`), `require` lines and macro calls. A config or group header would be copied without its body, so a range there is an error.
+- **On a port header** the whole block is copied, body included: `port ENC{0-3}:` gives four ports `ENC0` ... `ENC3`. Channel names are local to their port, so every copy can keep `A`, `B` (referenced as `ENC0.A`, `ENC1.A`). Ranges inside the body expand per line within each copy and do not step with the header, so `channel D{0-7}` gives eight channels in every port. A body-less template works too: `port ENC{0-2} from encoder_port color "{orange, green, red}"` (ranges also expand inside strings).
 - **On a macro call** each copy is a separate call, which stamps out whole blocks: `efused(V{0-3})` calls `efused(V0)` ... `efused(V3)`.
 - **Each copy is its own line**: `require same_instance(D{0-7})` becomes eight single-channel requires, not one call with eight arguments. Pair ranges instead: `require same_instance(D{0-7}, A{0-7})`.
 - The trailing comment is copied and expanded too, so `# ${gpio_pin(D{0-7})}` interpolates per channel. `${...}` itself is never a range.
