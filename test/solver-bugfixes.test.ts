@@ -52,7 +52,9 @@ const fatal = (r: SolverResult) => r.errors.filter(e => e.type === 'error').map(
 describe('#22 dynamic-mrv must not emit combos with wiped-out mandatory channels', () => {
   // OTHER consumes PA9+PB6, wiping UART's "alt" config (TX2 restricted to
   // those pins) while "main" stays solvable. The old empty-domain fallback
-  // emitted alt combos with TX2 simply missing.
+  // emitted alt combos with TX2 simply missing; its first fix emitted the
+  // solution without the alt combos instead — still dropping a config. Every
+  // config must be routed, so like backtracking and CDS there is no solution.
   const src = `port OTHER:
   channel X @ PA9
   channel Y @ PB6
@@ -70,7 +72,8 @@ port UART:
 `;
   it('emits only complete combos', () => {
     const r = solveDynamicMRV(ast(src), f405, SP);
-    expect(r.solutions.length, fatal(r)).toBeGreaterThan(0);
+    expect(r.solutions).toEqual([]);
+    expect(solveConstraints(ast(src), f405, SP).solutions).toEqual([]);
     for (const sol of r.solutions) {
       for (const ca of sol.configAssignments) {
         if (ca.activeConfigs.get('UART') === 'alt') {

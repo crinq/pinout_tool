@@ -108,52 +108,36 @@ export function solveBacktrackDynamic(
     return;
   }
 
-  // Dynamic MRV: pick unassigned variable with smallest non-empty domain
-  // Variables with empty domains are for inactive configs - skip them
+  // Dynamic MRV: pick unassigned variable with smallest non-empty domain.
+  // Every config of every port must be routable in one solution, so a
+  // mandatory variable whose domain propagation emptied is a dead end —
+  // emitting anyway would silently drop its config from the solution.
   let bestVar = -1;
   let bestSize = Infinity;
-  let unassignedCount = 0;
   for (let i = 0; i < totalVars; i++) {
     if (assigned[i]) continue;
-    unassignedCount++;
-    if (domains[i].length > 0 && domains[i].length < bestSize) {
+    if (domains[i].length === 0) {
+      if (!variables[i].optional) return;
+      continue;
+    }
+    if (domains[i].length < bestSize) {
       bestSize = domains[i].length;
       bestVar = i;
     }
   }
 
   if (bestVar === -1) {
-    if (unassignedCount === 0) {
-      // All assigned - this shouldn't happen (depth check above catches it)
-      return;
-    }
-    // All unassigned variables have empty domains. A mandatory one means its
-    // (port, config) is wiped out — a combo activating that config would be
-    // emitted with missing pins, so restrict evaluation to combos avoiding
-    // every wiped config. Optional (`?=`) vars are legally skippable anywhere.
+    // Only optional (`?=`) variables are left, all without candidates —
+    // they may legally stay unassigned.
     const skipped: number[] = [];
-    const wiped = new Set<string>();
     for (let i = 0; i < totalVars; i++) {
-      if (!assigned[i]) {
-        assigned[i] = true;
-        skipped.push(i);
-        if (!variables[i].optional) wiped.add(`${variables[i].portName}\0${variables[i].configName}`);
-      }
+      if (!assigned[i]) { assigned[i] = true; skipped.push(i); }
     }
-    const viableCombos = wiped.size === 0
-      ? configCombinations
-      : configCombinations.filter(combo => {
-          for (const [port, cfg] of combo) {
-            if (wiped.has(`${port}\0${cfg}`)) return false;
-          }
-          return true;
-        });
-    if (viableCombos.length > 0) {
-      tryEmitSolution(
-        current, viableCombos, ports, pinnedAssignments,
-        solutions, stats, startTime, dmaData, mcuInfo, sharedPatterns,
-      );
-    }
+    if (skipped.length === 0) return; // all assigned — the depth check above already emitted
+    tryEmitSolution(
+      current, configCombinations, ports, pinnedAssignments,
+      solutions, stats, startTime, dmaData, mcuInfo, sharedPatterns,
+    );
     for (const i of skipped) assigned[i] = false;
     return;
   }
