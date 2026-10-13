@@ -173,7 +173,7 @@ describe('KiCad schematic export', () => {
 });
 
 describe('declaredPortChannels', () => {
-  it('resolves `port X from Y` inheritance, child channels first', () => {
+  it('resolves `port X from Y` inheritance, child channels first, with functions', () => {
     const src = [
       'port ENC0:',
       '  channel MA = SPI*_SCK',
@@ -184,7 +184,29 @@ describe('declaredPortChannels', () => {
       '',
     ].join('\n');
     const m = declaredPortChannels(src);
-    expect(m.get('ENC1')).toEqual(['MA', 'SL']);
-    expect(m.get('ENC2')).toEqual(['MO_txen', 'MA', 'SL']);
+    expect(m.get('ENC1')!.map(c => c.name)).toEqual(['MA', 'SL']);
+    expect(m.get('ENC2')!.map(c => c.name)).toEqual(['MA', 'SL', 'MO_txen']);
+    expect(m.get('ENC2')!.find(c => c.name === 'MO_txen')!.functions).toEqual(['OUT']);
+    expect(m.get('ENC1')!.find(c => c.name === 'MA')!.functions).toEqual(['SPI*_SCK']);
+  });
+
+  it('a derived port\'s config shadows the parent\'s same-named config', () => {
+    const src = [
+      'port ENC0:',
+      '  channel SL',
+      '  channel CS',
+      '  config "SPI":',
+      '    SL = SPI*_MISO',
+      '    CS = SPI*_NSS',
+      'port ENC2 from ENC0:',
+      '  config "SPI":',
+      '    SL = SPI*_MISO',
+      '',
+    ].join('\n');
+    const m = declaredPortChannels(src);
+    expect(m.get('ENC0')!.find(c => c.name === 'CS')!.functions).toEqual(['SPI*_NSS']);
+    // ENC2 redefines "SPI" without a CS mapping — nothing is inherited for CS
+    expect(m.get('ENC2')!.find(c => c.name === 'CS')!.functions).toEqual([]);
+    expect(m.get('ENC2')!.find(c => c.name === 'SL')!.functions).toEqual(['SPI*_MISO']);
   });
 });

@@ -639,7 +639,7 @@ pins        - Array of {name, position, type, gpioPort,
               peripheralInstance, peripheralType,
               signalFunction}]}
 ports       - Array of {name, color, comment,
-              channels:[{name, comment}],
+              channels:[{name, comment, functions}],
               configurations:[]}
 pinComments - Object {pinName: comment} from pin decls
 params      - Object {key: value} of your declared parameters

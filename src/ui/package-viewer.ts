@@ -8,6 +8,8 @@ import {
 } from '../export-params';
 import type { Panel, StateChange, HighlightStyle } from './panel';
 import { parseSearchPattern, parseConstraints } from '../parser/constraint-parser';
+import { resolveTemplates } from '../parser/template-resolver';
+import { getStdlibTemplates } from '../parser/stdlib-macros';
 import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
 import { lookupDmaStream } from '../solver/solver';
 import { exportSvg } from './svg-export';
@@ -58,26 +60,39 @@ interface GestureLikeEvent {
   preventDefault(): void;
 }
 
+export interface DeclaredChannel {
+  name: string;
+  /** Signal patterns requested for the channel across all configs (raw text). */
+  functions: string[];
+}
+
 /**
- * All declared channels per port, resolving `port X from Y` inheritance
- * (child first, then the ancestor chain; cycle-safe). Raw parse, no macro
- * expansion — the same fidelity the app uses to collect channel comments.
+ * All declared channels per port, with `port X from Y` inheritance resolved
+ * by the same template resolver the solver uses — so a derived port's config
+ * SHADOWS the parent's same-named config instead of merging with it (a
+ * redefined `config "SPI"` without a `cs` mapping leaves `cs` functionless).
  */
-export function declaredPortChannels(source: string): Map<string, string[]> {
+export function declaredPortChannels(source: string): Map<string, DeclaredChannel[]> {
   const ast = parseConstraints(source).ast;
-  const decls = new Map<string, { name: string; template?: string; channels: { name: string }[] }>();
-  for (const stmt of ast?.statements ?? []) {
-    if (stmt.type === 'port_decl') decls.set(stmt.name, stmt);
-  }
-  const out = new Map<string, string[]>();
-  for (const [name, decl] of decls) {
+  if (!ast) return new Map();
+  const { ast: resolved } = resolveTemplates(ast, getStdlibTemplates());
+  const out = new Map<string, DeclaredChannel[]>();
+  for (const stmt of resolved.statements) {
+    if (stmt.type !== 'port_decl') continue;
+    const fns = new Map<string, Set<string>>();
     const names: string[] = [];
-    const seen = new Set<string>();
-    for (let d = decl; d && !seen.has(d.name); d = d.template !== undefined ? decls.get(d.template)! : undefined!) {
-      seen.add(d.name);
-      for (const ch of d.channels) if (!names.includes(ch.name)) names.push(ch.name);
+    for (const ch of stmt.channels) {
+      if (!fns.has(ch.name)) { fns.set(ch.name, new Set()); names.push(ch.name); }
     }
-    out.set(name, names);
+    for (const cfg of stmt.configs) {
+      for (const m of cfg.body) {
+        if (m.type !== 'mapping') continue;
+        const set = fns.get(m.channelName);
+        if (!set) continue;
+        for (const se of m.signalExprs) for (const alt of se.alternatives) set.add(alt.raw);
+      }
+    }
+    out.set(stmt.name, names.map(n => ({ name: n, functions: [...fns.get(n)!] })));
   }
   return out;
 }
@@ -636,7 +651,7 @@ export class PackageViewer implements Panel {
     try {
       for (const [port, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
         for (const ch of chs) {
-          if (!mapped.has(`${port}.${ch}`)) out.push(`${port}.${ch}`);
+          if (!mapped.has(`${port}.${ch.name}`)) out.push(`${port}.${ch.name}`);
         }
       }
     } catch { /* unparsable constraints */ }
@@ -862,12 +877,14 @@ export class PackageViewer implements Panel {
     // Merge in declared ports/channels from the constraints so exports also
     // see channels that never got a pin (e.g. skipped GPIO in/out). Parsed
     // the same way the app collects comments: raw text, no macro expansion.
+    const declaredFns = new Map<string, string[]>();   // "PORT.CH" -> signal patterns
     try {
-      for (const [name, chNames] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
+      for (const [name, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
         let channels = portMap.get(name);
         if (!channels) { channels = new Map(); portMap.set(name, channels); }
-        for (const ch of chNames) {
-          if (!channels.has(ch)) channels.set(ch, new Set());
+        for (const ch of chs) {
+          if (!channels.has(ch.name)) channels.set(ch.name, new Set());
+          declaredFns.set(`${name}.${ch.name}`, ch.functions);
         }
       }
     } catch { /* unparsable constraints: exports see mapped channels only */ }
@@ -879,6 +896,7 @@ export class PackageViewer implements Panel {
       channels: [...channels.keys()].map(ch => ({
         name: ch,
         comment: this.channelComments.get(`${name}.${ch}`) || null,
+        functions: declaredFns.get(`${name}.${ch}`) ?? [],
       })),
       configurations: [...new Set([...channels.values()].flatMap(c => [...c]))],
     }));
