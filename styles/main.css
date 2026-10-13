@@ -628,23 +628,25 @@
   height: 100%;
 }
 
+/* Port name on its own line, peripherals below at a fixed indent — so long
+   port names never collide with the peripheral list. */
 .ps-row {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
   padding: 2px 0;
   font-size: 12px;
 }
 
 .ps-port {
   font-weight: 700;
-  min-width: 40px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
 .ps-peripherals {
   color: var(--text-secondary);
   word-break: break-word;
+  padding-left: 16px;
 }
 
 .ps-highlightable {

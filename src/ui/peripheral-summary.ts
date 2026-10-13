@@ -163,8 +163,10 @@ export class PeripheralSummary implements Panel {
 
     const summary = document.createElement('div');
     summary.className = 'ps-summary';
+    // gpioCount = IN/OUT channels the solver left unplaced (skip_gpio_mapping);
+    // they still need a pin each, so they are not free.
     const freePins = this.totalAssignablePins > 0
-      ? this.totalAssignablePins - pins.size
+      ? Math.max(0, this.totalAssignablePins - pins.size - this.gpioCount)
       : 0;
     const pinText = this.totalAssignablePins > 0
       ? `${pins.size}/${this.totalAssignablePins} pins (${freePins} free)`

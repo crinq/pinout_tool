@@ -1285,7 +1285,7 @@ Solutions are displayed in a grouped table. Solutions with the same peripheral-t
 
 ### Peripheral Summary
 
-The Peripherals panel shows the port-to-peripheral mapping for the currently selected solution, along with the total number of used pins and peripherals.
+The Peripherals panel shows the port-to-peripheral mapping for the currently selected solution, along with the total number of used pins and peripherals. The free-pin count already subtracts the IN/OUT channels the solver left unplaced (with *Skip GPIO mapping* on), since each of them still needs a pin.
 
 **Pin group highlighting:** Hover over a port name or peripheral instance to highlight the corresponding pins on the package viewer with a pulsating glow. Click to toggle a persistent highlight that stays active until clicked again or a different solution is selected.
 
