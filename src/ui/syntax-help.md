@@ -160,6 +160,21 @@ To restrict a channel to a specific GPIO port without extra pins, use `require`:
 require gpio_port(MOSI) == "GPIO1"  # port A only
 ```
 
+### Ranges
+
+`{...}` stamps out one copy of the line per value. All groups on a line step together and must have the same length.
+
+```
+channel A{0-12} = FMC_A{0-12}            # A0 = FMC_A0 ... A12 = FMC_A12
+channel S{0-3}  = SPI1_{MOSI, MISO, SCK, NSS}
+channel D{0-7}  = FMC_D{7-0}              # descending
+channel LED{01-12} = OUT                  # zero-padded: LED01 ... LED12
+require same_instance(A{0-1}, D{0-1})     # one require per copy
+uart_port(TX{1-2}, RX{1-2})               # one macro call per copy
+```
+
+Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. Allowed on channel, mapping, `require` and macro call lines only. `{0-3}` makes four lines; `[0-3]` in a signal pattern makes one line that matches any of four.
+
 ### Built-in Functions
 
 | Function | Meaning |

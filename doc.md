@@ -18,6 +18,7 @@
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
    - [Groups](#groups)
+   - [Ranges](#ranges)
    - [Pin Placement (@)](#pin-placement)
    - [Solver Settings](#solver-settings-settings)
    - [Signal Patterns](#signal-patterns)
@@ -387,6 +388,34 @@ port PWR:
 ```
 
 Ports derived [from a template](#port-templates) inherit its groups; redeclaring a group of the same name replaces it.
+
+### Ranges
+
+A `{...}` group on a line stamps out one copy of the line per value. Use it to declare a bus without writing every bit:
+
+```
+port FMC:
+  channel A{0-12} = FMC_A{0-12}
+```
+
+expands to `channel A0 = FMC_A0`, `channel A1 = FMC_A1`, ... `channel A12 = FMC_A12`.
+
+| Item | Values |
+|------|--------|
+| `{0-3}` | `0`, `1`, `2`, `3` |
+| `{7-4}` | `7`, `6`, `5`, `4` (descending) |
+| `{08-11}` | `08`, `09`, `10`, `11` (a leading zero on either bound pads to the wider bound) |
+| `{A-D}` / `{a-d}` | `A`, `B`, `C`, `D` (same-case letters) |
+| `{TX, RX, 0-1}` | `TX`, `RX`, `0`, `1` (a list; items mix freely) |
+
+- **All groups on a line step together** (1:1), so they must expand to the same length: `channel S{0-3} = SPI1_{MOSI, MISO, SCK, NSS}` gives `S0 = SPI1_MOSI`, ... `S3 = SPI1_NSS`. Text without a group (`$bus`, `@ ~NW`, `FMC_A*`) is repeated on every copy.
+- **Allowed on** channel declarations, mappings (`=` / `?=`), `require` lines and macro calls. A port, config or group header would be copied without its body, so a range there is an error.
+- **On a macro call** each copy is a separate call, which stamps out whole blocks: `efused(V{0-3})` calls `efused(V0)` ... `efused(V3)`.
+- **Each copy is its own line**: `require same_instance(D{0-7})` becomes eight single-channel requires, not one call with eight arguments. Pair ranges instead: `require same_instance(D{0-7}, A{0-7})`.
+- The trailing comment is copied and expanded too, so `# ${gpio_pin(D{0-7})}` interpolates per channel. `${...}` itself is never a range.
+- Ranges work inside [macro](#macros) bodies (they expand after parameter substitution). Errors from any copy are reported on the original line.
+
+`{}` and `[]` mean different things: `{0-3}` makes **four lines**, while `[0-3]` in a [signal pattern](#signal-patterns) makes **one** line that accepts **any** of four signals. They combine: `channel IN{0-3} = ADC1_IN[0-15]`.
 
 ### Pin Placement (`@`)
 

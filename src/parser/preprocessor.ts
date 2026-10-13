@@ -89,7 +89,7 @@ const MACRO_CALL = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*(?:#.*)?$/;
 // Statement heads that can legally be followed by `(...)` — most notably
 // `require (A & B)`. Without this exemption MACRO_CALL swallows the line and
 // reports "Unknown macro 'require'". One canonical set, owned by the parser.
-import { KEYWORDS as STATEMENT_KEYWORDS } from './constraint-parser';
+import { KEYWORDS as STATEMENT_KEYWORDS, MAX_RANGE_VALUES } from './constraint-parser';
 
 /**
  * `channel NAME(args)` — shorthand for declaring the argument channels and
@@ -268,6 +268,79 @@ function balanced(raw: string): boolean {
 }
 
 // ------------------------------------------------------------
+// Ranges
+//
+// A `{...}` group stamps out one copy of its line per value. Every group
+// on a line steps together, so they must all expand to the same length:
+//
+//   channel A{0-2} = FMC_A{0-2}   ->  channel A0 = FMC_A0
+//                                     channel A1 = FMC_A1
+//                                     channel A2 = FMC_A2
+//
+// Items are numeric ranges (`0-12`, descending `7-0`, zero-padded
+// `00-15`), letter ranges (`A-H`) or literal names, mixed freely:
+// `{TX, RX, 0-1}` is 4 values. Only channel, mapping, require and macro
+// call lines take ranges — a block header would be copied without its body. `${...}` (macro parameters, comment
+// interpolation) is never a range.
+// ------------------------------------------------------------
+
+const RANGE_GROUP = /(?<!\$)\{([^{}]*)\}/g;
+
+/** Lines a range may stand on: `channel ...`, `require ...`, `NAME = ...` / `NAME ?= ...`, `macro(args)`. */
+const RANGE_LINE = /^(?:channel|require)\b|^\w+\s*\??=(?!=)|^\w+\s*\(/;
+
+/** `text` up to its `#` comment; a `#` inside a string does not count. */
+function codeOf(text: string): string {
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') quoted = !quoted;
+    else if (text[i] === '#' && !quoted) return text.slice(0, i);
+  }
+  return text;
+}
+
+/** The values of one `{...}` group, in order. Throws on a malformed item. */
+function rangeValues(body: string): string[] {
+  const out: string[] = [];
+  for (const raw of body.split(',')) {
+    const item = raw.trim();
+    const num = /^(\d+)\s*-\s*(\d+)$/.exec(item);
+    const chr = /^([A-Z])\s*-\s*([A-Z])$/.exec(item) ?? /^([a-z])\s*-\s*([a-z])$/.exec(item);
+    if (num || chr) {
+      const [a, b] = num ? [+num[1], +num[2]] : [chr![1].charCodeAt(0), chr![2].charCodeAt(0)];
+      if (out.length + Math.abs(b - a) + 1 > MAX_RANGE_VALUES) {
+        throw new Error(`Range {${body}} too large (max ${MAX_RANGE_VALUES} values)`);
+      }
+      // A leading zero on either bound pads every value to the wider bound: `{00-15}` -> 00..15.
+      const width = num && (/^0\d/.test(num[1]) || /^0\d/.test(num[2]))
+        ? Math.max(num[1].length, num[2].length) : 0;
+      const step = a <= b ? 1 : -1;
+      for (let v = a; v !== b + step; v += step) {
+        out.push(num ? String(v).padStart(width, '0') : String.fromCharCode(v));
+      }
+    } else if (/^\w+$/.test(item)) {
+      out.push(item);
+    } else {
+      throw new Error(`Invalid range item '${item}' in {${body}} — use 0-12, A-H or a name`);
+    }
+  }
+  return out;
+}
+
+/** One copy of `text` per range value, all groups zipped. Throws on bad or mismatched ranges. */
+function expandRanges(text: string): string[] {
+  const groups = [...text.matchAll(RANGE_GROUP)].map(m => rangeValues(m[1]));
+  const n = groups[0].length;
+  if (groups.some(g => g.length !== n)) {
+    throw new Error(`Ranges on one line must have the same length (got ${groups.map(g => g.length).join(', ')})`);
+  }
+  return Array.from({ length: n }, (_, i) => {
+    let k = 0;
+    return text.replace(RANGE_GROUP, () => groups[k++][i]);
+  });
+}
+
+// ------------------------------------------------------------
 // Expansion
 // ------------------------------------------------------------
 
@@ -313,6 +386,24 @@ function expandLines(
     const trimmed = line.text.trim();
     if (trimmed === '' || trimmed.startsWith('#')) {
       out.push(line);
+      continue;
+    }
+
+    // Ranges go first, so a ranged `channel NAME(args)` shorthand splits into
+    // plain lines before the comma-splitting below ever sees its braces. The
+    // range is found on the code alone, but the trailing comment is copied —
+    // and expanded — along with it.
+    const rangeAt = codeOf(line.text).search(RANGE_GROUP);
+    if (rangeAt >= 0) {
+      try {
+        const copies = expandRanges(line.text);
+        if (!RANGE_LINE.test(copies[0].trim())) {
+          throw new Error('Ranges {...} are only allowed on channel, mapping, require and macro call lines');
+        }
+        out.push(...expandLines(copies.map(text => ({ text, line: line.line })), macros, stack, depth, errors));
+      } catch (e) {
+        errors.push({ message: (e as Error).message, line: line.line, column: rangeAt + 1 });
+      }
       continue;
     }
 

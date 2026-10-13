@@ -367,3 +367,72 @@ port P:
     });
   });
 });
+
+describe('ranges', () => {
+  const lines = (src: string) => pre(src).text.split('\n').map(l => l.trim()).filter(Boolean);
+  const errorsOf = (src: string) => pre(src).errors.map(e => e.message);
+
+  it('zips a channel range with a signal range', () => {
+    const p = portOf(`port FMC:
+  channel A{0-2} = FMC_A{0-2}`);
+    expect(channelNames(p)).toEqual(['A0', 'A1', 'A2']);
+    expect(mappings(p).map(m => [m.channelName, m.loc.line])).toEqual([['A0', 2], ['A1', 2], ['A2', 2]]);
+  });
+
+  it('expands letters, lists and descending ranges', () => {
+    expect(lines(`  channel P{A-C} = SPI1_{MOSI, MISO, 0-0}`)).toEqual([
+      'channel PA = SPI1_MOSI', 'channel PB = SPI1_MISO', 'channel PC = SPI1_0',
+    ]);
+    expect(lines(`  D{0-2} = FMC_D{2-0}`)).toEqual(['D0 = FMC_D2', 'D1 = FMC_D1', 'D2 = FMC_D0']);
+    expect(lines(`  channel x{a-b}`)).toEqual(['channel xa', 'channel xb']);
+  });
+
+  it('copies require and ?= lines, and expands the trailing comment', () => {
+    expect(lines(`  require same_instance(A{0-1}, B{0-1})`)).toEqual([
+      'require same_instance(A0, B0)', 'require same_instance(A1, B1)',
+    ]);
+    expect(lines(`  X{0-1} ?= OUT  # ${'$'}{gpio_pin(X{0-1})} ${'$'}{X}`)).toEqual([
+      'X0 ?= OUT  # ${gpio_pin(X0)} ${X}', 'X1 ?= OUT  # ${gpio_pin(X1)} ${X}',
+    ]);
+  });
+
+  it('ignores braces that are only in a comment', () => {
+    expect(lines(`port P:  # {0-3}`)).toEqual(['port P:  # {0-3}']);
+  });
+
+  it('expands after macro substitution', () => {
+    const p = portOf(`macro bus(N):
+  channel ${'$'}{N}{0-1} = OUT
+
+port P:
+  bus(D)`);
+    expect(channelNames(p)).toEqual(['D0', 'D1']);
+  });
+
+  it('rejects bad ranges and lines that are not channel/mapping/require', () => {
+    expect(errorsOf(`  channel A{0-2} = FMC_A{0-1}`)[0]).toMatch(/same length/);
+    expect(errorsOf(`  channel A{A-3}`)[0]).toMatch(/Invalid range item/);
+    expect(errorsOf(`  channel A{0-5000}`)[0]).toMatch(/too large/);
+    expect(errorsOf(`port P{0-1}:`)[0]).toMatch(/only allowed/);
+    expect(errorsOf(`  config "C{0-1}":`)[0]).toMatch(/only allowed/);
+    expect(errorsOf(`  group G{0-1}:`)[0]).toMatch(/only allowed/);
+  });
+
+  it('copies macro calls', () => {
+    const p = portOf(`macro m(A, B):
+  channel A
+  channel B
+  A = OUT
+  B = IN
+
+port P:
+  m(X{0-1}, Y{A-B})`);
+    expect(channelNames(p)).toEqual(['X0', 'YA', 'X1', 'YB']);
+  });
+
+  it('zero-pads when a bound has a leading zero', () => {
+    expect(lines(`  channel D{08-10}`)).toEqual(['channel D08', 'channel D09', 'channel D10']);
+    expect(lines(`  channel D{1-003}`)).toEqual(['channel D001', 'channel D002', 'channel D003']);
+    expect(lines(`  channel D{0-2}`)).toEqual(['channel D0', 'channel D1', 'channel D2']);
+  });
+});

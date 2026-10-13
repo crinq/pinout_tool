@@ -88,8 +88,8 @@ interface Token {
   column: number;
 }
 
-/** Upper bound on values a `[n-m]` range may expand to. */
-const MAX_RANGE_VALUES = 1024;
+/** Upper bound on values a `[n-m]` range (or a preprocessor `{n-m}` range) may expand to. */
+export const MAX_RANGE_VALUES = 1024;
 
 export const KEYWORDS = new Set([
   'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings', 'group',

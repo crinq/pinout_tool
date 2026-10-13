@@ -579,25 +579,25 @@ export class ConstraintMinimap {
     const make = (scope: LineHighlight['scope'], label: string, channels?: Set<string>) =>
       ({ pins: this.collectPinsFor(port, channels), color: block.color, scope, label });
 
-    const channel = port.channels.find(c => c.loc.line === line);
-    if (channel) return make('channel', channel.name, new Set([channel.name]));
+    // A ranged line (`channel A{0-3} = ...`) expands to several channels,
+    // mappings or requires on the same line, so collect all of them.
+    const channels = port.channels.filter(c => c.loc.line === line).map(c => c.name);
+    if (channels.length > 0) return make('channel', channels.join(', '), new Set(channels));
 
     for (const config of port.configs) {
-      for (const item of config.body) {
-        if (item.type === 'mapping' && item.loc.line === line) {
-          return make('channel', item.channelName, new Set([item.channelName]));
-        }
-        if (item.type === 'require' && item.loc.line === line) {
-          // Ring only what the constraint names. Unknown identifiers (a type
-          // filter that parsed as a bare word, a cross-port reference) drop out
-          // here; if nothing local is left the line falls through to the
-          // enclosing scope below rather than ringing nothing.
-          const named = new Set(
-            [...channelNamesIn(item.expression)].filter(n => port.channels.some(c => c.name === n)),
-          );
-          if (named.size > 0) return make('require', [...named].join(', '), named);
-        }
-      }
+      const onLine = config.body.filter(item => item.loc.line === line);
+      const mapped = onLine.filter((b): b is MappingNode => b.type === 'mapping').map(b => b.channelName);
+      if (mapped.length > 0) return make('channel', mapped.join(', '), new Set(mapped));
+      // Ring only what the constraint names. Unknown identifiers (a type
+      // filter that parsed as a bare word, a cross-port reference) drop out
+      // here; if nothing local is left the line falls through to the
+      // enclosing scope below rather than ringing nothing.
+      const named = new Set(
+        onLine
+          .flatMap(b => (b.type === 'require' ? [...channelNamesIn(b.expression)] : []))
+          .filter(n => port.channels.some(c => c.name === n)),
+      );
+      if (named.size > 0) return make('require', [...named].join(', '), named);
     }
 
     const group = block.groups.find(g => line >= g.startLine && line <= g.endLine);
