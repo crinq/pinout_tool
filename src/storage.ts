@@ -66,6 +66,9 @@ export function serializeSolution(sol: Solution): SerializedSolution {
     ),
     costs: Object.fromEntries(sol.costs),
     totalCost: sol.totalCost,
+    gpioCount: sol.gpioCount,
+    optionalTotal: sol.optionalTotal,
+    optionalFulfilled: sol.optionalFulfilled,
   };
 }
 

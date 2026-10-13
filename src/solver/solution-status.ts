@@ -17,7 +17,7 @@ import type { ProgramNode } from '../parser/constraint-ast';
 import {
   prepareSolverContext, resolveReservePatterns,
   createPinTracker, canAssignPin, assignPin, evaluateAllConstraints,
-  collectConstraintFailures,
+  collectConstraintFailures, validateGpioAvailability,
   type SolverContext, type VariableAssignment,
 } from './solver';
 import { formatConstraintExpr } from '../parser/expr-format';
@@ -72,7 +72,7 @@ export function classifyProjectSolutions(
 
   for (const sol of solutions) {
     if (sol.mcuRef && sol.mcuRef !== mcu.refName) continue; // different MCU → skip
-    out.set(sol, classifyOne(sol, ctx, varsByChannel, requiredVars, declaredChannels, reservedPositions));
+    out.set(sol, classifyOne(sol, mcu, ctx, varsByChannel, requiredVars, declaredChannels, reservedPositions));
   }
   return out;
 }
@@ -90,6 +90,7 @@ function mappingLine(ctx: SolverContext, v: SolverContext['variables'][number]):
 
 function classifyOne(
   sol: Solution,
+  mcu: Mcu,
   ctx: SolverContext,
   varsByChannel: ReturnType<typeof buildVarsByChannel>,
   requiredVars: SolverContext['variables'],
@@ -136,6 +137,13 @@ function classifyOne(
     // A DMA shortage fails evaluateAllConstraints without any single require
     // being false, so say something rather than nothing.
     if (failures.length === 0) note('constraints not satisfied (no valid DMA assignment)');
+  }
+
+  // IN/OUT channels the solver left unplaced (skip_gpio_mapping) still need
+  // free pads. As a side effect this (re)computes sol.gpioCount — solutions
+  // saved before it was stored come back with 0.
+  if (validateGpioAvailability([sol], ctx.gpioVarsPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments).length === 0) {
+    note('not enough free pins left for the unplaced IN/OUT channels');
   }
 
   if (reasons.length > 0) return verdict('invalid');

@@ -20,7 +20,7 @@ import type { SignalCandidate } from './pattern-matcher';
 import {
   prepareSolverContext, resolveReservePatterns,
   createPinTracker, canAssignPin, assignPin, unassignPin,
-  evaluateAllConstraints, buildSolution, deduplicateSolutions,
+  evaluateAllConstraints, buildSolution, deduplicateSolutions, validateGpioAvailability,
   type SolverContext, type SolverVariable, type VariableAssignment,
 } from './solver';
 import { computeTotalCost } from './cost-functions';
@@ -249,6 +249,11 @@ function optimizeOne(
     return null; // should not happen — we only accepted valid states
   }
   const result = buildSolution(current, ctx.configCombinations, ctx.ports, ctx.pinnedAssignments, sol.id, dmaOut);
+  // Moved pins may take pads the unplaced IN/OUT channels need; this also
+  // sets gpioCount, which buildSolution leaves at 0.
+  if (validateGpioAvailability([result], ctx.gpioVarsPerConfig, mcu, ctx.reservedPins, ctx.pinnedAssignments).length === 0) {
+    return null;
+  }
   result.mcuRef = mcu.refName;
   computeTotalCost(result, mcu, weights);
   return result;
