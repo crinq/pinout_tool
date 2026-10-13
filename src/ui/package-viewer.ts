@@ -105,6 +105,7 @@ export class PackageViewer implements Panel {
   private container!: HTMLElement;
   private canvas!: HTMLCanvasElement;
   private tooltip!: HTMLElement;
+  private unassignedBadge!: HTMLElement;
   private mcu: Mcu | null = null;
   private assignments: Assignment[] = [];
   private portColors: Map<string, string> = new Map();
@@ -260,6 +261,11 @@ export class PackageViewer implements Panel {
     this.tooltip.style.display = 'none';
     this.container.appendChild(this.tooltip);
 
+    this.unassignedBadge = document.createElement('div');
+    this.unassignedBadge.className = 'pv-unassigned';
+    this.unassignedBadge.style.display = 'none';
+    this.container.appendChild(this.unassignedBadge);
+
     this.canvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
     this.canvas.addEventListener('mouseleave', () => this.onMouseLeave());
     this.canvas.addEventListener('click', (e) => this.onClick(e));
@@ -344,7 +350,17 @@ export class PackageViewer implements Panel {
 
   setAssignments(assignments: Assignment[]): void {
     this.assignments = assignments;
+    this.updateUnassignedBadge();
     this.render();
+  }
+
+  /** Bottom-left count of declared channels the solution leaves without a pin. */
+  private updateUnassignedBadge(): void {
+    const unmapped = this.assignments.length > 0 ? this.unmappedChannels() : [];
+    this.unassignedBadge.style.display = unmapped.length > 0 ? '' : 'none';
+    this.unassignedBadge.textContent = `${unmapped.length} unassigned`;
+    this.unassignedBadge.title = 'Channels without a pin (IN/OUT-only channels are left out when skip_gpio_mapping is on):\n'
+      + unmapped.map(c => `${c.name}  ${c.functions.join(' | ')}`).join('\n');
   }
 
   /** When on, pin clicks fire onPinClick callbacks and the default assign popup is suppressed. */
@@ -642,16 +658,16 @@ export class PackageViewer implements Panel {
     downloadBlob(svg, `${this.mcu.refName}_pinout.svg`, 'image/svg+xml');
   }
 
-  /** Declared `PORT.CHANNEL`s without a pin assignment, in declaration order. */
-  private unmappedChannels(): string[] {
+  /** Declared channels without a pin assignment, in declaration order; `name` is `PORT.CHANNEL`. */
+  private unmappedChannels(): DeclaredChannel[] {
     const mapped = new Set(this.assignments
       .filter(a => a.portName !== '<pinned>')
       .map(a => `${a.portName}.${a.channelName}`));
-    const out: string[] = [];
+    const out: DeclaredChannel[] = [];
     try {
       for (const [port, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
         for (const ch of chs) {
-          if (!mapped.has(`${port}.${ch.name}`)) out.push(`${port}.${ch.name}`);
+          if (!mapped.has(`${port}.${ch.name}`)) out.push({ ...ch, name: `${port}.${ch.name}` });
         }
       }
     } catch { /* unparsable constraints */ }
@@ -694,7 +710,7 @@ export class PackageViewer implements Panel {
     const unmapped = this.unmappedChannels();
     if (unmapped.length > 0) {
       lines.push('', 'Unmapped channels:');
-      for (const ch of unmapped) lines.push(`  ${ch}`);
+      for (const ch of unmapped) lines.push(`  ${ch.name}`);
     }
 
     const text = lines.join('\n') + '\n';
@@ -735,7 +751,7 @@ export class PackageViewer implements Panel {
         return entry;
       }),
       portColors: Object.fromEntries(this.portColors),
-      unmappedChannels: this.unmappedChannels(),
+      unmappedChannels: this.unmappedChannels().map(c => c.name),
     };
 
     const json = JSON.stringify(data, null, 2);
