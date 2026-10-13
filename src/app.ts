@@ -648,6 +648,7 @@ export class App implements DataManagerHost {
       costWeights: new Map(Object.entries(this.solveSettings.costWeights)),
       skipGpioMapping: this.solveSettings.skipGpioMapping,
       postOptimize: this.solveSettings.postOptimize,
+      postValidate: this.solveSettings.postValidate,
       squaredCosts: this.solveSettings.squaredCosts,
     };
 
@@ -2313,6 +2314,10 @@ export class App implements DataManagerHost {
             <label title="After solving, greedily relocate single-signal pins to free alternatives that lower total cost (repeats until no move improves)">Post-optimize pins</label>
             <input type="checkbox" id="set-post-optimize" ${this.settings.postOptimize ? 'checked' : ''}>
           </div>
+          <div class="settings-row">
+            <label title="Before listing solver results, check each solution against the constraints (the same check as the project solutions' valid/invalid badge) and drop the invalid ones">Post-validate solutions</label>
+            <input type="checkbox" id="set-post-validate" ${this.settings.postValidate ? 'checked' : ''}>
+          </div>
         </section>
 
         <section class="settings-section">
@@ -2415,6 +2420,7 @@ export class App implements DataManagerHost {
 
       this.settings.skipGpioMapping = (modal.querySelector('#set-skip-gpio') as HTMLInputElement).checked;
       this.settings.postOptimize = (modal.querySelector('#set-post-optimize') as HTMLInputElement).checked;
+      this.settings.postValidate = (modal.querySelector('#set-post-validate') as HTMLInputElement).checked;
       this.settings.squaredCosts = (modal.querySelector('#set-squared-costs') as HTMLInputElement).checked;
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
       this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;

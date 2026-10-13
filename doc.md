@@ -508,7 +508,7 @@ settings:
 | `max_solutions` | Stop after this many solutions |
 | `max_groups`, `max_solutions_per_group` | Two-phase search limits |
 | `num_restarts` | Restarts for the randomized solvers |
-| `skip_gpio_mapping`, `post_optimize`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
+| `skip_gpio_mapping`, `post_optimize`, `post_validate`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
 | *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_group_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
 
 **Presets.** `settings from "<name>":` restarts from a named preset instead of your current settings, then applies the block on top:
@@ -1271,6 +1271,7 @@ Access via the **Settings** button:
 - **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 3)
 - **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on)
 - **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
+- **Post-validate solutions** -- before solver results are listed, check every solution against the constraints with the same check as the project solutions' valid/invalid badge, and drop the invalid ones. Each solver that produced invalid solutions gets a warning with the count and the first reason (default: on)
 - **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)
 - **Cost weights** -- adjust the ranking formula for all cost functions
 - **Viewer zoom limits** -- min/max zoom and mouse sensitivity

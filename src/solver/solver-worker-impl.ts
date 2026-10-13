@@ -22,6 +22,7 @@ import { solveAdaptive } from './adaptive-solver';
 import { getSolverById, getSolverResourceMultiplier } from './solver-registry';
 import { mergeResults } from './result-merger';
 import { postOptimizeSolutions } from './post-optimize';
+import { classifyProjectSolutions } from './solution-status';
 import { toWire } from './solution-transfer';
 import type { Mcu, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
@@ -40,6 +41,36 @@ function maybePostOptimize(
   result.solutions = solutions;
   if (improved > 0) {
     result.errors.push({ type: 'warning', message: `Post-optimization improved ${improved}/${processed} solution(s)` });
+  }
+  return result;
+}
+
+/**
+ * Drop solutions the project-solution validity check marks invalid, so a
+ * solver bug never reaches the list. One warning per offending solver, with
+ * the first reason, keeps the bug visible.
+ */
+export function maybePostValidate(
+  result: SolverResult, ast: ProgramNode, mcu: Mcu, config: Partial<SolverConfig>, solverId?: string,
+): SolverResult {
+  if (!config.postValidate || result.solutions.length === 0) return result;
+  const verdicts = classifyProjectSolutions(result.solutions, ast, mcu, config.skipGpioMapping);
+  const removed = new Map<string, { count: number; reason: string }>();
+  result.solutions = result.solutions.filter(sol => {
+    const v = verdicts.get(sol);
+    if (v?.status !== 'invalid') return true;
+    const id = sol.solverOrigin ?? solverId ?? 'solver';
+    const r = removed.get(id) ?? { count: 0, reason: v.reasons[0] ?? '' };
+    r.count++;
+    removed.set(id, r);
+    return false;
+  });
+  for (const [id, { count, reason }] of removed) {
+    const label = getSolverById(id)?.label ?? id;
+    result.errors.push({
+      type: 'warning',
+      message: `${label}: post-validation removed ${count} invalid solution(s)${reason ? ` — ${reason}` : ''}`,
+    });
   }
   return result;
 }
@@ -196,7 +227,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       }
 
       const merged = mergeResults(labeled, config.maxSolutions ?? 100);
-      self.postMessage(toWire(maybePostOptimize(merged, ast, mcu, config)));
+      self.postMessage(toWire(maybePostValidate(maybePostOptimize(merged, ast, mcu, config), ast, mcu, config)));
       return;
     }
 
@@ -205,7 +236,8 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       solverType ?? 'backtracking', ast, mcu, config,
       twoPhaseConfig, randomizedConfig, complexity
     );
-    self.postMessage(toWire(maybePostOptimize(result, ast, mcu, config)));
+    self.postMessage(toWire(maybePostValidate(
+      maybePostOptimize(result, ast, mcu, config), ast, mcu, config, solverType ?? 'backtracking')));
   } catch (err) {
     self.postMessage({
       mcuRef: '',

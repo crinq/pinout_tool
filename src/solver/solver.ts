@@ -52,6 +52,8 @@ export interface SolverConfig {
   skipGpioMapping?: boolean;
   /** Run the greedy single-pin post-optimization pass after solving. */
   postOptimize?: boolean;
+  /** Drop solutions that fail the project-solution validity check (see solution-status.ts). */
+  postValidate?: boolean;
   /** Square each distance term in the pin_clustering/proximity/anchor costs. */
   squaredCosts?: boolean;
 }

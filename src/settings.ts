@@ -20,6 +20,7 @@ export interface AppSettings {
   touchGestures: boolean;
   skipGpioMapping: boolean;
   postOptimize: boolean;
+  postValidate: boolean;
   squaredCosts: boolean;
   dataInspector: boolean;
   dynamicTimeoutMultiplier: number;
@@ -52,6 +53,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   touchGestures: true,
   skipGpioMapping: true,
   postOptimize: false,
+  postValidate: true,
   squaredCosts: false,
   dataInspector: false,
   solverDebugOverlay: false,
@@ -95,6 +97,7 @@ const SETTING_KEYS: Record<string, keyof AppSettings> = {
   num_restarts: 'numRestarts',
   skip_gpio_mapping: 'skipGpioMapping',
   post_optimize: 'postOptimize',
+  post_validate: 'postValidate',
   squared_costs: 'squaredCosts',
 };
 
@@ -149,6 +152,7 @@ export function applySettingsOverrides(
           numRestarts: DEFAULT_SETTINGS.numRestarts,
           skipGpioMapping: DEFAULT_SETTINGS.skipGpioMapping,
           postOptimize: DEFAULT_SETTINGS.postOptimize,
+          postValidate: DEFAULT_SETTINGS.postValidate,
           squaredCosts: DEFAULT_SETTINGS.squaredCosts,
           ...preset,
           costWeights: { ...DEFAULT_SETTINGS.costWeights, ...preset.costWeights },
@@ -227,6 +231,7 @@ export function formatSettingsBlock(s: AppSettings): string {
     `  num_restarts: ${num(s.numRestarts)}`,
     `  skip_gpio_mapping: ${bool(s.skipGpioMapping)}`,
     `  post_optimize: ${bool(s.postOptimize)}`,
+    `  post_validate: ${bool(s.postValidate)}`,
     `  squared_costs: ${bool(s.squaredCosts)}`,
   ];
   for (const [id, w] of Object.entries(s.costWeights)) {

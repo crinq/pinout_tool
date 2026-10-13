@@ -95,7 +95,7 @@ settings from "complex":
   timeout: 30s
 ```
 
-Overrides solver settings for this run only — your saved Settings are untouched. Keys: `timeout`, `dynamic_timeout`, `solvers`, `max_solutions`, `max_groups`, `max_solutions_per_group`, `num_restarts`, `skip_gpio_mapping`, `post_optimize`, `squared_costs`, plus any cost-function id (`pin_count`, `pin_proximity`, `pin_anchor`, `pin_group_clustering`, …). Presets: `"default"`, `"complex"`.
+Overrides solver settings for this run only — your saved Settings are untouched. Keys: `timeout`, `dynamic_timeout`, `solvers`, `max_solutions`, `max_groups`, `max_solutions_per_group`, `num_restarts`, `skip_gpio_mapping`, `post_optimize`, `post_validate`, `squared_costs`, plus any cost-function id (`pin_count`, `pin_proximity`, `pin_anchor`, `pin_group_clustering`, …). Presets: `"default"`, `"complex"`.
 
 ### Placement (`@`)
 
