@@ -287,7 +287,9 @@ function balanced(raw: string): boolean {
 // `00-15`), letter ranges (`A-H`) or literal names, mixed freely:
 // `{TX, RX, 0-1}` is 4 values. Only port, channel, mapping, require and
 // macro call lines take ranges. A port header copies its whole block; config
-// and group headers are refused, as they would be copied without their body. `${...}` (macro parameters, comment
+// and group headers are refused, as they would be copied without their body.
+// A `shared:` line is the exception that lists instead of copying:
+// `shared: TIM* for PWM{0-2}` -> `shared: TIM* for PWM0, PWM1, PWM2`. `${...}` (macro parameters, comment
 // interpolation) is never a range.
 // ------------------------------------------------------------
 
@@ -332,6 +334,15 @@ function rangeValues(body: string): string[] {
     }
   }
   return out;
+}
+
+/** A name carrying one or more `{...}` groups, e.g. `PWM{0-2}` or `M{0-1}_{A-B}`. */
+const RANGE_TOKEN = /\w*(?:(?<!\$)\{[^{}]*\}\w*)+/g;
+
+/** Each ranged name in the code replaced by its values, comma-separated; the comment is kept as is. */
+function expandInline(text: string): string {
+  const code = codeOf(text);
+  return code.replace(RANGE_TOKEN, t => expandRanges(t).join(', ')) + text.slice(code.length);
 }
 
 /** One copy of `text` per range value, all groups zipped. Throws on bad or mismatched ranges. */
@@ -410,9 +421,13 @@ function expandLines(
       const block = /^port\b/.test(trimmed) ? blockAt(lines, i) : { body: [], next: i + 1 };
       i = block.next - 1;
       try {
+        if (/^shared\b/.test(trimmed)) {
+          out.push({ text: expandInline(line.text), line: line.line });
+          continue;
+        }
         const copies = expandRanges(line.text);
         if (!RANGE_LINE.test(copies[0].trim())) {
-          throw new Error('Ranges {...} are only allowed on port, channel, mapping, require and macro call lines');
+          throw new Error('Ranges {...} are only allowed on port, channel, mapping, require, shared and macro call lines');
         }
         for (const text of copies) {
           out.push(...expandLines([{ text, line: line.line }, ...block.body], macros, stack, depth, errors));

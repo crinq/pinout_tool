@@ -321,7 +321,7 @@ function buildTypeDemand(
     // A `shared:` pattern lifts the "1 port per instance" rule, so demand
     // is effectively unbounded relative to the pool — we still surface the
     // numbers but mark `shared: true` so the UI doesn't flag it red.
-    const shared = instances.some(i => isSharedInstance(i, sharedPatterns));
+    const shared = instances.some(i => isSharedInstance(i, sharedPatterns, true));
     const totalFree = free.length;
     const shortfall = !shared && required > totalFree;
     const missingInstances = shared ? 0 : Math.max(0, required - totalFree);

@@ -259,6 +259,21 @@ shared: ADC[1,2], TIM[1-4]
 
 This is useful when multiple ports need channels on the same ADC or timer, such as multiple analog sensor groups sharing ADC1.
 
+**Sharing between specific ports:** add `for` and a port list to limit the sharing to those ports. Every other port still gets the instance exclusively:
+
+```
+shared: TIM* for PWM, STO      # PWM and STO may share a timer, nobody else may join
+
+port PWM:
+  channel A = TIM*_CH1
+
+port STO:
+  channel sto = TIM*_BKIN
+  require same_instance(sto, PWM.A)   # and must use the same one
+```
+
+`shared:` only *allows* sharing; add a cross-port `require` (as above) when the ports *must* land on the same instance. Lines whose port lists overlap for the same instance merge, so `shared: TIM* for A, B` plus `shared: TIM* for B, C` lets A, B and C all share. A port name in the list that doesn't exist is an error. [Ranges](#ranges) work in the list: `shared: TIM* for PWM{0-3}, STO`.
+
 ### Ports and Channels
 
 A **port** groups related channels. A **channel** represents one logical signal that needs a physical pin.
@@ -409,7 +424,8 @@ expands to `channel A0 = FMC_A0`, `channel A1 = FMC_A1`, ... `channel A12 = FMC_
 | `{TX, RX, 0-1}` | `TX`, `RX`, `0`, `1` (a list; items mix freely) |
 
 - **All groups on a line step together** (1:1), so they must expand to the same length: `channel S{0-3} = SPI1_{MOSI, MISO, SCK, NSS}` gives `S0 = SPI1_MOSI`, ... `S3 = SPI1_NSS`. Text without a group (`$bus`, `@ ~NW`, `FMC_A*`) is repeated on every copy.
-- **Allowed on** port headers, channel declarations, mappings (`=` / `?=`), `require` lines and macro calls. A config or group header would be copied without its body, so a range there is an error.
+- **Allowed on** port headers, channel declarations, mappings (`=` / `?=`), `require` lines, macro calls and `shared:` lines. A config or group header would be copied without its body, so a range there is an error.
+- **On a `shared:` line** ranges list instead of copying: `shared: TIM* for PWM{0-2}, STO` means `shared: TIM* for PWM0, PWM1, PWM2, STO`. Groups inside one name still step together (`M{0-1}_{A-B}` → `M0_A, M1_B`).
 - **On a port header** the whole block is copied, body included: `port ENC{0-3}:` gives four ports `ENC0` ... `ENC3`. Channel names are local to their port, so every copy can keep `A`, `B` (referenced as `ENC0.A`, `ENC1.A`). Ranges inside the body expand per line within each copy and do not step with the header, so `channel D{0-7}` gives eight channels in every port. A body-less template works too: `port ENC{0-2} from encoder_port color "{orange, green, red}"` (ranges also expand inside strings).
 - **On a macro call** each copy is a separate call, which stamps out whole blocks: `efused(V{0-3})` calls `efused(V0)` ... `efused(V3)`.
 - **Each copy is its own line**: `require same_instance(D{0-7})` becomes eight single-channel requires, not one call with eight arguments. Pair ranges instead: `require same_instance(D{0-7}, A{0-7})`.

@@ -319,7 +319,7 @@ export function propagateShared(
   isAssigned: (idx: number) => boolean,
   pinToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
   instanceToVarCandidates: Map<string, Array<{ varIdx: number; candIdx: number }>>,
-  sharedPatterns: PatternPart[]
+  sharedPatterns: SharedPattern[]
 ): Array<{ varIdx: number; candIdx: number }> | null {
   const removed: Array<{ varIdx: number; candIdx: number }> = [];
 
@@ -339,11 +339,13 @@ export function propagateShared(
 
   // Instance exclusivity across ports
   if (candidate.peripheralInstance && !isSharedInstance(candidate.peripheralInstance, sharedPatterns)) {
-    const instEntries = instanceToVarCandidates.get(candidate.peripheralInstance);
+    const inst = candidate.peripheralInstance;
+    const instEntries = instanceToVarCandidates.get(inst);
+    const ownKey = instanceShareKey(inst, portName, sharedPatterns);
     if (instEntries) {
       for (const entry of instEntries) {
         if (isAssigned(entry.varIdx)) continue;
-        if (variables[entry.varIdx].portName === portName) continue;
+        if (instanceShareKey(inst, variables[entry.varIdx].portName, sharedPatterns) === ownKey) continue;
         const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
         if (domIdx !== -1) {
           domains[entry.varIdx].splice(domIdx, 1);
@@ -532,12 +534,12 @@ export interface PinTracker {
   configPhysicals: Map<string, Set<string>>;
   // "port\0position" -> channel that owns this physical within the port
   portPhysicalChannel: Map<string, string>;
-  // Peripheral instance -> port that owns it (exclusive by default)
+  // Peripheral instance -> instanceShareKey of its owner (the port, or its `shared ... for` group)
   instanceOwner: Map<string, string>;
-  // "port\0instance" -> ref count for backtracking
+  // "shareKey\0instance" -> ref count for backtracking
   instanceRefCount: Map<string, number>;
   // Patterns for instances that may be shared across ports
-  sharedPatterns: PatternPart[];
+  sharedPatterns: SharedPattern[];
   // "port\0config" -> set of peripheral signals used (within-config signal exclusivity)
   configSignals: Map<string, Set<string>>;
 }
@@ -665,7 +667,9 @@ export function canAssignPin(
   }
   if (peripheralInstance && !isSharedInstance(peripheralInstance, tracker.sharedPatterns)) {
     const instOwner = tracker.instanceOwner.get(peripheralInstance);
-    if (instOwner !== undefined && instOwner !== portName) return false;
+    if (instOwner !== undefined && instOwner !== instanceShareKey(peripheralInstance, portName, tracker.sharedPatterns)) {
+      return false;
+    }
   }
   if (signalName && signalName.includes('_')) {
     if (tracker.configSignals.get(configKey)?.has(signalName)) return false;
@@ -699,8 +703,9 @@ export function assignPin(
     tracker.configPhysicals.get(configKey)!.add(physicalPosition);
   }
   if (peripheralInstance) {
-    tracker.instanceOwner.set(peripheralInstance, portName);
-    const ipKey = `${portName}\0${peripheralInstance}`;
+    const owner = instanceShareKey(peripheralInstance, portName, tracker.sharedPatterns);
+    tracker.instanceOwner.set(peripheralInstance, owner);
+    const ipKey = `${owner}\0${peripheralInstance}`;
     tracker.instanceRefCount.set(ipKey, (tracker.instanceRefCount.get(ipKey) || 0) + 1);
   }
   if (signalName && signalName.includes('_')) {
@@ -739,7 +744,7 @@ export function unassignPin(
     }
   }
   if (peripheralInstance) {
-    const ipKey = `${portName}\0${peripheralInstance}`;
+    const ipKey = `${instanceShareKey(peripheralInstance, portName, tracker.sharedPatterns)}\0${peripheralInstance}`;
     const iCount = tracker.instanceRefCount.get(ipKey)! - 1;
     if (iCount === 0) {
       tracker.instanceRefCount.delete(ipKey);
@@ -914,22 +919,52 @@ export function extractPinnedAssignments(ast: ProgramNode): PinnedAssignment[] {
   return result;
 }
 
-export function extractSharedPatterns(ast: ProgramNode): PatternPart[] {
-  const patterns: PatternPart[] = [];
+/** A `shared:` pattern; `ports` limits the sharing to those ports (`shared: TIM* for A, B`). */
+export type SharedPattern = PatternPart & { ports?: string[] };
+
+export function extractSharedPatterns(ast: ProgramNode): SharedPattern[] {
+  const patterns: SharedPattern[] = [];
   for (const stmt of ast.statements) {
     if (stmt.type === 'shared_decl') {
-      patterns.push(...stmt.patterns);
+      const ports = stmt.ports;
+      patterns.push(...stmt.patterns.map(p => (ports ? { ...p, ports } : p)));
     }
   }
   return patterns;
 }
 
-/** Check if a peripheral instance name matches any shared pattern */
-export function isSharedInstance(instance: string, patterns: PatternPart[]): boolean {
+/**
+ * Check if a peripheral instance is shared by every port. Port-limited
+ * patterns (`shared: X for A, B`) count only with `includeLimited` — for
+ * checks that just need to know whether an instance may serve several ports.
+ */
+export function isSharedInstance(instance: string, patterns: SharedPattern[], includeLimited = false): boolean {
   for (const p of patterns) {
-    if (matchInstancePattern(instance, p)) return true;
+    if ((includeLimited || !p.ports) && matchInstancePattern(instance, p)) return true;
   }
   return false;
+}
+
+/**
+ * Who `port` counts as when it holds `instance`, for cross-port instance
+ * exclusivity. Ports named together by a `shared: ... for A, B` pattern that
+ * matches the instance get one common key, so they may hold it at the same
+ * time; groups that name a common port merge. Every other port is keyed by
+ * its own name, which keeps the single-owner bookkeeping unchanged.
+ */
+export function instanceShareKey(instance: string, port: string, patterns: SharedPattern[]): string {
+  // ponytail: recomputed per call — cheap for a few `shared:` lines; memoize per (instance, port) if it shows in profiles
+  let group: Set<string> | null = null;
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const p of patterns) {
+      if (!p.ports || !p.ports.some(q => q === port || group?.has(q))) continue;
+      if (!matchInstancePattern(instance, p)) continue;
+      group ??= new Set([port]);
+      for (const q of p.ports) if (!group.has(q)) { group.add(q); grew = true; }
+    }
+  }
+  return group ? '\0' + [...group].sort()[0] : port;
 }
 
 function matchInstancePattern(instance: string, pattern: PatternPart): boolean {
@@ -1515,7 +1550,7 @@ export function validatePeripheralAvailability(
     const normType = normalizePeripheralType(type);
     const free = instances.filter(inst => !reservedPeripherals.has(inst));
     availableByType.set(normType, (availableByType.get(normType) ?? 0) + free.length);
-    if (free.some(inst => isSharedInstance(inst, sharedPatterns))) sharedTypes.add(normType);
+    if (free.some(inst => isSharedInstance(inst, sharedPatterns, true))) sharedTypes.add(normType);
   }
 
   // For the worst case, sum up needed instances per type across all ports
@@ -1685,6 +1720,7 @@ function validateInstanceExclusivity(
           for (const inst of instancesA) {
             if (!instancesB.has(inst)) continue;
             if (isSharedInstance(inst, sharedPatterns)) continue;
+            if (instanceShareKey(inst, portA, sharedPatterns) === instanceShareKey(inst, portB, sharedPatterns)) continue;
 
             // Only report if BOTH ports have no alternative for this normalized type.
             // Use normalizePeripheralType so e.g. LPUART1 and USART2 are the same type.
@@ -1803,6 +1839,15 @@ export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   const reservedPeripheralSet = new Set(reserved.peripherals);
 
   const sharedPatterns = extractSharedPatterns(expandedAst);
+  // A misspelt port in `shared: ... for A, B` would silently share nothing.
+  for (const stmt of expandedAst.statements) {
+    if (stmt.type !== 'shared_decl') continue;
+    for (const p of stmt.ports ?? []) {
+      if (!ports.has(p)) {
+        errors.push({ type: 'error', message: `line ${stmt.loc.line}: Unknown port "${p}" in shared ... for`, line: stmt.loc.line });
+      }
+    }
+  }
 
   validateDuplicates(expandedAst, errors);
   validateConstraints(ports, errors);
@@ -3051,7 +3096,7 @@ function computeGlobalDmaAssignment(
   const cacheKey = allReqs.map(r =>
     `${r.comboIdx}|${r.portName}|${r.triggerName}|${
       r.peripheralInstance && sharedPatterns && sharedPatterns.length > 0 &&
-      isSharedInstance(r.peripheralInstance, sharedPatterns) ? 1 : 0}`
+      isSharedInstance(r.peripheralInstance, sharedPatterns, true) ? 1 : 0}`
   ).join(';');
   let dmaCache = DMA_RESULT_CACHE.get(dmaData);
   if (!dmaCache) {
@@ -3069,7 +3114,9 @@ function computeGlobalDmaAssignment(
   if (sharedPatterns && sharedPatterns.length > 0) {
     const triggerPorts = new Map<string, Set<string>>();
     for (const req of allReqs) {
-      if (req.peripheralInstance && isSharedInstance(req.peripheralInstance, sharedPatterns)) {
+      // Port-limited shares count too: instance exclusivity already keeps
+      // any port outside the group off the instance, and with it its triggers.
+      if (req.peripheralInstance && isSharedInstance(req.peripheralInstance, sharedPatterns, true)) {
         if (!triggerPorts.has(req.triggerName)) triggerPorts.set(req.triggerName, new Set());
         triggerPorts.get(req.triggerName)!.add(req.portName);
       }

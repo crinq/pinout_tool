@@ -83,7 +83,7 @@ function getPhase2SortFn(
   }
 }
 
-function runSingleSolver(
+export function runSingleSolver(
   st: string,
   ast: ProgramNode,
   mcu: Mcu,

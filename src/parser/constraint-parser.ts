@@ -767,7 +767,7 @@ class Parser {
     return { type: 'reserve_decl', patterns, loc };
   }
 
-  // shared: pattern (, pattern)*
+  // shared: pattern (, pattern)* (for port (, port)*)?
   // pattern uses same syntax as signal instance part: ADC1, ADC*, ADC[1,2], TIM[1-3]
   private parseSharedDecl(): SharedDeclNode {
     const loc = this.loc();
@@ -782,8 +782,20 @@ class Parser {
       patterns.push(this.parsePatternPart());
     }
 
+    // `for A, B` limits the sharing to those ports. Matched by value rather
+    // than made a keyword, so ports and channels named `for` keep working.
+    let ports: string[] | undefined;
+    if (this.check('IDENT') && this.peek().value === 'for') {
+      this.advance();
+      ports = [this.parseCompoundIdent()];
+      while (this.check('COMMA')) {
+        this.advance();
+        ports.push(this.parseCompoundIdent());
+      }
+    }
+
     this.expectNewlineOrEnd();
-    return { type: 'shared_decl', patterns, loc };
+    return { type: 'shared_decl', patterns, ...(ports && { ports }), loc };
   }
 
   // pin pin_name = signal_name

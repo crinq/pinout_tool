@@ -25,7 +25,7 @@ import type { Mcu, Solution, SolverResult } from '../types';
 import type { ProgramNode } from '../parser/constraint-ast';
 import {
   prepareSolverContext, evaluateAllConstraints, buildSolution,
-  evaluateExpr, isOptionalRequireVacuous, isSharedInstance, coupledBasePin,
+  evaluateExpr, isOptionalRequireVacuous, isSharedInstance, instanceShareKey, coupledBasePin,
   mergeSolverConfig, emptyResult, pushSolverWarnings, finalizeSolutions, solutionDedupKey,
   type SolverConfig, type VariableAssignment, type SolverContext,
 } from './solver';
@@ -145,7 +145,9 @@ function runLns(
     }
     if (
       ca.peripheralInstance && ca.peripheralInstance === cb.peripheralInstance &&
-      !samePort && !isSharedInstance(ca.peripheralInstance, ctx.sharedPatterns)
+      !samePort && !isSharedInstance(ca.peripheralInstance, ctx.sharedPatterns) &&
+      instanceShareKey(ca.peripheralInstance, a.portName, ctx.sharedPatterns) !==
+        instanceShareKey(ca.peripheralInstance, b.portName, ctx.sharedPatterns)
     ) return true;
     if (
       sameConfig && vi !== vj &&

@@ -120,9 +120,12 @@ export interface ReserveDeclNode {
 }
 
 // shared: ADC1, ADC*, ADC[1,2]
+// shared: TIM* for PWM, STO     (only these ports share)
 export interface SharedDeclNode {
   type: 'shared_decl';
   patterns: PatternPart[];
+  /** Ports the sharing is limited to; absent = every port. */
+  ports?: string[];
   loc: SourceLocation;
 }
 

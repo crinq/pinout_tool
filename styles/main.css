@@ -172,6 +172,21 @@
   100% { opacity: 0; }
 }
 
+/* Count of channels the shown solution leaves without a pin; hover lists them. */
+.pv-unassigned {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  z-index: 99;
+  cursor: help;
+}
+
 .package-canvas {
   flex: 1;
   min-height: 0;

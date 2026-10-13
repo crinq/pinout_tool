@@ -24,6 +24,7 @@ import type {
 import {
   prepareSolverContext, emptyResult, newStats,
   isSharedInstance,
+  instanceShareKey,
   solveBacktrack, createPinTracker,
   isGpioVariable, buildPropagationContext,
   pushSolverWarnings, finalizeSolutions,
@@ -219,21 +220,22 @@ export function canAssignInstance(
 ): boolean {
   if (isSharedInstance(instance, tracker.sharedPatterns)) return true;
   const owner = tracker.instanceOwner.get(instance);
-  return owner === undefined || owner === portName;
+  return owner === undefined || owner === instanceShareKey(instance, portName, tracker.sharedPatterns);
 }
 
 export function assignInstance(
   tracker: InstanceTracker, instance: string, portName: string
 ): void {
-  tracker.instanceOwner.set(instance, portName);
-  const key = `${portName}\0${instance}`;
+  const owner = instanceShareKey(instance, portName, tracker.sharedPatterns);
+  tracker.instanceOwner.set(instance, owner);
+  const key = `${owner}\0${instance}`;
   tracker.instanceRefCount.set(key, (tracker.instanceRefCount.get(key) || 0) + 1);
 }
 
 export function unassignInstance(
   tracker: InstanceTracker, instance: string, portName: string
 ): void {
-  const key = `${portName}\0${instance}`;
+  const key = `${instanceShareKey(instance, portName, tracker.sharedPatterns)}\0${instance}`;
   const count = tracker.instanceRefCount.get(key)! - 1;
   if (count === 0) {
     tracker.instanceRefCount.delete(key);

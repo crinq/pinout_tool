@@ -472,6 +472,13 @@ port ENC{0-2} from enc color "{red, green, blue}"`).statements
     expect(r.errors.map(e => e.message)).toEqual(['Ranges on one line must have the same length (got 2, 3)']);
   });
 
+  it('lists ranges inline on a shared line instead of copying it', () => {
+    expect(lines(`shared: TIM*, ADC{1-2} for PWM{0-2}, STO, M{0-1}_{A-B}  # {x}`)).toEqual([
+      'shared: TIM*, ADC1, ADC2 for PWM0, PWM1, PWM2, STO, M0_A, M1_B  # {x}',
+    ]);
+    expect(errorsOf(`shared: TIM* for M{0-1}_{A-C}`)[0]).toMatch(/same length/);
+  });
+
   it('zero-pads when a bound has a leading zero', () => {
     expect(lines(`  channel D{08-10}`)).toEqual(['channel D08', 'channel D09', 'channel D10']);
     expect(lines(`  channel D{1-003}`)).toEqual(['channel D001', 'channel D002', 'channel D003']);

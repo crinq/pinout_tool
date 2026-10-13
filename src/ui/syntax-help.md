@@ -38,7 +38,13 @@ shared: ADC*
 
 # Range
 shared: ADC[1,2], TIM[1-4]
+
+# Only between these ports (others stay exclusive)
+shared: TIM* for PWM, STO
+shared: TIM* for PWM{0-3}, STO    # = PWM0, PWM1, PWM2, PWM3, STO
 ```
+
+`shared:` allows sharing; to force two ports onto the same instance add `require same_instance(sto, PWM.A)`.
 
 ### Ports, Groups, Channels & Configs
 
@@ -180,7 +186,7 @@ port ENC{0-3}:                            # copies the whole port block
 port M{0-2} from encoder_port color "{red, green, blue}"
 ```
 
-Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. Allowed on port, channel, mapping, `require` and macro call lines only. A ranged port copies its body unchanged; ranges inside the body expand within each copy. `{0-3}` makes four lines; `[0-3]` in a signal pattern makes one line that matches any of four.
+Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. Allowed on port, channel, mapping, `require`, `shared:` and macro call lines only. On a `shared:` line ranges list inline (`for PWM{0-2}` = `for PWM0, PWM1, PWM2`) instead of copying the line. A ranged port copies its body unchanged; ranges inside the body expand within each copy. `{0-3}` makes four lines; `[0-3]` in a signal pattern makes one line that matches any of four.
 
 ### Built-in Functions
 
