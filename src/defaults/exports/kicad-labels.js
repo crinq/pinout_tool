@@ -3,7 +3,7 @@
 // description: Channel/GPIO label pairs joined by traces, as pasteable KiCad schematic text
 // param: bus bool = false | Bus per port | Group the channels of each port on a labeled bus
 // param: shortbus bool = true | Compact bus ranges | Collapse numbered channels in the bus label (D0, D1, D2 -> D[0..2])
-// param: gpiolist bool = false | GPIO label list | Append a separate stack of all mapped GPIO labels (to drop onto the CPU symbol)
+// param: gpiolist bool = false | GPIO label list | Append a separate stack of labels for every GPIO pin, mapped and unused (to drop onto the CPU symbol)
 // param: freelist bool = false | Unused GPIO list | Append a stack of labels for all unmapped GPIO pins
 
 // One line per channel: `PORT.CHANNEL ----- PA1   SIGNALS`. A channel mapped
@@ -89,7 +89,7 @@ function compactNames(names) {
   return out.sort((a, b) => a.idx - b.idx).map(o => o.text);
 }
 
-// Layout: three side-by-side columns — mapped GPIO labels, unused GPIO
+// Layout: three side-by-side columns — all GPIO labels, unused GPIO
 // labels, then the channel (or bus) list.
 const X0 = 25.4, Y0 = 25.4;
 let colX = X0;
@@ -109,16 +109,15 @@ const stack = (names) => {
   }
   colX += Math.ceil((maxLen * 1.1 + 2 * P) / P) * P;       // next column
 };
+const gpioPins = (pins || []).map(p => p.name).filter(n => /^P[A-Z]\d+(_C)?$/.test(n));
 if (params.gpiolist) {
+  // every GPIO pin plus any mapped pin the GPIO filter does not cover
   text('gpio labels', colX, Y0 - STEP);
-  stack([...usedPins]);
+  stack([...new Set([...usedPins, ...gpioPins])]);
 }
 if (params.freelist) {
-  const free = (pins || [])
-    .map(p => p.name)
-    .filter(n => /^P[A-Z]\d+(_C)?$/.test(n) && !usedPins.has(n));
   text('free gpios', colX, Y0 - STEP);
-  stack([...new Set(free)]);
+  stack([...new Set(gpioPins.filter(n => !usedPins.has(n)))]);
 }
 
 // Channel-list column. In plain mode the PORT.CHANNEL labels extend left of

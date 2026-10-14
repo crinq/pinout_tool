@@ -59,6 +59,21 @@ describe('kicad-labels export', () => {
     expect((out.match(/\(label "PA1"/g) ?? []).length).toBe(1);
   });
 
+  it('gpiolist option stacks every GPIO pin, mapped and unused', () => {
+    const exec = new Function(
+      'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
+      'docs', 'constraintsHeader', 'mcuInfo',
+      fn.code,
+    );
+    const pins = [{ name: 'PA1' }, { name: 'PA2' }, { name: 'PA3' }, { name: 'PB2' }, { name: 'VSS' }];
+    const out = exec('T', 'LQFP48', ASSIGN, [], pins, PORTS, {},
+      { ...defaultParamValues(params), gpiolist: true }, null, null, null) as string;
+    const stackX = (pin: string) => [...out.matchAll(new RegExp(`\\(label "${pin}"\\s*\\(at ([\\d.]+) `, 'g'))].map(m => m[1]);
+    expect(stackX('PA3')).toEqual(['25.4']);          // unused gpio, in the gpio stack
+    expect(stackX('PA1')).toContain('25.4');          // mapped gpio, in the gpio stack too
+    expect(out).not.toContain('(label "VSS"');        // not a gpio
+  });
+
   it('emits one row per mapped pin, repeats multi-pin channels, leaves unmapped open', () => {
     const out = run();
     expect(balanced(out)).toBe(true);
@@ -129,7 +144,7 @@ describe('kicad-labels export', () => {
     expect(at('PB2') - at('PA2')).toBeCloseTo(5.08, 5);    // port change: one free line
   });
 
-  it('columns run left to right: mapped GPIOs, free GPIOs, channel list', () => {
+  it('columns run left to right: all GPIOs, free GPIOs, channel list', () => {
     const exec = new Function(
       'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
       'docs', 'constraintsHeader', 'mcuInfo',
@@ -139,8 +154,9 @@ describe('kicad-labels export', () => {
     const out = exec('T', 'LQFP48', ASSIGN, [], pins, PORTS, {},
       { ...defaultParamValues(params), gpiolist: true, freelist: true }, null, null, null) as string;
     const xOf = (re: RegExp) => Number(re.exec(out)![1]);
-    const mappedX = xOf(/\(label "PB2"\s*\(at ([\d.]+) [\d.]+ 0\)/);          // mapped stack (col 1)
-    const freeX = xOf(/\(label "PA3"\s*\(at ([\d.]+) [\d.]+ 0\)/);            // free stack (col 2)
+    const mappedX = xOf(/\(label "PB2"\s*\(at ([\d.]+) [\d.]+ 0\)/);          // gpio stack (col 1)
+    // PA3 sits in both stacks now; its second label is the free stack (col 2)
+    const freeX = Number([...out.matchAll(/\(label "PA3"\s*\(at ([\d.]+) [\d.]+ 0\)/g)][1][1]);
     const wireX = xOf(/\(wire\s*\(pts\s*\(xy ([\d.]+) 25\.4\)/);              // channel rows (col 3)
     expect(mappedX).toBe(25.4);
     expect(freeX).toBeGreaterThan(mappedX);
