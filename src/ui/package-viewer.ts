@@ -880,30 +880,33 @@ export class PackageViewer implements Panel {
 
     const mcu = this.mcu;
 
-    // Build ports structure from assignments
+    // port -> channel -> configs it is mapped in
     const portMap = new Map<string, Map<string, Set<string>>>();
-    for (const a of this.assignments) {
-      if (a.portName === '<pinned>') continue;
-      let channels = portMap.get(a.portName);
-      if (!channels) { channels = new Map(); portMap.set(a.portName, channels); }
-      let configs = channels.get(a.channelName);
-      if (!configs) { configs = new Set(); channels.set(a.channelName, configs); }
-      configs.add(a.configurationName);
-    }
-    // Merge in declared ports/channels from the constraints so exports also
-    // see channels that never got a pin (e.g. skipped GPIO in/out). Parsed
-    // the same way the app collects comments: raw text, no macro expansion.
+    const channelsOf = (port: string): Map<string, Set<string>> => {
+      let channels = portMap.get(port);
+      if (!channels) { channels = new Map(); portMap.set(port, channels); }
+      return channels;
+    };
+    // Declared ports/channels first, so exports list them in constraint order
+    // and also see channels that never got a pin (e.g. skipped GPIO in/out).
     const declaredFns = new Map<string, string[]>();   // "PORT.CH" -> signal patterns
     try {
       for (const [name, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
-        let channels = portMap.get(name);
-        if (!channels) { channels = new Map(); portMap.set(name, channels); }
+        const channels = channelsOf(name);
         for (const ch of chs) {
           if (!channels.has(ch.name)) channels.set(ch.name, new Set());
           declaredFns.set(`${name}.${ch.name}`, ch.functions);
         }
       }
     } catch { /* unparsable constraints: exports see mapped channels only */ }
+    // Then the solution; channels the constraints no longer declare go last.
+    for (const a of this.assignments) {
+      if (a.portName === '<pinned>') continue;
+      const channels = channelsOf(a.portName);
+      let configs = channels.get(a.channelName);
+      if (!configs) { configs = new Set(); channels.set(a.channelName, configs); }
+      configs.add(a.configurationName);
+    }
 
     const ports = [...portMap.entries()].map(([name, channels]) => ({
       name,

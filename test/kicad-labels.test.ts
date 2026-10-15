@@ -40,8 +40,8 @@ const balanced = (s: string): boolean => {
 };
 
 describe('kicad-labels export', () => {
-  it('declares the four options', () => {
-    expect(params.map(p => p.key)).toEqual(['bus', 'shortbus', 'gpiolist', 'freelist']);
+  it('declares the seven options', () => {
+    expect(params.map(p => p.key)).toEqual(['bus', 'shortbus', 'alias', 'sheetpin', 'nettie', 'gpiolist', 'freelist']);
   });
 
   it('freelist option appends labels for unmapped GPIO pins only', () => {
@@ -75,7 +75,7 @@ describe('kicad-labels export', () => {
   });
 
   it('emits one row per mapped pin, repeats multi-pin channels, leaves unmapped open', () => {
-    const out = run();
+    const out = run({ nettie: false });
     expect(balanced(out)).toBe(true);
     expect((out.match(/\(label "COM\.TX"/g) ?? []).length).toBe(2);   // PA1 + PA2
     expect((out.match(/\(label "COM\.RX"/g) ?? []).length).toBe(1);
@@ -96,7 +96,7 @@ describe('kicad-labels export', () => {
   it('bus option groups channels per port on a labeled bus', () => {
     const out = run({ bus: true });
     expect(balanced(out)).toBe(true);
-    expect(out).toContain('(label "COM(TX, RX, TX_EN)"');
+    expect(out).toContain('(label "COM{TX RX TX_EN}"');
     expect((out.match(/\(bus_entry/g) ?? []).length).toBe(4);          // one per row
     expect((out.match(/\(bus\n/g) ?? []).length).toBe(2);              // horizontal + vertical
     expect((out.match(/\(label "COM\.TX"/g) ?? []).length).toBe(2);
@@ -109,11 +109,73 @@ describe('kicad-labels export', () => {
       channels: ['RAM_D0', 'RAM_D1', 'RAM_D2', 'RAM_D5', 'RAM_CLK'].map(name => ({ name })),
     }];
     const on = run({ bus: true }, mem);     // shortbus defaults on
-    expect(on).toContain('(label "MEM(RAM_D[0..2], RAM_D5, RAM_CLK)"');
+    expect(on).toContain('(label "MEM{RAM_D[0..2] RAM_D5 RAM_CLK}"');
     const off = run({ bus: true, shortbus: false }, mem);
-    expect(off).toContain('(label "MEM(RAM_D0, RAM_D1, RAM_D2, RAM_D5, RAM_CLK)"');
+    expect(off).toContain('(label "MEM{RAM_D0 RAM_D1 RAM_D2 RAM_D5 RAM_CLK}"');
     // channel rows keep their full names either way
     expect((on.match(/\(label "MEM\.RAM_D0"/g) ?? []).length).toBe(1);
+  });
+
+  it('alias option labels buses PORT{ALIAS}, shares one alias per member list, adds one bus_aliases comment', () => {
+    const enc = (name: string) => ({ name, channels: ['A', 'B', 'Z'].map(n => ({ name: n })) });
+    const ports = [
+      { name: 'MEM', channels: ['RAM_D0', 'RAM_D1', 'RAM_D2', 'RAM_D5', 'RAM_CLK'].map(name => ({ name })) },
+      enc('Encoder_int0'), enc('Encoder_int1'),                      // range copies
+      ...PORTS,
+    ];
+    const out = run({ bus: true, alias: true }, ports);
+    expect(balanced(out)).toBe(true);
+    expect(out).toContain('(label "MEM{MEM}"');
+    expect(out).toContain('(label "Encoder_int0{Encoder_int}"');
+    expect(out).toContain('(label "Encoder_int1{Encoder_int}"');
+    expect(out).toContain('(label "COM{COM}"');
+    const blocks = [...out.matchAll(/\(text "(\\"bus_aliases[^]*?)"\n\t\(exclude_from_sim/g)].map(m => m[1]);
+    expect(blocks).toHaveLength(1);
+    // un-escape the KiCad string: it is the .kicad_pro snippet, one member per range
+    const snippet = blocks[0].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    expect(JSON.parse('{' + snippet.replace(/,$/, '') + '}')).toEqual({
+      bus_aliases: {
+        MEM: ['RAM_D[0..2]', 'RAM_D5', 'RAM_CLK'],
+        Encoder_int: ['A', 'B', 'Z'],
+        COM: ['TX', 'RX', 'TX_EN'],
+      },
+    });
+    expect(run({ bus: true }, ports)).not.toContain('bus_aliases');
+  });
+
+  it('sheetpin option puts a hierarchical label on the left end of each bus, clear of the gpio stack', () => {
+    const exec = new Function(
+      'mcuName', 'mcuPackage', 'assignments', 'peripherals', 'pins', 'ports', 'pinComments', 'params',
+      'docs', 'constraintsHeader', 'mcuInfo',
+      fn.code,
+    );
+    const out = exec('T', 'LQFP48', ASSIGN, [], [{ name: 'PA1' }, { name: 'PA3' }], PORTS, {},
+      { ...defaultParamValues(params), bus: true, alias: true, sheetpin: true, gpiolist: true }, null, null, null) as string;
+    expect(balanced(out)).toBe(true);
+    const pin = /\(hierarchical_label "COM\{COM\}"\s*\(shape bidirectional\)\s*\(at ([\d.]+) ([\d.]+) 180\)/.exec(out)!;
+    const bus = /\(bus\s*\(pts\s*\(xy ([\d.]+) ([\d.]+)\)/.exec(out)!;
+    expect([pin[1], pin[2]]).toEqual([bus[1], bus[2]]);           // on the bus's left end
+    // the pin text runs left from there; it must clear the gpio stack column
+    const stackX = Number(/\(label "PA3"\s*\(at ([\d.]+) /.exec(out)![1]);
+    expect(Number(pin[1]) - 'COM{COM}'.length * 1.1).toBeGreaterThan(stackX + 'PA3'.length * 1.1);
+    expect(run({ bus: true })).not.toContain('hierarchical_label');
+  });
+
+  it('nettie option puts a NetTie_2 between each channel label and its gpio label', () => {
+    const out = run();                       // on by default
+    expect(balanced(out)).toBe(true);
+    // one tie per row: PA1, PA2, PB2 and the unmapped TX_EN
+    const ties = [...out.matchAll(/\(lib_id "Device:NetTie_2"\)\s*\(at ([\d.]+) ([\d.]+) 0\)/g)];
+    expect(ties).toHaveLength(4);
+    expect([...out.matchAll(/\(property "Reference" "(NT\d+)"/g)].map(m => m[1])).toEqual(['NT1', 'NT2', 'NT3', 'NT4']);
+    // first row: channel trace ends on pin 1 (x - 2.54), gpio label sits past pin 2 (x + 2.54) on its own wire
+    const tx = Number(ties[0][1]);
+    const w = [...out.matchAll(/\(wire\s*\(pts\s*\(xy ([\d.]+) 25\.4\) \(xy ([\d.]+) 25\.4\)/g)].map(m => [Number(m[1]), Number(m[2])]);
+    expect(w[0][1]).toBeCloseTo(tx - 2.54, 5);
+    expect(w[1][0]).toBeCloseTo(tx + 2.54, 5);
+    const pa1 = /\(label "PA1"\s*\(at ([\d.]+) 25\.4 0\)/.exec(out)!;
+    expect(Number(pa1[1])).toBeCloseTo(w[1][1], 5);
+    expect(run({ nettie: false })).not.toContain('NetTie');
   });
 
   it('bus traces stretch to the port\'s longest channel label, uniformly', () => {
@@ -121,7 +183,7 @@ describe('kicad-labels export', () => {
       name: 'MEM',
       channels: [{ name: 'RAM_SDCKE0' }, { name: 'CLK' }],
     }];
-    const out = run({ bus: true }, mem);
+    const out = run({ bus: true, nettie: false }, mem);
     const wires = [...out.matchAll(/\(wire\s*\(pts\s*\(xy ([\d.]+) ([\d.]+)\) \(xy ([\d.]+) \2\)/g)]
       .map(m => Number(m[3]) - Number(m[1]));
     // MEM rows come first, then the assignment-only COM bus
