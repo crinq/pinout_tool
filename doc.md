@@ -712,6 +712,7 @@ port DEBUG:
 | `gpio_pin(ch)` | 1 channel | string | Pin name (e.g., "PA4") |
 | `gpio_pin(ch, "TYPE")` | 1 channel + type | string | Pin name filtered by signal type |
 | `gpio_port(ch)` | 1 channel | string | GPIO port (e.g., "GPIO1" for port A) |
+| `gpio_number(ch)` | 1 channel | number | GPIO pin number, the same for PA1 and PB1. `require gpio_number(A) != gpio_number(B)` keeps two channels on different EXTI lines |
 | `gpio_port(ch, "TYPE")` | 1 channel + type | string | GPIO port filtered by signal type |
 | `flag(ch, "name", value)` | 1 channel + name + value | boolean | Every pin the channel uses carries that vendor pin flag with that value |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
@@ -1269,7 +1270,7 @@ Access via the **Settings** button:
 - **Num restarts** -- number of restarts for randomized-restarts solver (default: 150)
 - **Timeout** -- abort after this many milliseconds (default: 2500)
 - **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 3)
-- **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on)
+- **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on). IN/OUT channels passed to a pin function in a `require` (`gpio_number`, `gpio_pin`, `gpio_port`, `pin_number`, `pin_row`, `pin_col`, `pin_distance`, `flag` — e.g. `gpio_number(IRQ) != gpio_number(SYNC)`) are still placed, so the require can be checked
 - **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
 - **Post-validate solutions** -- before solver results are listed, check every solution against the constraints with the same check as the project solutions' valid/invalid badge, and drop the invalid ones. Each solver that produced invalid solutions gets a warning with the count and the first reason (default: on)
 - **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)

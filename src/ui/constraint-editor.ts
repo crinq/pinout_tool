@@ -12,7 +12,7 @@ import { renderMarkdown } from './markdown';
 import syntaxHelpMd from './syntax-help.md?raw';
 import { createCodeEditor, type CodeEditor } from './code-editor';
 
-const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'gpio_number', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
 const KEYWORD_DOCS: Record<string, string> = {
@@ -47,6 +47,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   type: 'The peripheral type of a channel (e.g. "USART").',
   gpio_pin: 'The pin assigned to a channel (e.g. "PA9").',
   gpio_port: 'The GPIO port of a channel\'s pin (e.g. "GPIO1").',
+  gpio_number: 'The GPIO pin number of a channel\'s pin (1 for PA1 and PB1). e.g. gpio_number(A) != gpio_number(B) for distinct EXTI lines',
   channel_signal: 'The signal function of a channel (e.g. "TX", "CH3").',
   channel_number: 'The channel/signal number (e.g. 3 for TIM1_CH3).',
   instance_number: 'The peripheral instance number (e.g. 2 for SPI2).',

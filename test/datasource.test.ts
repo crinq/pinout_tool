@@ -146,6 +146,42 @@ describe('DataSource', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('merges every vendor of a catalogue and fetches each die from its own vendor dir', async () => {
+    const top = {
+      vendors: {
+        rp: { index: 'rp/index.json' },
+        stm32: { index: 'stm32/index.json' },
+        broken: { index: 'broken/index.json' },              // unreachable: left out, not fatal
+      },
+    };
+    const RP_INDEX = {
+      vendor: 'rp',
+      devices: {
+        rp2040: { file: 'mcu/rp2040.json', family: 'rp2040', packages: { RP2040: 'QFN56' } },
+        stm32a: { file: 'mcu/stm32a.json', family: 'clash' },  // same die name as an stm32 one
+      },
+    };
+    const fetched: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      fetched.push(url);
+      if (url === 'https://x.test/data/index.json') return jsonResponse(top);
+      if (url === 'https://x.test/data/rp/index.json') return jsonResponse(RP_INDEX);
+      if (url === 'https://x.test/data/stm32/index.json') return jsonResponse(VENDOR_INDEX);
+      if (url === 'https://x.test/data/rp/mcu/rp2040.json') return jsonResponse(dieDoc('rp2040', 'RP2040', 'QFN56'));
+      if (url === 'https://x.test/data/stm32/mcu/stm32a.json') return jsonResponse(dieDoc('stm32a', 'STM32A_LQFP32x'));
+      return new Response('nope', { status: 404 });
+    });
+    const ds = new DataSource({ url: 'https://x.test/data', fetchImpl });
+    const idx = await ds.loadIndex();
+    expect(Object.keys(idx.devices!).sort()).toEqual(['rp2040', 'stm32a', 'stm32b', 'stm32c', 'stm32/stm32a'].sort());
+    expect(idx.device_count).toBe(5);
+    expect((await ds.loadDie('rp2040'))[0].refName).toBe('RP2040');
+    expect((await ds.loadDie('stm32/stm32a'))[0].refName).toBe('STM32A_LQFP32x');
+    expect(fetched).toContain('https://x.test/data/rp/mcu/rp2040.json');
+    expect(fetched).toContain('https://x.test/data/stm32/mcu/stm32a.json');
+  });
+
   // --------------------------------------------------------------
   // Per-die fetch + parse
   // --------------------------------------------------------------

@@ -203,6 +203,7 @@ Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. 
 | `gpio_port(A, "SPI")` | Get GPIO port, filtered by type |
 | `gpio_pin(A)` | Get pin name (e.g., "PA4") |
 | `gpio_pin(A, "SPI")` | Get pin name, filtered by type |
+| `gpio_number(A)` | GPIO pin number (1 for PA1 and PB1) |
 | `pin_number(A)` | Physical pin number (integer) |
 | `channel_number(A)` | Peripheral channel/input number |
 | `channel_signal(A)` | Signal function name (e.g., "TX", "CH3") |
@@ -219,6 +220,7 @@ Numeric functions support comparison: `<`, `>`, `<=`, `>=`, `+`, `-`
 ```
 require channel_number(A) < channel_number(B)
 require pin_number(A) - pin_number(B) < 5
+require gpio_number(IRQ) != gpio_number(SYNC)   # distinct EXTI lines
 require dma(TX)
 ```
 

@@ -1132,10 +1132,48 @@ export function estimateComplexity(ast: ProgramNode, mcu: Mcu): 'easy' | 'medium
   return 'very-hard';
 }
 
+/** Require functions whose value only exists once the channel has a pin. */
+export const PIN_LEVEL_FNS = new Set([
+  'pin_row', 'pin_col', 'pin_distance', 'pin_number', 'flag', 'gpio_pin', 'gpio_port', 'gpio_number',
+]);
+
+/**
+ * `port\0config\0channel` of every channel a `require` passes to a pin-level
+ * function. Such an IN/OUT channel (`gpio_number(IRQ) != ...`) must get a real
+ * pin even with skip_gpio_mapping, or the require could never be checked and
+ * would pass vacuously. Other references stay as they were: the port-wide
+ * `$u` desugaring names IN/OUT channels in same_instance, which a GPIO pin
+ * could never satisfy. Keyed per config, since a channel may be IN/OUT in one
+ * config only; cross-port `PORT.CH` cannot tell the config, so it gets an
+ * empty one (= every config of that port).
+ */
+function channelsNamedByRequires(ports: Map<string, PortSpec>): Set<string> {
+  const out = new Set<string>();
+  const walk = (e: ConstraintExprNode, port: string, config: string, pinLevel: boolean): void => {
+    switch (e.type) {
+      case 'ident': if (pinLevel) out.add(`${port}\0${config}\0${e.name}`); break;
+      case 'dot_access': if (pinLevel) out.add(`${e.object}\0\0${e.property}`); break;
+      case 'function_call': {
+        const pl = pinLevel || PIN_LEVEL_FNS.has(e.name);
+        for (const a of e.args) walk(a, port, config, pl);
+        break;
+      }
+      case 'binary_expr': walk(e.left, port, config, pinLevel); walk(e.right, port, config, pinLevel); break;
+      case 'unary_expr': walk(e.operand, port, config, pinLevel); break;
+    }
+  };
+  for (const [name, port] of ports) {
+    for (const config of port.configs) for (const r of config.requires) walk(r.expression, name, config.name, false);
+  }
+  return out;
+}
+
 /** Partition variables into solvable and GPIO-only (availability check). */
 export function partitionGpioVariables(
   variables: SolverVariable[],
-  skipGpioMapping: boolean
+  skipGpioMapping: boolean,
+  /** Channels a `require` names (see channelsNamedByRequires): those IN/OUT channels need a real pin. */
+  referenced: Set<string> = new Set(),
 ): GpioPartitionResult {
   const solveVars: SolverVariable[] = [];
   const gpioVars: SolverVariable[] = [];
@@ -1143,7 +1181,9 @@ export function partitionGpioVariables(
 
   for (const v of variables) {
     if (isGpioVariable(v)) {
-      if (skipGpioMapping) {
+      const named = referenced.has(`${v.portName}\0${v.configName}\0${v.channelName}`) ||
+        referenced.has(`${v.portName}\0\0${v.channelName}`);
+      if (skipGpioMapping && !named) {
         // Not placed by the search — record it so the availability check can
         // verify enough (and the right) pads remain.
         const key = `${v.portName}\0${v.configName}`;
@@ -1295,7 +1335,7 @@ export function literalValue(
 
 const KNOWN_FUNCTIONS = new Set([
   'same_instance', 'diff_instance', 'instance', 'type',
-  'gpio_pin', 'gpio_port', 'dma', 'channel_signal',
+  'gpio_pin', 'gpio_port', 'gpio_number', 'dma', 'channel_signal',
   'channel_number', 'instance_number', 'pin_number',
   'pin_row', 'pin_col', 'pin_distance', 'flag',
 ]);
@@ -1957,7 +1997,8 @@ export function prepareSolverContext(
 
   // Remove optional variables with empty domains (they'll remain unassigned)
   const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
-  const { solveVars: variables, gpioVars, gpioVarsPerConfig } = partitionGpioVariables(nonEmptyVars, !!skipGpioMapping);
+  const { solveVars: variables, gpioVars, gpioVarsPerConfig } =
+    partitionGpioVariables(nonEmptyVars, !!skipGpioMapping, channelsNamedByRequires(ports));
 
   if (variables.length === 0 && gpioVars.length === 0) {
     errors.push({ type: 'warning', message: 'No variables to solve (no port configs defined)' });
@@ -2728,6 +2769,18 @@ function evaluateFunctionCall(
         }
       }
       return '';
+    }
+
+    case 'gpio_number': {
+      // GPIO pin number, the same for PA1 and PB1 — e.g. distinct EXTI lines:
+      // require gpio_number(A) != gpio_number(B)
+      if (args.length === 1) {
+        for (const va of resolveChannel(args[0])) {
+          const n = va.candidate.pin.gpioNumber;
+          if (n !== undefined) return n;
+        }
+      }
+      return -1;
     }
 
     case 'gpio_port': {

@@ -28,7 +28,7 @@ import {
   solveBacktrack, createPinTracker,
   isGpioVariable, buildPropagationContext,
   pushSolverWarnings, finalizeSolutions,
-  isOptionalRequireVacuous } from './solver';
+  isOptionalRequireVacuous, PIN_LEVEL_FNS } from './solver';
 import { mulberry32, shuffleArray } from './solver-utils';
 import { computePortPriority } from './port-priority';
 import { runPhase2Diverse, type GroupSolverFn } from './phase2-diversity';
@@ -527,8 +527,6 @@ function syntheticVariableAssignment(ia: InstanceAssignment): VariableAssignment
   };
 }
 
-/** Functions whose value only exists after pin assignment. */
-const PIN_LEVEL_FNS = new Set(['pin_row', 'pin_col', 'pin_distance', 'pin_number', 'flag', 'gpio_pin', 'gpio_port']);
 
 function mentionsPinLevelFn(expr: ConstraintExprNode): boolean {
   switch (expr.type) {

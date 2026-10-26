@@ -286,14 +286,14 @@ export class DataSource {
     return this.cache.delete(die);
   }
 
-  /** Fetch (or return cached) vendor index. Throws if no URL configured. */
+  /** Fetch (or return cached) index; a multi-vendor catalogue is merged into one. Throws if no URL configured. */
   async loadIndex(signal?: AbortSignal): Promise<IndexDocument> {
     if (this.indexCache) return this.indexCache;
     const base = this.baseUrl();
     if (!base) throw new Error('No MCU data URL configured');
     const gen = this.cacheGen;
 
-    // Two-step: top-level catalogue → first vendor index.
+    // Two-step: top-level catalogue → every vendor index, merged.
     const topUrl = joinUrl(base, 'index.json');
     const top = await this.fetchJson<IndexDocument>(topUrl, signal);
     if (top.devices) {
@@ -302,17 +302,37 @@ export class DataSource {
       return top;
     }
     if (top.vendors) {
-      // Catalogue file: pick first vendor. Most data sources expose stm32.
-      const vendorKey = Object.keys(top.vendors)[0];
-      const rel = top.vendors[vendorKey]?.index;
-      if (!rel) throw new Error(`Vendor catalogue at ${topUrl} has no usable index pointer`);
-      const vendorUrl = joinUrl(base, rel);
-      const vendor = await this.fetchJson<IndexDocument>(vendorUrl, signal);
-      // Stash the vendor base path so per-die fetches resolve `mcu/...`
-      // against the same dir.
-      (vendor as IndexDocument & { __vendorBase?: string }).__vendorBase = stripFile(vendorUrl);
-      if (gen === this.cacheGen) this.indexCache = vendor;
-      return vendor;
+      const settled = await Promise.allSettled(Object.entries(top.vendors).map(async ([key, v]) => {
+        if (!v?.index) throw new Error(`Vendor "${key}" in ${topUrl} has no index pointer`);
+        const vendorUrl = joinUrl(base, v.index);
+        return { key, dir: stripFile(vendorUrl), idx: await this.fetchJson<IndexDocument>(vendorUrl, signal) };
+      }));
+      signal?.throwIfAborted();
+      const vendors = settled.flatMap(r => (r.status === 'fulfilled' ? [r.value] : []));
+      if (vendors.length === 0) {
+        const first = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+        throw first?.reason ?? new Error(`Vendor catalogue at ${topUrl} lists no vendors`);
+      }
+      // Each die remembers its vendor directory so `mcu/<die>.json` resolves
+      // against the right one. A vendor whose index failed is left out rather
+      // than failing the whole catalogue.
+      const devices: Record<string, IndexDeviceEntry> = {};
+      const dieDirs = new Map<string, string>();
+      for (const v of vendors) {
+        for (const [die, entry] of Object.entries(v.idx.devices ?? {})) {
+          const key = die in devices ? `${v.key}/${die}` : die;   // two vendors, one die name
+          devices[key] = entry;
+          dieDirs.set(key, v.dir);
+        }
+      }
+      const merged: IndexDocument & { __dieDirs?: Map<string, string> } = {
+        schema_version: top.schema_version,
+        device_count: Object.keys(devices).length,
+        devices,
+        __dieDirs: dieDirs,
+      };
+      if (gen === this.cacheGen) this.indexCache = merged;
+      return merged;
     }
     throw new Error(`Unrecognised index format at ${topUrl}`);
   }
@@ -371,8 +391,7 @@ export class DataSource {
     const idx = await this.loadIndex(signal);
     const entry = idx.devices?.[die];
     if (!entry) throw new Error(`Die ${die} not found in index`);
-    const base = this.vendorBase();
-    const url = joinUrl(base, entry.file);
+    const url = joinUrl(this.vendorBase(die), entry.file);
     const text = await this.fetchText(url, signal);
     const doc = JSON.parse(text) as McuJsonDocument;
     const mcus = parseMcuJsonDoc(doc);
@@ -429,11 +448,12 @@ export class DataSource {
   // Internals
   // --------------------------------------------------------------
 
-  private vendorBase(): string {
+  /** Directory a die's `file` is relative to: its vendor's, or the base URL for a single-vendor index. */
+  private vendorBase(die: string): string {
     const base = this.baseUrl();
     if (!base) throw new Error('No MCU data URL configured');
-    const stashed = (this.indexCache as IndexDocument & { __vendorBase?: string } | null)?.__vendorBase;
-    return stashed ?? base;
+    const dirs = (this.indexCache as IndexDocument & { __dieDirs?: Map<string, string> } | null)?.__dieDirs;
+    return dirs?.get(die) ?? base;
   }
 
   private async fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
