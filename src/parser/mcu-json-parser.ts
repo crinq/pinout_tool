@@ -43,11 +43,24 @@ import { normalizePeripheralType } from './mcu-xml-parser';
 
 type AltFunctions = Record<string, string | string[]>;
 
+/** Schema v2 GPIO function: one (signal, routing) the pad can carry. */
+interface JsonGpioFunction {
+  signal: string;                        // "USART2_TX"
+  af?: number;                           // AF-mux number
+  analog?: boolean;                      // pad in analog mode
+  /** Extra register state this routing needs, e.g. { "USART2.CR2.SWAP": 1 }. */
+  requires?: Record<string, number>;
+}
+
 interface JsonGpio {
   name: string;                          // "PA0"
   port?: string;                         // "a"
   pin?: number;                          // 0
+  /** Schema v2: every signal of the pad (replaces the two v1 lists below). */
+  functions?: JsonGpioFunction[];
+  /** Schema v1. */
   alternate_functions?: AltFunctions;
+  /** Schema v1. */
   additional_functions?: string[];
   /** Per-pin flags, e.g. { "5V_tolerant": true }. */
   flags?: Record<string, string | number | boolean>;
@@ -556,8 +569,19 @@ export function parseMcuJsonDoc(doc: McuJsonDocument): Mcu[] {
     const keep = (sig: Signal | null): void => {
       if (!sig) return;
       if (isCPin && (!sig.peripheralType || !ANALOG_PERIPHERAL_TYPES.has(sig.peripheralType))) return;
+      if (list.some(s => s.name === sig.name)) return;   // v2 lists a signal once per routing
       list.push(sig);
     };
+
+    // Schema v2: one `functions` list. A routing that needs extra register
+    // state (`requires` with a non-zero value — USART TX/RX or SPI MISO/MOSI
+    // swap, STM32F1 AFIO remap) is skipped: the solver has no model of the
+    // conflicts between those register settings yet, and the default routing
+    // (everything 0) is exactly what schema v1 carried.
+    for (const f of g.functions ?? []) {
+      if (f.requires && Object.values(f.requires).some(v => v !== 0)) continue;
+      keep(buildSignalFromName(f.signal, f.af !== undefined ? `AF${f.af}` : undefined, multiTokenInstances));
+    }
 
     if (g.alternate_functions) {
       for (const [af, value] of Object.entries(g.alternate_functions)) {
