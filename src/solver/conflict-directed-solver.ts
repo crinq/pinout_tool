@@ -58,7 +58,7 @@ interface Frame {
   candIdx: number;      // -1 = none, -2 = skipped optional, else assigned candidate
   conflictSet: Set<number>; // accumulated conflict levels for rejected values
   // undo info
-  pinKey?: string; physKey?: string; instKey?: string;
+  pinKey?: string; physKey?: string; instKey?: string; sigKey?: string;
 }
 
 interface SearchShared {
@@ -191,6 +191,7 @@ function searchOnce(
   const pinLevel = new Map<string, number>();
   const physLevel = new Map<string, number>();
   const instLevel = new Map<string, number>();
+  const sigLevel = new Map<string, number>();   // peripheral signal → level that took it (cross-port exclusive)
   const portLevels = new Map<string, number[]>();
 
   // (port, config) -> variable indices, and referenced-ports per configKey
@@ -264,9 +265,10 @@ function searchOnce(
       if (f.pinKey) pinLevel.delete(f.pinKey);
       if (f.physKey) physLevel.delete(f.physKey);
       if (f.instKey) instLevel.delete(f.instKey);
+      if (f.sigKey) sigLevel.delete(f.sigKey);
       const pl = portLevels.get(v.portName);
       if (pl && pl[pl.length - 1] === level) pl.pop();
-      f.pinKey = f.physKey = f.instKey = undefined;
+      f.pinKey = f.physKey = f.instKey = f.sigKey = undefined;
     }
     assigned[f.vi] = false;
     f.candIdx = -1;
@@ -385,6 +387,8 @@ function searchOnce(
           const il = instLevel.get(c.peripheralInstance);
           if (il !== undefined) f.conflictSet.add(il);
         }
+        const sgl = sigLevel.get(c.signalName);
+        if (sgl !== undefined) f.conflictSet.add(sgl);
         const spl = portLevels.get(v.portName);
         if (spl) for (const l of spl) f.conflictSet.add(l);
         continue;
@@ -453,6 +457,7 @@ function searchOnce(
       if (!pinLevel.has(c.pin.name)) { pinLevel.set(c.pin.name, level); f.pinKey = c.pin.name; }
       if (!physLevel.has(c.pin.physical.position)) { physLevel.set(c.pin.physical.position, level); f.physKey = c.pin.physical.position; }
       if (c.peripheralInstance && !instLevel.has(c.peripheralInstance)) { instLevel.set(c.peripheralInstance, level); f.instKey = c.peripheralInstance; }
+      if (c.signalName.includes('_') && !sigLevel.has(c.signalName)) { sigLevel.set(c.signalName, level); f.sigKey = c.signalName; }
       if (!portLevels.has(v.portName)) portLevels.set(v.portName, []);
       portLevels.get(v.portName)!.push(level);
       advanced = true;

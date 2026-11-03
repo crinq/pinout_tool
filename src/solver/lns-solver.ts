@@ -143,6 +143,8 @@ function runLns(
       if (sameConfig) return true;
       return false;
     }
+    // A signal serves one port, even when its instance is shared.
+    if (!samePort && ca.signalName === cb.signalName && ca.signalName.includes('_')) return true;
     if (
       ca.peripheralInstance && ca.peripheralInstance === cb.peripheralInstance &&
       !samePort && !isSharedInstance(ca.peripheralInstance, ctx.sharedPatterns) &&

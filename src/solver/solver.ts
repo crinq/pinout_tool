@@ -344,15 +344,22 @@ export function propagateShared(
     }
   }
 
-  // Instance exclusivity across ports
-  if (candidate.peripheralInstance && !isSharedInstance(candidate.peripheralInstance, sharedPatterns)) {
+  // Instance exclusivity across ports. Where the instance is shared (by
+  // `shared:` for everyone or for this port's group), the signal itself still
+  // serves only one port: drop other ports' candidates for the same signal.
+  if (candidate.peripheralInstance) {
     const inst = candidate.peripheralInstance;
     const instEntries = instanceToVarCandidates.get(inst);
-    const ownKey = instanceShareKey(inst, portName, sharedPatterns);
+    const sharedByAll = isSharedInstance(inst, sharedPatterns);
+    const ownKey = sharedByAll ? '' : instanceShareKey(inst, portName, sharedPatterns);
+    const sig = candidate.signalName.includes('_') ? candidate.signalName : null;
     if (instEntries) {
       for (const entry of instEntries) {
         if (isAssigned(entry.varIdx)) continue;
-        if (instanceShareKey(inst, variables[entry.varIdx].portName, sharedPatterns) === ownKey) continue;
+        const ev = variables[entry.varIdx];
+        if (ev.portName === portName) continue;
+        const shares = sharedByAll || instanceShareKey(inst, ev.portName, sharedPatterns) === ownKey;
+        if (shares && (sig === null || ev.candidates[entry.candIdx].signalName !== sig)) continue;
         const domIdx = domains[entry.varIdx].indexOf(entry.candIdx);
         if (domIdx !== -1) {
           domains[entry.varIdx].splice(domIdx, 1);
@@ -549,6 +556,11 @@ export interface PinTracker {
   sharedPatterns: SharedPattern[];
   // "port\0config" -> set of peripheral signals used (within-config signal exclusivity)
   configSignals: Map<string, Set<string>>;
+  // Peripheral signal -> port using it. A signal serves one port even when its
+  // instance is shared (`shared:` lets ports share TIM8, not TIM8_CH3N).
+  signalOwner: Map<string, string>;
+  // "port\0signal" -> ref count for backtracking (several configs of one port may reuse it)
+  signalRefCount: Map<string, number>;
 }
 
 /**
@@ -642,6 +654,8 @@ export function createPinTracker(
     instanceRefCount: new Map(),
     sharedPatterns,
     configSignals: new Map(),
+    signalOwner: new Map(),
+    signalRefCount: new Map(),
   };
 }
 
@@ -680,6 +694,8 @@ export function canAssignPin(
   }
   if (signalName && signalName.includes('_')) {
     if (tracker.configSignals.get(configKey)?.has(signalName)) return false;
+    const sigOwner = tracker.signalOwner.get(signalName);
+    if (sigOwner !== undefined && sigOwner !== portName) return false;
   }
   // A switch-through signal on a `_C` pad shorts it to its base pin, so that
   // pin must be free as well (see coupledBasePin).
@@ -718,6 +734,9 @@ export function assignPin(
   if (signalName && signalName.includes('_')) {
     if (!tracker.configSignals.has(configKey)) tracker.configSignals.set(configKey, new Set());
     tracker.configSignals.get(configKey)!.add(signalName);
+    tracker.signalOwner.set(signalName, portName);
+    const psKey = `${portName}\0${signalName}`;
+    tracker.signalRefCount.set(psKey, (tracker.signalRefCount.get(psKey) || 0) + 1);
   }
   const coupled = coupledBasePin(pin, signalName);
   if (coupled !== undefined) lockLogicalPin(tracker, coupled, portName, configKey, channelName);
@@ -762,6 +781,14 @@ export function unassignPin(
   }
   if (signalName && signalName.includes('_')) {
     tracker.configSignals.get(configKey)?.delete(signalName);
+    const psKey = `${portName}\0${signalName}`;
+    const sCount = (tracker.signalRefCount.get(psKey) ?? 1) - 1;
+    if (sCount <= 0) {
+      tracker.signalRefCount.delete(psKey);
+      tracker.signalOwner.delete(signalName);
+    } else {
+      tracker.signalRefCount.set(psKey, sCount);
+    }
   }
   const coupled = coupledBasePin(pin, signalName);
   if (coupled !== undefined) unlockLogicalPin(tracker, coupled, portName, configKey);
