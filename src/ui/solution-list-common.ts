@@ -5,6 +5,7 @@
 // ============================================================
 
 import type { Solution } from '../types';
+import { isInternalPin } from '../solver/pattern-matcher';
 
 /** Unique pins used by a solution (memoized on the solution). */
 export function countSolutionPins(solution: Solution): number {
@@ -12,7 +13,7 @@ export function countSolutionPins(solution: Solution): number {
   const pins = new Set<string>();
   for (const ca of solution.configAssignments) {
     for (const a of ca.assignments) {
-      if (a.portName !== '<pinned>') pins.add(a.pinName);
+      if (a.portName !== '<pinned>' && !isInternalPin(a.pinName)) pins.add(a.pinName);
     }
   }
   solution._pinCount = pins.size;

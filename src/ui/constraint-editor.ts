@@ -30,6 +30,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   pin: 'Fix a pin to a signal. e.g. pin PA4 = DAC1_OUT1  (or = IN / = OUT)',
   port: 'A group of related channels. Optional: from <template>, color, @ placement.',
   channel: 'One signal that needs a pin. Optional @ placement (pin, !pin, ~anchor) and inline = <signal> mapping.',
+  internal: 'A channel without a pin: claims a peripheral signal and its instance, e.g. a DMA trigger. e.g. internal TRG = TIM[6,7]_UP',
   config: 'An alternative wiring of a port; the solver tries every config combination.',
   group: 'A physical grouping of channels inside a port. Takes an @ placement clause and pulls its members together. e.g. group "rail_3v3": @ ~NW',
   require: 'A constraint the solution must satisfy. require? makes it soft (best-effort).',

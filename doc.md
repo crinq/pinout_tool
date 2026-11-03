@@ -17,6 +17,7 @@
    - [Shared Peripherals](#shared-peripherals)
    - [Ports and Channels](#ports-and-channels)
    - [Configurations](#configurations)
+   - [Internal Channels](#internal-channels)
    - [Groups](#groups)
    - [Ranges](#ranges)
    - [Pin Placement (@)](#pin-placement)
@@ -365,6 +366,24 @@ port debug:
 Pin restrictions work with inline mappings: `channel TX @ PA9, PA2 = USART*_TX`
 
 You cannot mix inline mappings with explicit `config` blocks in the same port.
+
+### Internal Channels
+
+An `internal` channel claims a peripheral **signal** -- and with it the instance -- without a pin. Typical case: a timer that only triggers a DMA transfer for a UART in the same port.
+
+```
+port LOG:
+  channel TX = USART*_TX
+  internal TRG = TIM[6,7]_UP          # update event of TIM6 or TIM7, no pin
+  internal CC  = TIM1_CH1             # several internal channels may share a timer
+  require dma(TX, "USART_TX")
+  require dma(TRG)                    # the trigger gets a DMA stream
+```
+
+- The mapping is a normal signal pattern. Candidates are the signals the MCU data knows -- the DMA request names (`TIM6_UP`, `TIM1_CH1`, …, e.g. the `UP` request of the pinless TIM6/TIM7) and the pin signal names -- so a timer without any pins works too.
+- The signal and its instance are claimed like any channel's: other ports can't take the instance unless it is `shared:`, a signal serves one channel, `reserve:` applies, and `$t`, `same_instance`, `instance()`, `dma()` work as usual. Several internal channels can use one timer through different signals (`TIM1_UP`, `TIM1_CH1`).
+- No pin is used: nothing shows on the package, the pin costs and free-pin counts ignore it, and custom exports (KiCad) leave it out. The Peripheral Summary lists its instance and DMA stream; the text/JSON export lists it without a pin.
+- It takes no `@` placement, and pin functions (`gpio_pin`, `pin_number`, …) don't apply to it.
 
 ### Groups
 

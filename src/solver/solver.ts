@@ -23,7 +23,7 @@ import type {
 } from '../parser/constraint-ast';
 import { resolveTemplates } from '../parser/template-resolver';
 import { getStdlibTemplates } from '../parser/stdlib-macros';
-import { expandPatternToCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
+import { expandPatternToCandidates, expandInternalCandidates, matchPatternToInstance, type SignalCandidate } from './pattern-matcher';
 import { hasPerfectMatching } from './bipartite';
 import {
   computeTotalCost, type IncrementalCostTracker,
@@ -176,6 +176,8 @@ export interface PortSpec {
 
 export interface ChannelSpec {
   name: string;
+  /** `internal`: no physical pin, only the peripheral signal (see expandInternalCandidates). */
+  internal?: boolean;
   allowedPins?: Set<string>;
   /** `@ !PA1` on the channel — pins this channel may not use. */
   excludedPins?: Set<string>;
@@ -823,6 +825,7 @@ export function extractPorts(ast: ProgramNode): Map<string, PortSpec> {
     for (const ch of stmt.channels) {
       channels.set(ch.name, {
         name: ch.name,
+        ...(ch.internal && { internal: true }),
         allowedPins: ch.allowedPins ? new Set(ch.allowedPins) : undefined,
         excludedPins: unionPinSets(
           ch.excludedPins ? new Set(ch.excludedPins) : undefined,
@@ -1089,7 +1092,9 @@ export function resolveAllVariables(
 
           let allCandidates: SignalCandidate[] = [];
           for (const pattern of expr.alternatives) {
-            const candidates = expandPatternToCandidates(pattern, mcu, channel?.allowedPins, excludedForChannel);
+            const candidates = channel?.internal
+              ? expandInternalCandidates(pattern, mcu)
+              : expandPatternToCandidates(pattern, mcu, channel?.allowedPins, excludedForChannel);
             allCandidates.push(...candidates);
           }
 

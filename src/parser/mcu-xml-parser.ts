@@ -39,7 +39,7 @@ export function normalizePeripheralType(type: string): string {
  *   "DAC_OUT1"     -> { instance: "DAC",    type: "DAC",   number: undefined, function: "OUT1" }
  *   "I2S2_ext_SD"  -> { instance: "I2S2",   type: "I2S",   number: 2, function: "ext_SD" }
  */
-function parseSignalName(name: string): {
+export function parseSignalName(name: string): {
   peripheralInstance?: string;
   peripheralType?: string;
   instanceNumber?: number;

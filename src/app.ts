@@ -27,6 +27,7 @@ import { primeCommonErrorsLib } from './solver/solver';
 import { getKv, migrateLocalStorageToIdb } from './kv';
 import type { ProjectData, ProjectVersion, SerializedSolution } from './storage';
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
+import { isInternalPin } from './solver/pattern-matcher';
 import { fromWire, type WireSolverResult } from './solver/solution-transfer';
 import { runPreSolveChecks, constraintsNeedDma } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
@@ -2815,6 +2816,7 @@ export class App implements DataManagerHost {
     let validCount = 0;
 
     for (const a of assignments) {
+      if (isInternalPin(a.pinName)) continue;   // internal channels have no pin to carry over
       const pin = mcu.logicalPinByName.get(a.pinName);
       if (!pin) {
         missingPins.add(a.pinName);

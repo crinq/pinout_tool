@@ -92,7 +92,7 @@ interface Token {
 export const MAX_RANGE_VALUES = 1024;
 
 export const KEYWORDS = new Set([
-  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings', 'group',
+  'mcu', 'package', 'ram', 'rom', 'freq', 'temp', 'voltage', 'core', 'reserve', 'pin', 'port', 'channel', 'internal', 'config', 'require', 'macro', 'color', 'shared', 'from', 'settings', 'group',
 ]);
 
 // ============================================================
@@ -881,7 +881,7 @@ class Parser {
       if (this.check('DEDENT') || this.isAtEnd()) break;
 
       const tok = this.peek();
-      if (tok.type === 'KEYWORD' && tok.value === 'channel') {
+      if (tok.type === 'KEYWORD' && (tok.value === 'channel' || tok.value === 'internal')) {
         const [ch, mapping] = this.parseChannelDecl();
         channels.push(ch);
         if (mapping) inlineConfigBody.push(mapping);
@@ -977,7 +977,7 @@ class Parser {
       if (this.check('DEDENT') || this.isAtEnd()) break;
 
       const tok = this.peek();
-      if (tok.type === 'KEYWORD' && tok.value === 'channel') {
+      if (tok.type === 'KEYWORD' && (tok.value === 'channel' || tok.value === 'internal')) {
         const [ch, mapping] = this.parseChannelDecl();
         channels.push({ ...ch, group: name });
         if (mapping) inlineConfigBody.push(mapping);
@@ -1045,14 +1045,19 @@ class Parser {
 
   // channel IDENT (@ pin_list | @ ~target)? (= signal_expr ($var)* )?
   // Returns [channel, optionalInlineMapping]
+  // channel NAME (@ ...)? (= mapping)?   |   internal NAME (= mapping)?
   private parseChannelDecl(): [ChannelDeclNode, MappingNode | null] {
     const loc = this.loc();
-    this.expectKeyword('channel');
+    const internal = this.peek().value === 'internal';
+    this.advance();
     const name = this.parseCompoundIdent();
 
     let allowedPins: string[] | undefined;
     let excludedPins: string[] | undefined;
     let anchor: PinAnchor | undefined;
+    if (internal && this.check('AT')) {
+      this.error(`Internal channel '${name}' has no pin, so it takes no @ placement`, this.peek());
+    }
     if (this.check('AT')) {
       const at = this.parseAtClause();
       allowedPins = at.fixedPins;
@@ -1089,7 +1094,7 @@ class Parser {
 
     const comment = this.skipComment();
     this.expectNewlineOrEnd();
-    return [{ type: 'channel_decl', name, allowedPins, excludedPins, anchor, comment, loc }, inlineMapping];
+    return [{ type: 'channel_decl', name, ...(internal && { internal }), allowedPins, excludedPins, anchor, comment, loc }, inlineMapping];
   }
 
   // config STRING: (@ ...)? NEWLINE INDENT config_body DEDENT

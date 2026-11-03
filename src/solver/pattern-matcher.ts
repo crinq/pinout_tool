@@ -3,8 +3,8 @@
 // ============================================================
 
 import type { SignalPatternNode, PatternPart } from '../parser/constraint-ast';
-import type { Mcu, LogicalPin, Signal } from '../types';
-import { TYPE_ALIASES } from '../parser/mcu-xml-parser';
+import type { Mcu, LogicalPin, PhysicalPin, Signal } from '../types';
+import { TYPE_ALIASES, parseSignalName } from '../parser/mcu-xml-parser';
 
 export interface SignalCandidate {
   pin: LogicalPin;
@@ -158,6 +158,42 @@ export function expandPatternToCandidates(
   }
 
   return candidates;
+}
+
+/**
+ * Pin names of `internal` channels start with this: a placeholder pin per
+ * signal (`~TIM6_UP`) that is not on the package. It lets the usual pin,
+ * instance and signal exclusivity apply, while everything physical (package
+ * view, pin costs, GPIO counts, exports) skips it.
+ */
+export const INTERNAL_PIN_PREFIX = '~';
+export const isInternalPin = (pinName: string): boolean => pinName.startsWith(INTERNAL_PIN_PREFIX);
+
+/**
+ * Candidates for an `internal` channel: every peripheral signal of the MCU that
+ * matches — the DMA request names (TIM6_UP, TIM1_CH1, …) and the pin signal
+ * names — each on its own placeholder pin.
+ */
+export function expandInternalCandidates(pattern: SignalPatternNode, mcu: Mcu): SignalCandidate[] {
+  const names = new Set<string>(mcu.dma?.signalToDmaStreams.keys() ?? []);
+  for (const pin of mcu.logicalPins) for (const s of pin.signals) names.add(s.name);
+  const out: SignalCandidate[] = [];
+  for (const name of names) {
+    const signal: Signal = { name, ...parseSignalName(name) };
+    if (signal.peripheralType === 'GPIO' || !matchSignalPattern(pattern, signal)) continue;
+    const physical: PhysicalPin = { position: INTERNAL_PIN_PREFIX + name, logicals: [] };
+    const pin: LogicalPin = {
+      name: INTERNAL_PIN_PREFIX + name, type: 'I/O', signals: [signal],
+      isAssignable: false, isDefaultVariant: true, physical,
+    };
+    physical.logicals.push(pin);
+    out.push({
+      pin, signal, signalName: name,
+      peripheralInstance: signal.peripheralInstance || name,
+      peripheralType: signal.peripheralType || '',
+    });
+  }
+  return out;
 }
 
 function gpioName(pin: LogicalPin): string {

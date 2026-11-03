@@ -10,7 +10,7 @@ import type { Panel, StateChange, HighlightStyle } from './panel';
 import { parseSearchPattern, parseConstraints } from '../parser/constraint-parser';
 import { resolveTemplates } from '../parser/template-resolver';
 import { getStdlibTemplates } from '../parser/stdlib-macros';
-import { expandPatternToCandidates, getEquivalentSearchTerms } from '../solver/pattern-matcher';
+import { expandPatternToCandidates, getEquivalentSearchTerms, isInternalPin } from '../solver/pattern-matcher';
 import { lookupDmaStream } from '../solver/solver';
 import { exportSvg } from './svg-export';
 import { loadCustomExports } from '../storage';
@@ -64,6 +64,8 @@ export interface DeclaredChannel {
   name: string;
   /** Signal patterns requested for the channel across all configs (raw text). */
   functions: string[];
+  /** `internal`: no physical pin. */
+  internal?: boolean;
 }
 
 /**
@@ -81,8 +83,10 @@ export function declaredPortChannels(source: string): Map<string, DeclaredChanne
     if (stmt.type !== 'port_decl') continue;
     const fns = new Map<string, Set<string>>();
     const names: string[] = [];
+    const internal = new Set<string>();
     for (const ch of stmt.channels) {
       if (!fns.has(ch.name)) { fns.set(ch.name, new Set()); names.push(ch.name); }
+      if (ch.internal) internal.add(ch.name);
     }
     for (const cfg of stmt.configs) {
       for (const m of cfg.body) {
@@ -92,7 +96,7 @@ export function declaredPortChannels(source: string): Map<string, DeclaredChanne
         for (const se of m.signalExprs) for (const alt of se.alternatives) set.add(alt.raw);
       }
     }
-    out.set(stmt.name, names.map(n => ({ name: n, functions: [...fns.get(n)!] })));
+    out.set(stmt.name, names.map(n => ({ name: n, functions: [...fns.get(n)!], ...(internal.has(n) && { internal: true }) })));
   }
   return out;
 }
@@ -694,7 +698,7 @@ export class PackageViewer implements Panel {
     const rows: Array<[string, string, string]> = [];
     for (const [key, entry] of pinMap) {
       const pinName = key.split('\0')[0];
-      rows.push([pinName, entry.port, [...entry.signals].join(', ')]);
+      rows.push([isInternalPin(pinName) ? '(int.)' : pinName, entry.port, [...entry.signals].join(', ')]);
     }
     rows.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
 
@@ -738,7 +742,8 @@ export class PackageViewer implements Panel {
       package: this.mcu.package,
       assignments: this.assignments.map(a => {
         const entry: Record<string, unknown> = {
-          pinName: a.pinName,
+          pinName: isInternalPin(a.pinName) ? null : a.pinName,   // internal channel: no pin
+          ...(isInternalPin(a.pinName) && { internal: true }),
           signalName: a.signalName,
           portName: a.portName,
           channelName: a.channelName,
@@ -894,6 +899,7 @@ export class PackageViewer implements Panel {
       for (const [name, chs] of declaredPortChannels(this.constraintsSource?.() ?? '')) {
         const channels = channelsOf(name);
         for (const ch of chs) {
+          if (ch.internal) continue;   // exports describe the physical pinout
           if (!channels.has(ch.name)) channels.set(ch.name, new Set());
           declaredFns.set(`${name}.${ch.name}`, ch.functions);
         }
@@ -901,7 +907,7 @@ export class PackageViewer implements Panel {
     } catch { /* unparsable constraints: exports see mapped channels only */ }
     // Then the solution; channels the constraints no longer declare go last.
     for (const a of this.assignments) {
-      if (a.portName === '<pinned>') continue;
+      if (a.portName === '<pinned>' || isInternalPin(a.pinName)) continue;
       const channels = channelsOf(a.portName);
       let configs = channels.get(a.channelName);
       if (!configs) { configs = new Set(); channels.set(a.channelName, configs); }
@@ -931,7 +937,7 @@ export class PackageViewer implements Panel {
     const context = {
       mcuName: mcu.refName,
       mcuPackage: mcu.package,
-      assignments: this.assignments.map(a => ({
+      assignments: this.assignments.filter(a => !isInternalPin(a.pinName)).map(a => ({
         ...a,
         portComment: this.channelComments.get(a.portName) || null,
         channelComment: this.channelComments.get(`${a.portName}.${a.channelName}`) || null,

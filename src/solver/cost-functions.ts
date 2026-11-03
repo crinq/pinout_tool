@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { CostFunction, Solution, Mcu, LogicalPin } from '../types';
-import type { SignalCandidate } from './pattern-matcher';
+import { isInternalPin, type SignalCandidate } from './pattern-matcher';
 
 const registry = new Map<string, CostFunction>();
 
@@ -97,7 +97,7 @@ registerCostFunction({
     const pins = new Set<string>();
     for (const ca of solution.configAssignments) {
       for (const a of ca.assignments) {
-        pins.add(a.pinName);
+        if (!isInternalPin(a.pinName)) pins.add(a.pinName);   // internal channels use no pin
       }
     }
     return pins.size;
@@ -241,7 +241,7 @@ export function createIncrementalCostTracker(
 export function incrementCost(tracker: IncrementalCostTracker, candidate: SignalCandidate): void {
   const pinName = candidate.pin.name;
 
-  if (tracker.wPinCount > 0) {
+  if (tracker.wPinCount > 0 && !isInternalPin(pinName)) {
     const rc = (tracker.pinRefCount.get(pinName) ?? 0) + 1;
     tracker.pinRefCount.set(pinName, rc);
     if (rc === 1) tracker.partialCost += tracker.wPinCount;
@@ -271,7 +271,7 @@ export function incrementCost(tracker: IncrementalCostTracker, candidate: Signal
 export function decrementCost(tracker: IncrementalCostTracker, candidate: SignalCandidate): void {
   const pinName = candidate.pin.name;
 
-  if (tracker.wPinCount > 0) {
+  if (tracker.wPinCount > 0 && !isInternalPin(pinName)) {
     const rc = tracker.pinRefCount.get(pinName)! - 1;
     if (rc === 0) { tracker.pinRefCount.delete(pinName); tracker.partialCost -= tracker.wPinCount; }
     else tracker.pinRefCount.set(pinName, rc);

@@ -2,6 +2,7 @@ import type { Panel, StateChange } from './panel';
 import { isGeneralPurposePin } from '../utils';
 import type { Mcu, Assignment } from '../types';
 import { lookupDmaStream } from '../solver/solver';
+import { isInternalPin } from '../solver/pattern-matcher';
 
 export class PeripheralSummary implements Panel {
   readonly id = 'peripheral-summary';
@@ -160,7 +161,7 @@ export class PeripheralSummary implements Panel {
     const pins = new Set<string>();
     const peripherals = new Set<string>();
     for (const a of this.currentAssignments) {
-      if (a.portName !== '<pinned>') pins.add(a.pinName);
+      if (a.portName !== '<pinned>' && !isInternalPin(a.pinName)) pins.add(a.pinName);
       const ui = a.signalName.indexOf('_');
       if (ui !== -1) peripherals.add(a.signalName.substring(0, ui));
     }

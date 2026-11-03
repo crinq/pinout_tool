@@ -197,6 +197,8 @@ export interface PortDeclNode {
 export interface ChannelDeclNode {
   type: 'channel_decl';
   name: string;
+  /** `internal NAME = TIM6_UP`: no physical pin, only the peripheral signal (and its instance). */
+  internal?: boolean;
   /** Name of the enclosing `group` block, when the channel was declared in one. */
   group?: string;
   allowedPins?: string[];

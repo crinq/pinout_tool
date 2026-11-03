@@ -296,7 +296,7 @@ function balanced(raw: string): boolean {
 const RANGE_GROUP = /(?<!\$)\{([^{}]*)\}/g;
 
 /** Lines a range may stand on: `port ...`, `channel ...`, `require ...`, `NAME = ...` / `NAME ?= ...`, `macro(args)`. */
-const RANGE_LINE = /^(?:port|channel|require)\b|^\w+\s*\??=(?!=)|^\w+\s*\(/;
+const RANGE_LINE = /^(?:port|channel|internal|require)\b|^\w+\s*\??=(?!=)|^\w+\s*\(/;
 
 /** `text` up to its `#` comment; a `#` inside a string does not count. */
 function codeOf(text: string): string {
@@ -427,7 +427,7 @@ function expandLines(
         }
         const copies = expandRanges(line.text);
         if (!RANGE_LINE.test(copies[0].trim())) {
-          throw new Error('Ranges {...} are only allowed on port, channel, mapping, require, shared and macro call lines');
+          throw new Error('Ranges {...} are only allowed on port, channel, internal, mapping, require, shared and macro call lines');
         }
         for (const text of copies) {
           out.push(...expandLines([{ text, line: line.line }, ...block.body], macros, stack, depth, errors));

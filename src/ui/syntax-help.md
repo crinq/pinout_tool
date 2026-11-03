@@ -79,6 +79,14 @@ port PWR:
     channel PGOOD2 = IN
 ```
 
+```
+# Internal channel: claims a signal + instance, no pin (e.g. a DMA trigger)
+port LOG:
+  channel TX = USART*_TX
+  internal TRG = TIM[6,7]_UP
+  require dma(TRG)
+```
+
 For single-config ports, write mappings on the `channel` line with `=` (creates an implicit config named after the port). For multiple alternatives, use explicit `config` blocks — the solver tries all combinations. A port body also takes `color` and `group` blocks. Inline `#` comments on port, channel, and pin lines are available in custom export functions.
 
 ### Solver Settings
