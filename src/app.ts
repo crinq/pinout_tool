@@ -98,6 +98,11 @@ export class App implements DataManagerHost {
   private editor: SolutionEditor | null = null;
   private editMenu: HTMLElement | null = null;
   private currentSolution: Solution | null = null;
+  /** Solve from a solution: assignments (and DMA streams) the running solve keeps (null = normal solve). */
+  private solveFixed: Assignment[] | null = null;
+  private solveFixedDma: Map<string, string> | null = null;
+  /** Two or more solutions selected — the viewer shows a comparison, not one solution. */
+  private comparing = false;
   currentProjectName: string | null = null;
   /** Cache of parsed MCU objects for multi-MCU solving */
   private mcuCache = new Map<string, Mcu>();
@@ -220,12 +225,20 @@ export class App implements DataManagerHost {
     // Solve button (now in constraint editor)
     const solveBtn = this.constraintEditor.getSolveButton();
     if (solveBtn) {
-      solveBtn.addEventListener('click', () => this.runSolver());
+      // Shift+click: solve from the shown solution (aborting works either way).
+      solveBtn.addEventListener('click', (e) => {
+        if (e.shiftKey && !this.solveInFlight) this.solveFromSolution();
+        else this.runSolver();
+      });
     }
+    this.constraintEditor.getSolveMenuButton()?.addEventListener('click', (e) => {
+      this.showSolveMenu(e.currentTarget as HTMLElement);
+    });
 
     // Solution selection -> package viewer (shared by both lists)
     const handleSolutionSelected = (solution: Solution) => {
       if (this.editor) return; // ignore list selection while editing; Save/Discard first
+      this.comparing = false;
       this.currentSolution = solution;
       this.refreshEditControls();
 
@@ -315,15 +328,24 @@ export class App implements DataManagerHost {
     });
     this.peripheralSummary.onPortEdit((port, e) => {
       if (!this.editor) return;
-      this.showEditMenu(e.clientX, e.clientY, this.editor.listPortSwaps(port), `Swap all of ${port}`);
+      const unassign = this.editor.unassignPort(port);
+      const cands = [...(unassign ? [unassign] : []), ...this.editor.listPortSwaps(port)];
+      this.showEditMenu(e.clientX, e.clientY, cands, port);
     });
     this.peripheralSummary.onPeripheralEdit((port, inst, e) => {
       if (!this.editor) return;
+      const unassign = this.editor.unassignInstance(port, inst);
       const cands = [
+        ...(unassign ? [unassign] : []),
         ...this.editor.listPeripheralSwaps(port, inst),
         ...this.editor.listUnusedReplacements(port, inst),
       ];
       this.showEditMenu(e.clientX, e.clientY, cands, `${inst} on ${port}`);
+    });
+    this.peripheralSummary.onDmaEdit((port, inst, stream, e) => {
+      if (!this.editor) return;
+      this.showEditMenu(e.clientX, e.clientY, this.editor.listDmaEdits(port, inst, stream),
+        `DMA ${stream ?? '(none)'} · ${inst} on ${port}`);
     });
 
     // Enter in solver list -> add to project solutions
@@ -343,13 +365,15 @@ export class App implements DataManagerHost {
 
   }
 
-  private async runSolver(): Promise<void> {
+  private async runSolver(fixed: Assignment[] | null = null, fixedDma: Map<string, string> | null = null): Promise<void> {
     // If already solving (or fetching), abort instead of restarting.
     if (this.solveInFlight || this.solverWorkers.length > 0 || this.fetchAbort || this.dmaFetchAbort) {
       this.abortSolver();
       return;
     }
     this.solveInFlight = true;
+    this.solveFixed = fixed;
+    this.solveFixedDma = fixed ? fixedDma : null;
     const gen = ++this.solveGen;
     try {
       await this.startSolve(gen);
@@ -358,6 +382,43 @@ export class App implements DataManagerHost {
       // running, onAllSolversComplete / cancelActiveSolve own the flag.
       if (gen === this.solveGen && this.solverWorkers.length === 0) this.solveInFlight = false;
     }
+  }
+
+  /** The solution the package viewer shows — the editor's state in Modify mode; null while comparing. */
+  private shownSolution(): Solution | null {
+    if (this.comparing) return null;
+    return this.editor ? this.editor.toSolution() : this.currentSolution;
+  }
+
+  /**
+   * Solve again, keeping every assignment of the shown solution and solving
+   * only what is unassigned (or new in the constraints). Leaves Modify mode;
+   * unsaved edits can be saved to the project first — the results keep them
+   * either way.
+   */
+  private solveFromSolution(): void {
+    const sol = this.shownSolution();
+    if (!sol) {
+      this.showStatus('Select a single solution to solve from', 'error');
+      return;
+    }
+    const seen = new Set<string>();
+    const fixed = sol.configAssignments.flatMap(ca => ca.assignments).filter(a => {
+      if (a.portName === '<pinned>') return false;
+      const key = `${a.portName}\0${a.configurationName}\0${a.channelName}\0${a.pinName}\0${a.signalName}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    // Streams of the shown solution are kept too (cleared ones are simply absent).
+    const dma = new Map<string, string>();
+    for (const ca of sol.configAssignments) for (const [t, st] of ca.dmaStreamAssignment ?? []) dma.set(t, st);
+    if (this.editor) {
+      const save = this.editor.isDirty()
+        && confirm('Save the edited solution to the project before solving from it?\n(Cancel solves without saving.)');
+      this.exitModifyMode(save);
+    }
+    void this.runSolver(fixed, dma);
   }
 
   private async startSolve(gen: number): Promise<void> {
@@ -384,7 +445,7 @@ export class App implements DataManagerHost {
     const filters = extractMcuFilters(parseResult.ast);
     let mcuList: Mcu[];
 
-    if (filters) {
+    if (filters && !this.solveFixed) {
       // Multi-MCU mode: union (a) MCUs already in storage and (b) MCUs
       // pulled from the remote data source. Either path can be empty.
       mcuList = [];
@@ -455,7 +516,7 @@ export class App implements DataManagerHost {
 
       this.multiMcuRefs = mcuList.map(m => m.refName);
     } else {
-      // Single MCU mode
+      // Single MCU mode (also every solve from a solution: it stays on that solution's MCU)
       if (!this.currentMcu) {
         this.showStatus('No MCU loaded', 'error');
         return;
@@ -649,6 +710,8 @@ export class App implements DataManagerHost {
       skipGpioMapping: this.solveSettings.skipGpioMapping,
       postOptimize: this.solveSettings.postOptimize,
       postValidate: this.solveSettings.postValidate,
+      fixed: this.solveFixed ?? undefined,
+      fixedDma: this.solveFixedDma ?? undefined,
       squaredCosts: this.solveSettings.squaredCosts,
     };
 
@@ -1037,6 +1100,8 @@ export class App implements DataManagerHost {
       btn.classList.remove('btn-abort');
       btn.classList.add('btn-primary');
     }
+    const menuBtn = this.constraintEditor.getSolveMenuButton();
+    if (menuBtn) menuBtn.disabled = solving || btn.disabled;
   }
 
   private buildHeader(): void {
@@ -1825,6 +1890,7 @@ export class App implements DataManagerHost {
     this.layout.broadcastStateChange({
       type: 'solution-selected', assignments, portColors, channelComments,
       gpioCount: solution.gpioCount,
+      dmaUnassigned: solution.dmaUnassigned,
       dmaStreamAssignment: dmaStreamAssignment.size > 0 ? dmaStreamAssignment : undefined,
       compatibility,
     });
@@ -1966,6 +2032,36 @@ export class App implements DataManagerHost {
       this.layout.broadcastStateChange({ type: 'highlight-pins', highlightPins: new Set() });
     });
 
+    this.mountMenu(menu);
+  }
+
+  /** The ▾ menu of the Solve split button. */
+  private showSolveMenu(anchor: HTMLElement): void {
+    this.closeEditMenu();
+    const r = anchor.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.className = 'edit-menu';
+    menu.style.left = `${r.left}px`;
+    menu.style.top = `${r.bottom + 2}px`;
+    const sol = this.shownSolution();
+    const row = document.createElement('div');
+    row.className = 'edit-menu-row' + (sol ? '' : ' disabled');
+    row.title = sol
+      ? 'Keep every assignment of the solution in the package viewer and solve only the unassigned channels'
+      : 'Select a single solution first';
+    row.innerHTML = '<span class="edit-menu-label">Solve from current solution</span><span class="edit-menu-delta neutral">Shift+click · Ctrl+Shift+Enter</span>';
+    if (sol) {
+      row.addEventListener('click', () => {
+        this.closeEditMenu();
+        this.solveFromSolution();
+      });
+    }
+    menu.appendChild(row);
+    this.mountMenu(menu);
+  }
+
+  /** Show a built menu: on-screen, closed by an outside click. */
+  private mountMenu(menu: HTMLElement): void {
     document.body.appendChild(menu);
     // Keep the menu on-screen.
     const rect = menu.getBoundingClientRect();
@@ -2009,6 +2105,7 @@ export class App implements DataManagerHost {
   }
 
   private handleCompareSelectionChanged(solutions: Solution[]): void {
+    this.comparing = solutions.length >= 2;
     // Only 0 or 1 selected -> nothing to compare; single-select flow
     // (handleSolutionSelected) already handled the render.
     if (solutions.length < 2) return;
@@ -2077,6 +2174,8 @@ export class App implements DataManagerHost {
     const hasErrors = !parseResult || parseResult.errors.length > 0;
     const hasMcuFilter = parseResult?.ast?.statements.some(s => s.type === 'mcu_decl') ?? false;
     solveBtn.disabled = hasErrors || (!this.currentMcu && !hasMcuFilter);
+    const menuBtn = this.constraintEditor.getSolveMenuButton();
+    if (menuBtn) menuBtn.disabled = solveBtn.disabled || solveBtn.classList.contains('btn-abort');
   }
 
   /** Load + migrate a stored project; null when missing or corrupt. */
@@ -2105,10 +2204,11 @@ export class App implements DataManagerHost {
 
   private setupKeyboardShortcuts(): void {
     document.addEventListener('keydown', (e) => {
-      // Ctrl+Enter / Cmd+Enter: solve
+      // Ctrl+Enter / Cmd+Enter: solve; with Shift: solve from the shown solution
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        this.runSolver();
+        if (e.shiftKey && !this.solveInFlight) this.solveFromSolution();
+        else this.runSolver();
         return;
       }
 

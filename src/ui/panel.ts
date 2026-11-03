@@ -33,6 +33,8 @@ export interface StateChange {
   channelComments?: Map<string, string>;
   gpioCount?: number;
   dmaStreamAssignment?: Map<string, string>;
+  /** DMA requests (triggers) left without a stream in Modify mode. */
+  dmaUnassigned?: string[];
   compatibility?: CompatibilityResult;
   /** Pin names to highlight in the package viewer (empty set clears) */
   highlightPins?: Set<string>;

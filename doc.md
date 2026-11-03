@@ -38,6 +38,7 @@
 7. [Solution Browser](#solution-browser)
    - [Solution Validity Badges](#solution-validity-badges)
    - [Editing a Solution (Modify Mode)](#editing-a-solution-modify-mode)
+   - [Solving from a Solution](#solving-from-a-solution)
 8. [Project Management](#project-management)
 9. [Known Limitations](#known-limitations)
    - [Data quality](#data-quality-working-on-it)
@@ -1362,10 +1363,23 @@ the same way.
 To hand-tune a solution's routing for your board -- optimizing for things the cost function can't see, such as connector placement -- select it and click **✎ Modify** in the package-viewer toolbar. This edits a copy; the live cost and its delta are shown next to the button. In modify mode:
 
 - **Click a pin** -- move its signal to another free pin, bring a signal here from another pin, or place an unmapped IN/OUT signal.
-- **Click a port** in the Peripheral Summary -- swap all of its peripherals with a compatible port (e.g. exchange two encoders).
-- **Click a peripheral** -- swap it with the same-type peripheral on another port, or replace it with a compatible unused instance.
+- **Click a port** in the Peripheral Summary -- unassign the whole port, or swap all of its peripherals with a compatible port (e.g. exchange two encoders).
+- **Click a peripheral** -- unassign it (in all of the port's configs), swap it with the same-type peripheral on another port, or replace it with a compatible unused instance.
+- **Click a DMA stream** (e.g. `D1S4` in `SPI2(D1S4, D1S3)`) -- unassign it, move it to a free stream that can serve the request, or swap it with another request's stream. A request left without a stream shows as a red `–`; the solution counts as invalid until it is solved again.
+
+Unassigning only touches that port: ports sharing the peripheral, template or range copies keep their pins. A pin is free again once nothing uses it (another config of the same port may still hold it).
 
 Each option lists its **cost change** and highlights the pins it would move when you hover it. **Ctrl+Z** / **Ctrl+Shift+Z** undo/redo. **Save** adds the edited solution to the project; **Discard** exits without keeping changes.
+
+### Solving from a Solution
+
+**Solve ▾ → Solve from current solution** (or **Shift+click** Solve, or **Ctrl+Shift+Enter**) solves again while keeping everything the solution in the package viewer has assigned -- in Modify mode, the edited state. Only unassigned channels, channels added to the constraints since, and unfilled optional (`?=`) channels are solved; kept DMA streams stay as well, and requests without a stream get one. Typical use: unassign a port or a peripheral in Modify mode, then solve from the result.
+
+- It runs on the solution's MCU only, even with `mcu:` filters.
+- Kept assignments the current constraints no longer allow (a changed pattern, a newly reserved pin) are solved fresh; a warning lists them.
+- Kept IN/OUT pins stay taken even with *Skip GPIO mapping*.
+- Starting it from Modify mode leaves Modify mode; if there are unsaved edits you are asked whether to save them to the project first (the results keep them either way).
+- Not available while comparing several solutions.
 
 ---
 
@@ -1449,6 +1463,7 @@ Return a string to copy to clipboard, or `{filename, content, mimeType}` to trig
 | Shortcut | Context | Action |
 |----------|---------|--------|
 | **Ctrl+Enter** | Editor | Run solver |
+| **Ctrl+Shift+Enter** | Global | Solve from the shown solution |
 | **Escape** | Global | Close modal / clear search |
 | **Ctrl+Z** | Editor | Undo |
 | **Ctrl+Shift+Z** | Editor | Redo |

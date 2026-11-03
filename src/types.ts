@@ -234,6 +234,8 @@ export interface Solution {
   clusterSize?: number;
   /** Total number of optional mappings (?=) + optional requires (require?) across active configs */
   optionalTotal: number;
+  /** DMA requests (triggers) the user left without a stream in Modify mode — invalid until solved again. */
+  dmaUnassigned?: string[];
   /** Number of fulfilled optional mappings + satisfied optional requires */
   optionalFulfilled: number;
   /** Cached dedup fingerprint (set during finalizeSolutions, reused by mergeResults) */

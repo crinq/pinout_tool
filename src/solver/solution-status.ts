@@ -139,6 +139,9 @@ function classifyOne(
     if (failures.length === 0) note('constraints not satisfied (no valid DMA assignment)');
   }
 
+  // DMA requests the user cleared in Modify mode stay without a stream.
+  for (const t of sol.dmaUnassigned ?? []) note(`DMA request ${t} has no stream`);
+
   // IN/OUT channels the solver left unplaced (skip_gpio_mapping) still need
   // free pads. As a side effect this (re)computes sol.gpioCount — solutions
   // saved before it was stored come back with 0.

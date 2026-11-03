@@ -23,7 +23,11 @@ export interface SerializedSolution {
   gpioCount?: number;
   optionalTotal?: number;
   optionalFulfilled?: number;
+  /** DMA streams per config combination (`activeConfigs` → trigger/signal → stream). */
+  dma?: { configs: Record<string, string>; streams: Record<string, string> }[];
+  dmaUnassigned?: string[];
 }
+
 
 export interface ProjectVersion {
   id: number;
@@ -69,6 +73,10 @@ export function serializeSolution(sol: Solution): SerializedSolution {
     gpioCount: sol.gpioCount,
     optionalTotal: sol.optionalTotal,
     optionalFulfilled: sol.optionalFulfilled,
+    dma: sol.configAssignments
+      .filter(ca => ca.dmaStreamAssignment && ca.dmaStreamAssignment.size > 0)
+      .map(ca => ({ configs: Object.fromEntries(ca.activeConfigs), streams: Object.fromEntries(ca.dmaStreamAssignment!) })),
+    dmaUnassigned: sol.dmaUnassigned,
   };
 }
 
@@ -87,6 +95,14 @@ export function deserializeSolution(data: SerializedSolution): Solution {
   } else {
     configAssignments = [];
   }
+  // Re-attach DMA maps. Rebuilt combos only list ports that have assignments
+  // (an all-IN/OUT port drops out), so match on the rebuilt combo's own ports.
+  if (data.dma) {
+    for (const ca of configAssignments) {
+      const hit = data.dma.find(d => [...ca.activeConfigs].every(([p, c]) => d.configs[p] === c));
+      if (hit) ca.dmaStreamAssignment = new Map(Object.entries(hit.streams));
+    }
+  }
 
   return {
     id: data.id,
@@ -101,6 +117,7 @@ export function deserializeSolution(data: SerializedSolution): Solution {
     gpioCount: data.gpioCount ?? 0,
     optionalTotal: data.optionalTotal ?? 0,
     optionalFulfilled: data.optionalFulfilled ?? 0,
+    ...(data.dmaUnassigned && data.dmaUnassigned.length > 0 && { dmaUnassigned: data.dmaUnassigned }),
   };
 }
 

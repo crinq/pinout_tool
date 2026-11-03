@@ -32,6 +32,7 @@ import {
   setActiveAnchors, getActiveAnchors,
 } from './cost-functions';
 import { buildAnchors, filterByHardAnchors } from './pin-anchors';
+import { buildVarsByChannel, reconstructAssignments } from './post-optimize';
 import {
   lintForCommonErrors,
   primeCommonErrorsLib as primeLintLib,
@@ -54,6 +55,10 @@ export interface SolverConfig {
   postOptimize?: boolean;
   /** Drop solutions that fail the project-solution validity check (see solution-status.ts). */
   postValidate?: boolean;
+  /** Solve from a solution: these assignments are kept, the rest is solved (see setFixedAssignments). */
+  fixed?: Assignment[];
+  /** …and these DMA streams (trigger → stream), as a preference. */
+  fixedDma?: Map<string, string>;
   /** Square each distance term in the pin_clustering/proximity/anchor costs. */
   squaredCosts?: boolean;
 }
@@ -1132,6 +1137,63 @@ export function estimateComplexity(ast: ProgramNode, mcu: Mcu): 'easy' | 'medium
   return 'very-hard';
 }
 
+// ------------------------------------------------------------
+// Solve from a solution
+//
+// The worker sets the kept assignments around one solve (like the anchors);
+// prepareSolverContext then narrows each covered variable to that single
+// candidate, so every solver keeps them and only searches the rest.
+// ------------------------------------------------------------
+
+let activeFixed: Assignment[] | null = null;
+let activeDmaPins: DmaPins | null = null;
+
+/**
+ * Assignments (and DMA streams, trigger → stream) to keep in the next solves,
+ * or null for a normal solve. Kept streams are a preference: if they no longer
+ * fit, the streams are chosen freely instead of failing the solve.
+ */
+export function setFixedAssignments(fixed: Assignment[] | null | undefined, dma?: Map<string, string> | null): void {
+  activeFixed = fixed && fixed.length > 0 ? fixed : null;
+  activeDmaPins = activeFixed && dma && dma.size > 0 ? new Map(dma) : null;
+}
+
+/**
+ * Narrow every variable a kept assignment covers to that one candidate.
+ * Kept assignments the current constraints no longer allow (pattern changed,
+ * pin now reserved, channel gone) are solved fresh, with one warning listing
+ * them. Returns the `port\0config\0channel` keys that were kept.
+ */
+function applyFixedAssignments(variables: SolverVariable[], fixed: Assignment[], errors: SolverError[]): Set<string> {
+  const asSolution = { configAssignments: [{ activeConfigs: new Map(), assignments: fixed }] } as unknown as Solution;
+  const kept = reconstructAssignments(asSolution, buildVarsByChannel(variables));
+  const keptKeys = new Set<string>();
+  const used = new Set<string>();
+  for (const [v, c] of kept) {
+    const idx = v.candidates.indexOf(c);
+    if (!v.domain.includes(idx)) continue;   // e.g. the pin is reserved now
+    v.domain = [idx];
+    keptKeys.add(`${v.portName}\0${v.configName}\0${v.channelName}`);
+    used.add(`${v.portName}\0${v.configName}\0${v.channelName}\0${c.pin.name}\0${c.signalName}`);
+  }
+  const dropped = new Set<string>();
+  for (const a of fixed) {
+    if (a.portName === '<pinned>') continue;
+    if (!used.has(`${a.portName}\0${a.configurationName}\0${a.channelName}\0${a.pinName}\0${a.signalName}`)) {
+      dropped.add(`${a.portName}.${a.channelName} (${a.pinName} ${a.signalName})`);
+    }
+  }
+  if (dropped.size > 0) {
+    const list = [...dropped];
+    errors.push({
+      type: 'warning',
+      message: `Solve from solution: ${list.length} kept assignment(s) no longer fit the constraints and are solved fresh: `
+        + list.slice(0, 5).join(', ') + (list.length > 5 ? `, …and ${list.length - 5} more` : ''),
+    });
+  }
+  return keptKeys;
+}
+
 /** Require functions whose value only exists once the channel has a pin. */
 export const PIN_LEVEL_FNS = new Set([
   'pin_row', 'pin_col', 'pin_distance', 'pin_number', 'flag', 'gpio_pin', 'gpio_port', 'gpio_number',
@@ -1995,10 +2057,15 @@ export function prepareSolverContext(
     return null;
   }
 
+  // Solve from a solution: kept assignments pin their variables. A kept IN/OUT
+  // channel stays a real variable so its pin counts as taken.
+  const placeGpio = channelsNamedByRequires(ports);
+  if (activeFixed) for (const k of applyFixedAssignments(allVariables, activeFixed, errors)) placeGpio.add(k);
+
   // Remove optional variables with empty domains (they'll remain unassigned)
   const nonEmptyVars = allVariables.filter(v => v.domain.length > 0 || !v.optional);
   const { solveVars: variables, gpioVars, gpioVarsPerConfig } =
-    partitionGpioVariables(nonEmptyVars, !!skipGpioMapping, channelsNamedByRequires(ports));
+    partitionGpioVariables(nonEmptyVars, !!skipGpioMapping, placeGpio);
 
   if (variables.length === 0 && gpioVars.length === 0) {
     errors.push({ type: 'warning', message: 'No variables to solve (no port configs defined)' });
@@ -2474,22 +2541,11 @@ export function evaluateAllConstraints(
   dmaData?: DmaData,
   dmaAssignmentsOut?: Map<string, string>[],
   mcuInfo?: EvalMcuInfo,
-  sharedPatterns?: PatternPart[]
+  sharedPatterns?: PatternPart[],
+  /** Hand-picked streams (solution editor); see DmaPins. Default: a solve from a solution's kept streams. */
+  dmaPins?: DmaPins,
 ): boolean {
-  // Build per-config assignment lookup:
-  // port -> config -> channel -> VariableAssignment[]
-  const byPortConfig = new Map<string, Map<string, Map<string, VariableAssignment[]>>>();
-  for (const va of assignments) {
-    const port = va.variable.portName;
-    const config = va.variable.configName;
-    const channel = va.variable.channelName;
-    if (!byPortConfig.has(port)) byPortConfig.set(port, new Map());
-    const portMap = byPortConfig.get(port)!;
-    if (!portMap.has(config)) portMap.set(config, new Map());
-    const configMap = portMap.get(config)!;
-    if (!configMap.has(channel)) configMap.set(channel, []);
-    configMap.get(channel)!.push(va);
-  }
+  const byPortConfig = groupByPortConfig(assignments);
 
   // For EACH config combination, check all active configs' constraints
   for (const combo of configCombinations) {
@@ -2525,9 +2581,13 @@ export function evaluateAllConstraints(
 
   // After ALL combos pass require checks, compute a globally consistent DMA assignment
   if (dmaData) {
-    const globalResult = computeGlobalDmaAssignment(
-      configCombinations, ports, byPortConfig, dmaData, sharedPatterns
+    let globalResult = computeGlobalDmaAssignment(
+      configCombinations, ports, byPortConfig, dmaData, sharedPatterns, dmaPins ?? activeDmaPins ?? undefined
     );
+    // Kept streams of a solve from a solution are a preference, not a requirement.
+    if (!globalResult && !dmaPins && activeDmaPins) {
+      globalResult = computeGlobalDmaAssignment(configCombinations, ports, byPortConfig, dmaData, sharedPatterns);
+    }
     if (!globalResult) return false;
     if (dmaAssignmentsOut) {
       dmaAssignmentsOut.push(...globalResult);
@@ -2990,6 +3050,60 @@ interface DmaReq {
 }
 
 /**
+ * Hand-picked DMA streams, trigger (e.g. "SPI2_TX") → stream name, or null to
+ * leave that request without a stream (the editor's "unassign"; the solution
+ * is invalid until solved again). Requests not listed are allocated freely; a
+ * pin naming a stream the request cannot use is ignored.
+ */
+export type DmaPins = Map<string, string | null>;
+
+/** port → config → channel → assignments */
+function groupByPortConfig(assignments: VariableAssignment[]): Map<string, Map<string, Map<string, VariableAssignment[]>>> {
+  const byPortConfig = new Map<string, Map<string, Map<string, VariableAssignment[]>>>();
+  for (const va of assignments) {
+    const port = va.variable.portName;
+    const config = va.variable.configName;
+    const channel = va.variable.channelName;
+    if (!byPortConfig.has(port)) byPortConfig.set(port, new Map());
+    const portMap = byPortConfig.get(port)!;
+    if (!portMap.has(config)) portMap.set(config, new Map());
+    const configMap = portMap.get(config)!;
+    if (!configMap.has(channel)) configMap.set(channel, []);
+    configMap.get(channel)!.push(va);
+  }
+  return byPortConfig;
+}
+
+/** One DMA request of an assignment: which port needs which trigger, and the streams that can serve it. */
+export interface DmaRequestInfo {
+  portName: string;
+  triggerName: string;
+  peripheralInstance: string;
+  streams: string[];
+}
+
+/** The DMA requests an assignment makes (one per port + trigger, across all config combinations). */
+export function listDmaRequests(
+  assignments: VariableAssignment[],
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  dmaData: DmaData,
+): DmaRequestInfo[] {
+  const { allReqs } = collectDmaRequirements(configCombinations, ports, groupByPortConfig(assignments), dmaData);
+  const out = new Map<string, DmaRequestInfo>();
+  for (const r of allReqs) {
+    const key = `${r.portName}\0${r.triggerName}`;
+    if (!out.has(key)) {
+      out.set(key, {
+        portName: r.portName, triggerName: r.triggerName, peripheralInstance: r.peripheralInstance,
+        streams: r.availableStreams.map(s => s.name),
+      });
+    }
+  }
+  return [...out.values()];
+}
+
+/**
  * Parse a dma() filter string into peripheral type and trigger function.
  * e.g. "SPI_TX" → { peripheralType: "SPI", triggerFunction: "TX" }
  *      "TIM"    → { peripheralType: "TIM", triggerFunction: null }
@@ -3070,17 +3184,20 @@ interface DmaFilter {
  *
  * Returns an array of per-combo assignment maps (triggerName → streamName), or null if infeasible.
  */
-function computeGlobalDmaAssignment(
+interface TaggedReq extends DmaReq {
+  comboIdx: number;
+}
+
+/**
+ * One requirement per unique (port, trigger, combo) tuple, plus the signal
+ * names behind each (combo, trigger) for the result's reverse lookup.
+ */
+function collectDmaRequirements(
   configCombinations: Map<string, string>[],
   ports: Map<string, PortSpec>,
   byPortConfig: Map<string, Map<string, Map<string, VariableAssignment[]>>>,
   dmaData: DmaData,
-  sharedPatterns?: PatternPart[],
-): Map<string, string>[] | null {
-  interface TaggedReq extends DmaReq {
-    comboIdx: number;
-  }
-
+): { allReqs: TaggedReq[]; triggerSignals: Map<string, Set<string>> } {
   // Collect one requirement per unique (port, trigger, combo) tuple.
   // The channel is only used to find the peripheral instance; the DMA
   // stream is allocated per trigger, not per pin signal.
@@ -3139,6 +3256,34 @@ function computeGlobalDmaAssignment(
       }
     }
   }
+  return { allReqs, triggerSignals };
+}
+
+function computeGlobalDmaAssignment(
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  byPortConfig: Map<string, Map<string, Map<string, VariableAssignment[]>>>,
+  dmaData: DmaData,
+  sharedPatterns?: PatternPart[],
+  dmaPins?: DmaPins,
+): Map<string, string>[] | null {
+  const collected = collectDmaRequirements(configCombinations, ports, byPortConfig, dmaData);
+  const { triggerSignals } = collected;
+  let allReqs = collected.allReqs;
+
+  // Hand-picked / kept streams: narrow a pinned request to its stream, drop a
+  // request pinned to null (it stays without a stream).
+  let pinKey = '';
+  if (dmaPins && dmaPins.size > 0) {
+    allReqs = allReqs.filter(r => !(dmaPins.has(r.triggerName) && dmaPins.get(r.triggerName) === null));
+    allReqs = allReqs.map(r => {
+      const want = dmaPins.get(r.triggerName);
+      const stream = want ? r.availableStreams.find(st => st.name === want) : undefined;
+      return stream ? { ...r, availableStreams: [stream] } : r;
+    });
+    pinKey = '#' + allReqs.map(r => (dmaPins.get(r.triggerName) ?? '')).join(',')
+      + '#' + [...dmaPins].filter(([, v]) => v === null).map(([k]) => k).join(',');
+  }
 
   if (allReqs.length === 0) {
     return configCombinations.map(() => new Map());
@@ -3152,7 +3297,7 @@ function computeGlobalDmaAssignment(
     `${r.comboIdx}|${r.portName}|${r.triggerName}|${
       r.peripheralInstance && sharedPatterns && sharedPatterns.length > 0 &&
       isSharedInstance(r.peripheralInstance, sharedPatterns, true) ? 1 : 0}`
-  ).join(';');
+  ).join(';') + pinKey;
   let dmaCache = DMA_RESULT_CACHE.get(dmaData);
   if (!dmaCache) {
     dmaCache = new Map();

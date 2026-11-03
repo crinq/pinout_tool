@@ -17,6 +17,8 @@ export class PeripheralSummary implements Panel {
   private totalAssignablePins = 0;
   private gpioCount = 0;
   private dmaStreamAssignment = new Map<string, string>();
+  private dmaUnassigned: string[] = [];
+  private dmaEditCallback: ((port: string, instance: string, stream: string | null, e: MouseEvent) => void) | null = null;
   private highlightCallback: ((pins: Set<string>, color?: string) => void) | null = null;
   private persistentHighlight: { type: 'port' | 'peripheral'; key: string } | null = null;
   private editMode = false;
@@ -31,6 +33,8 @@ export class PeripheralSummary implements Panel {
   /** Edit-mode hooks: in edit mode, port/peripheral clicks fire these (for swap menus). */
   onPortEdit(cb: (port: string, e: MouseEvent) => void): void { this.portEditCallback = cb; }
   onPeripheralEdit(cb: (port: string, instance: string, e: MouseEvent) => void): void { this.peripheralEditCallback = cb; }
+  /** Modify mode: a DMA stream of `instance` was clicked (null: a request left without a stream). */
+  onDmaEdit(cb: (port: string, instance: string, stream: string | null, e: MouseEvent) => void): void { this.dmaEditCallback = cb; }
   setEditMode(on: boolean): void { this.editMode = on; }
 
   createView(container: HTMLElement): void {
@@ -50,6 +54,7 @@ export class PeripheralSummary implements Panel {
       this.currentAssignments = change.assignments ?? [];
       this.gpioCount = change.gpioCount ?? 0;
       this.dmaStreamAssignment = change.dmaStreamAssignment ?? new Map();
+      this.dmaUnassigned = change.dmaUnassigned ?? [];
       this.portPeripherals = this.derivePeripherals(this.currentAssignments);
       this.persistentHighlight = null;
       this.emitHighlight(new Set());
@@ -92,8 +97,8 @@ export class PeripheralSummary implements Panel {
 
   /**
    * Build per-instance DMA stream info for a port's assignments.
-   * Returns a map of peripheralInstance → list of abbreviated stream names.
-   * e.g. "USART1" → ["D2S7", "D2S2"]
+   * Returns a map of peripheralInstance → list of full stream names.
+   * e.g. "USART1" → ["DMA2_Stream7", "DMA2_Stream2"]
    */
   private deriveDmaByInstance(
     portAssignments: Assignment[],
@@ -107,8 +112,7 @@ export class PeripheralSummary implements Panel {
       const stream = lookupDmaStream(a.signalName, dmaMap);
       if (!stream) continue;
       const arr = result.get(instance) ?? [];
-      const short = this.shortStream(stream);
-      if (!arr.includes(short)) arr.push(short);
+      if (!arr.includes(stream)) arr.push(stream);
       result.set(instance, arr);
     }
     return result;
@@ -229,12 +233,11 @@ export class PeripheralSummary implements Panel {
       const sortedInstances = [...portPeripherals].sort();
       for (let i = 0; i < sortedInstances.length; i++) {
         const inst = sortedInstances[i];
-        const dmaStreams = instanceDma.get(inst);
+        const dmaStreams = instanceDma.get(inst) ?? [];
+        const cleared = this.dmaUnassigned.filter(t => t.startsWith(inst + '_'));
         const instSpan = document.createElement('span');
         instSpan.className = 'ps-peripheral-instance ps-highlightable';
-        instSpan.textContent = dmaStreams && dmaStreams.length > 0
-          ? `${inst}(${dmaStreams.join(', ')})`
-          : inst;
+        instSpan.textContent = inst;
 
         const isPersistentInst = this.persistentHighlight?.type === 'peripheral' && this.persistentHighlight.key === inst;
         if (isPersistentInst) instSpan.classList.add('ps-highlight-active');
@@ -267,6 +270,28 @@ export class PeripheralSummary implements Panel {
         });
 
         perifSpan.appendChild(instSpan);
+        // Streams as their own items: in Modify mode each opens the DMA edit menu.
+        if (dmaStreams.length > 0 || cleared.length > 0) {
+          perifSpan.appendChild(document.createTextNode('('));
+          const items: Array<{ stream: string | null; title: string }> = [
+            ...dmaStreams.map(st => ({ stream: st, title: st })),
+            ...cleared.map(t => ({ stream: null, title: `${t}: no DMA stream (solve from solution to pick one)` })),
+          ];
+          items.forEach((item, k) => {
+            const sp = document.createElement('span');
+            sp.className = 'ps-dma-stream' + (item.stream ? '' : ' ps-dma-unassigned') + (this.editMode ? ' ps-highlightable' : '');
+            sp.textContent = item.stream ? this.shortStream(item.stream) : '–';
+            sp.title = item.title;
+            sp.addEventListener('click', (e) => {
+              if (!this.editMode || !this.dmaEditCallback) return;
+              e.stopPropagation();
+              this.dmaEditCallback(port, inst, item.stream, e);
+            });
+            perifSpan.appendChild(sp);
+            if (k < items.length - 1) perifSpan.appendChild(document.createTextNode(', '));
+          });
+          perifSpan.appendChild(document.createTextNode(')'));
+        }
         if (i < sortedInstances.length - 1) {
           perifSpan.appendChild(document.createTextNode(', '));
         }

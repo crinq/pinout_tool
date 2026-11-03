@@ -1,4 +1,4 @@
-import { newStats, solveConstraints, estimateComplexity, setActiveAnchorsFor } from './solver';
+import { newStats, solveConstraints, estimateComplexity, setActiveAnchorsFor, setFixedAssignments } from './solver';
 import { setSquaredCosts } from './cost-functions';
 import type { SolverConfig } from './solver';
 import { priorityPhase2Sort, costGuidedPhase2Sort, solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
@@ -175,6 +175,9 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
     // Placement anchors are read via a module global; set them once here so
     // every solver (not just those using prepareSolverContext) sees them.
     setActiveAnchorsFor(ast, mcu);
+    // Solve from a solution: kept assignments, read by prepareSolverContext —
+    // for the solvers and for post-optimize, which must not move them either.
+    setFixedAssignments(config.fixed, config.fixedDma);
     setSquaredCosts(!!config.squaredCosts);
 
     const complexity = estimateComplexity(ast, mcu);
@@ -246,5 +249,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
       statistics: newStats(0),
       _wire: true,
     });
+  } finally {
+    setFixedAssignments(null);   // the next request may be a normal solve
   }
 }

@@ -298,13 +298,23 @@ export class ConstraintEditor implements Panel {
     const toolbar = document.createElement('div');
     toolbar.className = 'ce-toolbar';
 
+    // Split button: Solve + ▾ menu (solve from the shown solution).
+    const solveSplit = document.createElement('span');
+    solveSplit.className = 'split-btn';
     const solveBtn = document.createElement('button');
     solveBtn.className = 'btn btn-small btn-primary';
     solveBtn.id = 'btn-solve';
     solveBtn.disabled = true;
     solveBtn.textContent = 'Solve';
-    solveBtn.title = 'Solve the constraints (Ctrl+Enter) — click again to abort a running solve';
-    toolbar.appendChild(solveBtn);
+    solveBtn.title = 'Solve the constraints (Ctrl+Enter) — click again to abort a running solve. Shift+click: solve from the shown solution';
+    const solveMenuBtn = document.createElement('button');
+    solveMenuBtn.className = 'btn btn-small btn-primary split-btn-menu';
+    solveMenuBtn.id = 'btn-solve-menu';
+    solveMenuBtn.disabled = true;
+    solveMenuBtn.textContent = '▾';
+    solveMenuBtn.title = 'More solve options';
+    solveSplit.append(solveBtn, solveMenuBtn);
+    toolbar.appendChild(solveSplit);
 
     const stats = document.createElement('span');
     stats.className = 'ce-stats';
@@ -478,6 +488,11 @@ export class ConstraintEditor implements Panel {
 
   getSolveButton(): HTMLElement | null {
     return this.container.querySelector('#btn-solve');
+  }
+
+  /** The ▾ half of the Solve split button. */
+  getSolveMenuButton(): HTMLButtonElement | null {
+    return this.container.querySelector('#btn-solve-menu');
   }
 
   getSolverStatusBar(): HTMLElement | null {
@@ -869,8 +884,8 @@ export class ConstraintEditor implements Panel {
       this.onInput();
     }
 
-    // Enter: auto-indent
-    if (e.key === 'Enter') {
+    // Enter: auto-indent (Ctrl/Cmd+Enter is the solve shortcut, not a newline)
+    if (e.key === 'Enter' && !(e.ctrlKey || e.metaKey)) {
       const start = this.textarea.selectionStart;
       const value = this.textarea.value;
       // Find current line's indentation

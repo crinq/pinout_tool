@@ -72,6 +72,22 @@
   color: var(--accent);
 }
 
+/* Solve ▾ split button: two buttons joined into one control. */
+.split-btn {
+  display: inline-flex;
+}
+.split-btn > .btn:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-btn > .split-btn-menu {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.35);
+  padding-left: 5px;
+  padding-right: 5px;
+}
+
 .btn-abort {
   background: var(--error);
   color: white;
@@ -664,6 +680,13 @@
   background-color: rgba(128, 128, 128, 0.2);
   outline: 1px solid var(--text-secondary);
   outline-offset: 1px;
+}
+
+.ps-dma-stream {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+.ps-dma-unassigned {
+  color: var(--error);
 }
 
 .ps-peripheral-instance {
@@ -1472,6 +1495,8 @@
   cursor: pointer;
 }
 .edit-menu-row:hover { background: var(--border); }
+.edit-menu-row.disabled { opacity: 0.5; cursor: default; }
+.edit-menu-row.disabled:hover { background: none; }
 .edit-menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .edit-menu-delta { flex: none; font-variant-numeric: tabular-nums; }
 .edit-menu-delta.good { color: #22c55e; }

@@ -16,6 +16,9 @@
 //   3 swap all peripherals between two structurally-equal ports
 //   4 swap one peripheral (instance+pins) between two ports
 //   5 replace a peripheral with a compatible unused instance
+//   6 unassign a peripheral instance or a whole port (then: solve from solution)
+//   7 DMA: unassign a stream, move it to a free stream, swap two requests' streams
+//     (kept as DmaPins; streams not touched are allocated freely as before)
 // ============================================================
 
 import type { Mcu, Solution, SolverError } from '../types';
@@ -24,8 +27,8 @@ import type { SignalCandidate } from './pattern-matcher';
 import {
   prepareSolverContext, resolveReservePatterns,
   createPinTracker, canAssignPin, assignPin, unassignPin,
-  evaluateAllConstraints, buildSolution,
-  type SolverContext, type SolverVariable, type VariableAssignment, type PinTracker,
+  evaluateAllConstraints, buildSolution, listDmaRequests,
+  type SolverContext, type SolverVariable, type VariableAssignment, type PinTracker, type DmaPins,
 } from './solver';
 import { computeTotalCost } from './cost-functions';
 import { buildVarsByChannel, reconstructAssignments } from './post-optimize';
@@ -44,6 +47,9 @@ export interface EditCandidate {
 
 type Assignment = Map<SolverVariable, SignalCandidate>;
 
+/** One undo/redo step: the assignment plus the hand-picked DMA streams. */
+interface Snapshot { a: Assignment; dma: DmaPins }
+
 /**
  * Cross-port variable identity (config+channel+exprIndex), for matching swaps.
  * Inline-mapping ports get an implicit config named after the PORT, which
@@ -57,8 +63,10 @@ function chanKey(v: SolverVariable): string {
 
 export class SolutionEditor {
   private assigned: Assignment;
-  private undoStack: Assignment[] = [];
-  private redoStack: Assignment[] = [];
+  private undoStack: Snapshot[] = [];
+  private redoStack: Snapshot[] = [];
+  /** DMA streams the user picked (or cleared, null); every other request is allocated freely. */
+  private dmaPins: DmaPins = new Map();
   currentCost = 0;
   readonly baselineCost: number;
 
@@ -109,17 +117,17 @@ export class SolutionEditor {
   }
 
   /** Cost of a fully-valid trial (pin-consistent + requires + DMA), or null if invalid. */
-  private evaluate(trial: Assignment): number | null {
+  private evaluate(trial: Assignment, dma: DmaPins = this.dmaPins): number | null {
     if (!this.buildTracker(trial)) return null;
     const va = this.toVA(trial);
-    if (!evaluateAllConstraints(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData, undefined, this.ctx.mcuInfo, this.ctx.sharedPatterns)) {
+    if (!evaluateAllConstraints(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData, undefined, this.ctx.mcuInfo, this.ctx.sharedPatterns, dma)) {
       return null;
     }
     return this.costOf(trial);
   }
 
-  private candidate(trial: Assignment, cost: number, label: string): EditCandidate {
-    return { label, costDelta: cost - this.currentCost, highlightPins: this.changedPins(trial), apply: () => this.commit(trial, cost) };
+  private candidate(trial: Assignment, cost: number, label: string, dma: DmaPins = this.dmaPins): EditCandidate {
+    return { label, costDelta: cost - this.currentCost, highlightPins: this.changedPins(trial), apply: () => this.commit(trial, cost, dma) };
   }
 
   /** "ENC0.CS:SPI2:NSS" — port.channel:instance:function for a candidate on a channel. */
@@ -143,10 +151,11 @@ export class SolutionEditor {
     return [...pins];
   }
 
-  private commit(trial: Assignment, cost: number): void {
-    this.undoStack.push(this.assigned);
+  private commit(trial: Assignment, cost: number, dma: DmaPins = this.dmaPins): void {
+    this.undoStack.push({ a: this.assigned, dma: this.dmaPins });
     this.redoStack.length = 0;
     this.assigned = trial;
+    this.dmaPins = dma;
     this.currentCost = cost;
   }
 
@@ -158,18 +167,20 @@ export class SolutionEditor {
   undo(): boolean {
     const prev = this.undoStack.pop();
     if (!prev) return false;
-    this.redoStack.push(this.assigned);
-    this.assigned = prev;
-    this.currentCost = this.costOf(prev) ?? Infinity;
+    this.redoStack.push({ a: this.assigned, dma: this.dmaPins });
+    this.assigned = prev.a;
+    this.dmaPins = prev.dma;
+    this.currentCost = this.costOf(prev.a) ?? Infinity;
     return true;
   }
 
   redo(): boolean {
     const next = this.redoStack.pop();
     if (!next) return false;
-    this.undoStack.push(this.assigned);
-    this.assigned = next;
-    this.currentCost = this.costOf(next) ?? Infinity;
+    this.undoStack.push({ a: this.assigned, dma: this.dmaPins });
+    this.assigned = next.a;
+    this.dmaPins = next.dma;
+    this.currentCost = this.costOf(next.a) ?? Infinity;
     return true;
   }
 
@@ -292,6 +303,79 @@ export class SolutionEditor {
       out.push(this.candidate(trial, cost, `Swap all: ${port} ↔ ${other}`));
     }
     return out.sort((a, b) => a.costDelta - b.costDelta);
+  }
+
+  // ---------- Unassign a peripheral instance / a whole port ----------
+
+  /**
+   * Clear every channel of `port` that uses `instance`, in all of the port's
+   * configs. Other ports keep theirs — also ones sharing the instance — and a
+   * pin is free again once no channel uses it.
+   */
+  unassignInstance(port: string, instance: string): EditCandidate | null {
+    return this.unassignWhere((v, c) => v.portName === port && c.peripheralInstance === instance,
+      `Unassign ${instance} on ${port}`);
+  }
+
+  /** Clear every channel of `port`; template/range siblings and sharing ports are untouched. */
+  unassignPort(port: string): EditCandidate | null {
+    return this.unassignWhere(v => v.portName === port, `Unassign port ${port}`);
+  }
+
+  private unassignWhere(pred: (v: SolverVariable, c: SignalCandidate) => boolean, label: string): EditCandidate | null {
+    const trial = new Map(this.assigned);
+    for (const [v, c] of this.assigned) if (pred(v, c)) trial.delete(v);
+    if (trial.size === this.assigned.size) return null;
+    const cost = this.evaluate(trial);
+    if (cost === null) return null;
+    return this.candidate(trial, cost, label);
+  }
+
+  // ---------- Modifier 7: DMA streams ----------
+
+  /** Current trigger → stream allocation, merged over the config combinations. */
+  private currentDma(): Map<string, string> {
+    const out: Map<string, string>[] = [];
+    evaluateAllConstraints(this.toVA(this.assigned), this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData, out, this.ctx.mcuInfo, this.ctx.sharedPatterns, this.dmaPins);
+    const merged = new Map<string, string>();
+    for (const m of out) for (const [k, v] of m) merged.set(k, v);
+    return merged;
+  }
+
+  /**
+   * Edits for `port`'s DMA requests on `instance` that currently use `stream`
+   * (null: the ones left without a stream): unassign, move to a free stream
+   * that can serve the request, or swap streams with another request.
+   */
+  listDmaEdits(port: string, instance: string, stream: string | null): EditCandidate[] {
+    const dmaData = this.ctx.dmaData;
+    if (!dmaData) return [];
+    const reqs = listDmaRequests(this.toVA(this.assigned), this.ctx.configCombinations, this.ctx.ports, dmaData);
+    const alloc = this.currentDma();
+    const used = new Set(alloc.values());
+    const out: EditCandidate[] = [];
+    const tryPins = (pins: DmaPins, label: string): void => {
+      const cost = this.evaluate(this.assigned, pins);
+      if (cost !== null) out.push(this.candidate(this.assigned, cost, label, pins));
+    };
+    for (const r of reqs) {
+      const cur = alloc.get(r.triggerName) ?? null;
+      if (r.portName !== port || r.peripheralInstance !== instance || cur !== stream) continue;
+      if (cur !== null) tryPins(new Map(this.dmaPins).set(r.triggerName, null), `Unassign DMA ${r.triggerName} (${cur})`);
+      for (const st of r.streams) {
+        if (st === cur || used.has(st)) continue;
+        tryPins(new Map(this.dmaPins).set(r.triggerName, st), `${cur ? 'Move' : 'Assign'} DMA ${r.triggerName} → ${st}`);
+      }
+      if (cur === null) continue;
+      for (const q of reqs) {
+        const qs = alloc.get(q.triggerName);
+        if (!qs || q.triggerName === r.triggerName || qs === cur) continue;
+        if (!r.streams.includes(qs) || !q.streams.includes(cur)) continue;
+        tryPins(new Map(this.dmaPins).set(r.triggerName, qs).set(q.triggerName, cur),
+          `Swap DMA ${r.triggerName} (${cur}) ↔ ${q.portName} ${q.triggerName} (${qs})`);
+      }
+    }
+    return out;
   }
 
   // ---------- Modifier 4: swap one peripheral between two ports ----------
@@ -423,10 +507,17 @@ export class SolutionEditor {
     const va = this.toVA(this.assigned);
     const dmaOut: Map<string, string>[] = [];
     // Populate DMA streams when the assignment is complete + valid; ignore otherwise (preview may be partial).
-    evaluateAllConstraints(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData, dmaOut, this.ctx.mcuInfo, this.ctx.sharedPatterns);
+    evaluateAllConstraints(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData, dmaOut, this.ctx.mcuInfo, this.ctx.sharedPatterns, this.dmaPins);
     const sol = buildSolution(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.pinnedAssignments, id, dmaOut);
     sol.mcuRef = this.mcu.refName;
     sol.solverOrigin = 'manual';
+    // Requests the user left without a stream: the solution is invalid until solved again.
+    const cleared = [...this.dmaPins].filter(([, st]) => st === null).map(([t]) => t);
+    if (cleared.length > 0 && this.ctx.dmaData) {
+      const requested = new Set(listDmaRequests(va, this.ctx.configCombinations, this.ctx.ports, this.ctx.dmaData).map(r => r.triggerName));
+      const unassigned = cleared.filter(t => requested.has(t));
+      if (unassigned.length > 0) sol.dmaUnassigned = unassigned;
+    }
     computeTotalCost(sol, this.mcu, this.weights);
     return sol;
   }
