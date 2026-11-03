@@ -12,7 +12,7 @@
 
 import type {
   Mcu, Solution, SolverResult, SolverError, SolverStats,
-  Assignment, DmaData, DmaStreamInfo,
+  Assignment, DmaData, DmaStreamInfo, InterruptLine,
 } from '../types';
 import { normalizePeripheralType } from '../parser/mcu-xml-parser';
 import { findDmaStreamsForSignal } from '../parser/dma-xml-parser';
@@ -59,6 +59,8 @@ export interface SolverConfig {
   fixed?: Assignment[];
   /** …and these DMA streams (trigger → stream), as a preference. */
   fixedDma?: Map<string, string>;
+  /** Who may share an interrupt vector between irq() requirements (default 'port'). */
+  irqExclusive?: IrqScope;
   /** Square each distance term in the pin_clustering/proximity/anchor costs. */
   squaredCosts?: boolean;
 }
@@ -1429,7 +1431,7 @@ export function literalValue(
 
 const KNOWN_FUNCTIONS = new Set([
   'same_instance', 'diff_instance', 'instance', 'type',
-  'gpio_pin', 'gpio_port', 'gpio_number', 'dma', 'channel_signal',
+  'gpio_pin', 'gpio_port', 'gpio_number', 'dma', 'irq', 'channel_signal',
   'channel_number', 'instance_number', 'pin_number',
   'pin_row', 'pin_col', 'pin_distance', 'flag',
 ]);
@@ -1989,6 +1991,12 @@ export function runPreSolveChecks(ast: ProgramNode, mcu: Mcu): SolverError[] {
   validateConstraints(ports, errors);
   validatePeripheralAvailability(ports, mcu, reservedPeripheralSet, errors, sharedPatterns);
   validateDmaAvailability(ports, mcu, errors);
+  if (!mcu.interrupts && [...ports.values()].some(p => p.configs.some(c => c.requires.some(r => exprUses(r.expression, 'irq'))))) {
+    errors.push({
+      type: 'error',
+      message: `Constraints use irq() but no interrupt data is available for ${mcu.refName}. CubeMX XML carries none — load this MCU from the remote data source instead.`,
+    });
+  }
 
   const reservedPinSet = new Set(reserved.pins);
   const variables = resolveAllVariables(ports, mcu, reservedPinSet, reservedPeripheralSet);
@@ -2146,7 +2154,7 @@ export function prepareSolverContext(
   for (const pin of mcu.logicalPins) {
     pinByName.set(pin.name, { position: pin.physical.position });
   }
-  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName };
+  const mcuInfo: EvalMcuInfo = { package: mcu.package, pinByName, interrupts: mcu.interrupts };
 
   return {
     expandedAst, ports, reservedPins: reserved.pins, pinnedAssignments, sharedPatterns,
@@ -2626,7 +2634,112 @@ export function evaluateAllConstraints(
     }
   }
 
+  if (activeIrqScope !== 'global' && mcuInfo?.interrupts &&
+      !allocateIrqVectors(configCombinations, ports, byPortConfig, mcuInfo.interrupts, activeIrqScope)) {
+    return false;
+  }
+
   return true;
+}
+
+// ------------------------------------------------------------
+// Interrupts (irq())
+// ------------------------------------------------------------
+
+/**
+ * Who may share one NVIC vector between irq() requirements: one channel, one
+ * config, one port — or anyone ('global': no exclusivity, only existence).
+ */
+export type IrqScope = 'channel' | 'config' | 'port' | 'global';
+
+let activeIrqScope: IrqScope = 'port';
+
+/** Set by the worker (per solve) and the app (main-thread checks) from the irq_exclusive setting. */
+export function setIrqScope(scope: IrqScope): void {
+  activeIrqScope = scope;
+}
+
+/** irq(ch, "TYPE") / irq(ch, "TYPE_SIGNAL") → filter; same form as dma(). */
+function irqFilterOf(args: ConstraintExprNode[]): { peripheralType: string | null; triggerFunction: string | null } {
+  if (args.length >= 2 && args[args.length - 1].type === 'string_literal') {
+    return parseDmaFilter((args[args.length - 1] as { value: string }).value);
+  }
+  return { peripheralType: null, triggerFunction: null };
+}
+
+/** NVIC vectors an instance offers, optionally for one interrupt signal ("UP", "BRK", …). */
+function irqVectorsOf(instance: string, signal: string | null, interrupts?: Map<string, InterruptLine[]>): string[] {
+  const lines = interrupts?.get(instance) ?? [];
+  return [...new Set(lines.filter(l => signal === null || l.signal === signal).map(l => l.vector))];
+}
+
+/** irq() calls that must hold: top level or inside & chains (under |, !, … they may not). */
+function collectIrqCalls(expr: ConstraintExprNode, out: Array<ConstraintExprNode & { type: 'function_call' }>): void {
+  if (expr.type === 'function_call' && expr.name === 'irq') { out.push(expr); return; }
+  if (expr.type === 'binary_expr' && expr.operator === '&') {
+    collectIrqCalls(expr.left, out);
+    collectIrqCalls(expr.right, out);
+  }
+}
+
+/**
+ * Give every irq() requirement a vector, each vector held by one owner (the
+ * channel, config or port, by scope). A requirement is met by any vector its
+ * owner already holds, so owners share their own vectors freely. Vectors are
+ * shared between instances (ADC1/ADC2 → "ADC", TIM1 UP + TIM10 →
+ * "TIM1_UP_TIM10"), which is exactly what this guards.
+ */
+function allocateIrqVectors(
+  configCombinations: Map<string, string>[],
+  ports: Map<string, PortSpec>,
+  byPortConfig: Map<string, Map<string, Map<string, VariableAssignment[]>>>,
+  interrupts: Map<string, InterruptLine[]>,
+  scope: IrqScope,
+): boolean {
+  const reqs = new Map<string, { owner: string; vectors: string[] }>();
+  const seenConfigs = new Set<string>();
+  for (const combo of configCombinations) {
+    for (const [portName, configName] of combo) {
+      const cfgKey = `${portName}\0${configName}`;
+      if (seenConfigs.has(cfgKey)) continue;
+      seenConfigs.add(cfgKey);
+      const config = ports.get(portName)?.configs.find(c => c.name === configName);
+      const channels = byPortConfig.get(portName)?.get(configName);
+      if (!config || !channels) continue;
+      for (const req of config.requires) {
+        if (req.optional) continue;
+        const calls: Array<ConstraintExprNode & { type: 'function_call' }> = [];
+        collectIrqCalls(req.expression, calls);
+        for (const call of calls) {
+          const arg = call.args[0];
+          if (arg?.type !== 'ident') continue;     // own-port channels; cross-port refs are only checked for existence
+          const filter = irqFilterOf(call.args);
+          for (const va of channels.get(arg.name) ?? []) {
+            if (filter.peripheralType && va.candidate.peripheralType !== filter.peripheralType) continue;
+            const vectors = irqVectorsOf(va.candidate.peripheralInstance, filter.triggerFunction, interrupts);
+            if (vectors.length === 0) continue;   // existence is the evaluator's business
+            const owner = scope === 'channel' ? `${portName}\0${arg.name}` : scope === 'config' ? cfgKey : portName;
+            reqs.set(`${owner}\0${vectors.join(',')}`, { owner, vectors });
+          }
+        }
+      }
+    }
+  }
+  const list = [...reqs.values()].sort((a, b) => a.vectors.length - b.vectors.length);
+  const ownerOf = new Map<string, string>();
+  const solve = (i: number): boolean => {
+    if (i === list.length) return true;
+    const r = list[i];
+    if (r.vectors.some(v => ownerOf.get(v) === r.owner)) return solve(i + 1);
+    for (const v of r.vectors) {
+      if (ownerOf.has(v)) continue;
+      ownerOf.set(v, r.owner);
+      if (solve(i + 1)) return true;
+      ownerOf.delete(v);
+    }
+    return false;
+  };
+  return solve(0);
 }
 
 /**
@@ -2663,6 +2776,8 @@ export function isOptionalRequireVacuous(
 export interface EvalMcuInfo {
   package: string;
   pinByName: Map<string, { position: string }>;
+  /** Interrupt lines per instance (for irq()); absent when the MCU data has none. */
+  interrupts?: Map<string, InterruptLine[]>;
 }
 
 export function evaluateExpr(
@@ -2922,6 +3037,23 @@ function evaluateFunctionCall(
       }
       // If channel not yet assigned or no VAs match the filter, vacuously true
       return !hasMatchingVa;
+    }
+
+    case 'irq': {
+      // irq(ch) / irq(ch, "TYPE") / irq(ch, "TYPE_SIGNAL"): the channel's
+      // instance has a matching interrupt line. Which vector it gets — and
+      // whether another owner already holds it — is settled once per solution
+      // in evaluateAllConstraints (allocateIrqVectors).
+      if (!mcuInfo) return true;                 // no MCU context here; the final check decides
+      if (args.length < 1) return true;
+      const filter = irqFilterOf(args);
+      let hasMatchingVa = false;
+      for (const va of resolveChannel(args[0])) {
+        if (filter.peripheralType && va.candidate.peripheralType !== filter.peripheralType) continue;
+        hasMatchingVa = true;
+        if (irqVectorsOf(va.candidate.peripheralInstance, filter.triggerFunction, mcuInfo.interrupts).length > 0) return true;
+      }
+      return !hasMatchingVa;                     // not assigned / filtered out: vacuous, like dma()
     }
 
     case 'pin_number': {
@@ -3525,6 +3657,16 @@ export function configsHaveDma(ports: Map<string, PortSpec>): boolean {
     }
   }
   return false;
+}
+
+/** Does the expression call `fn` anywhere? */
+function exprUses(expr: ConstraintExprNode, fn: string): boolean {
+  switch (expr.type) {
+    case 'function_call': return expr.name === fn || expr.args.some(a => exprUses(a, fn));
+    case 'binary_expr': return exprUses(expr.left, fn) || exprUses(expr.right, fn);
+    case 'unary_expr': return exprUses(expr.operand, fn);
+    default: return false;
+  }
 }
 
 function exprHasDma(expr: ConstraintExprNode): boolean {

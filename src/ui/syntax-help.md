@@ -103,7 +103,7 @@ settings from "complex":
   timeout: 30s
 ```
 
-Overrides solver settings for this run only — your saved Settings are untouched. Keys: `timeout`, `dynamic_timeout`, `solvers`, `max_solutions`, `max_groups`, `max_solutions_per_group`, `num_restarts`, `skip_gpio_mapping`, `post_optimize`, `post_validate`, `squared_costs`, plus any cost-function id (`pin_count`, `pin_proximity`, `pin_anchor`, `pin_group_clustering`, …). Presets: `"default"`, `"complex"`.
+Overrides solver settings for this run only — your saved Settings are untouched. Keys: `timeout`, `dynamic_timeout`, `solvers`, `max_solutions`, `max_groups`, `max_solutions_per_group`, `num_restarts`, `skip_gpio_mapping`, `post_optimize`, `post_validate`, `squared_costs`, `irq_exclusive`, plus any cost-function id (`pin_count`, `pin_proximity`, `pin_anchor`, `pin_group_clustering`, …). Presets: `"default"`, `"complex"`.
 
 ### Placement (`@`)
 
@@ -221,6 +221,7 @@ Items: `0-12`, `7-0`, `00-15`, `A-H` / `a-h`, or names, mixed: `{TX, RX, 0-1}`. 
 | `pin_distance(A, B)` | Physical distance between pins |
 | `dma(A)` | DMA stream available for channel |
 | `dma(A, "USART")` | DMA check filtered by type |
+| `irq(A)`, `irq(A, "TIM_BRK")` | Instance has an interrupt (for that signal); vector sharing: `irq_exclusive` |
 | `flag(A, "5V_tolerant", true)` | Every pin of the channel carries that vendor pin flag with that value (a missing flag fails) |
 
 Numeric functions support comparison: `<`, `>`, `<=`, `>=`, `+`, `-`

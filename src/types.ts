@@ -68,6 +68,15 @@ export interface Mcu {
 
   // Optional DMA data (attached when DMA XML is available)
   dma?: DmaData;
+
+  /** Interrupt lines per peripheral instance (vendor JSON only; CubeMX XML has none). */
+  interrupts?: Map<string, InterruptLine[]>;
+}
+
+/** One interrupt line of a peripheral instance: `signal` ("UP", "GLOBAL", …) → NVIC vector ("TIM1_UP_TIM10"). */
+export interface InterruptLine {
+  signal: string;
+  vector: string;
 }
 
 export interface Peripheral {

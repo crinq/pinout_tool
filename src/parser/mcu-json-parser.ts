@@ -26,7 +26,7 @@ import { collapseSignalName, gpioPortNumber } from './mcu-common';
 import {
   type Mcu, type Peripheral, type LogicalPin, type PhysicalPin, type PinType, type Signal,
   type McuDocs,
-  type DmaData, type DmaStreamInfo,
+  type DmaData, type DmaStreamInfo, type InterruptLine,
 } from '../types';
 import { normalizePeripheralType } from './mcu-xml-parser';
 
@@ -87,6 +87,8 @@ interface JsonPeripheral {
   version?: string;
   register_block?: string;
   dma_channels?: JsonPeripheralDmaEntry[];
+  /** `signal` → NVIC vector, e.g. { signal: "UP", interrupt: "TIM1_UP_TIM10" } */
+  interrupts?: { signal: string; interrupt: string }[];
 }
 
 interface JsonDmaChannel {
@@ -749,7 +751,17 @@ function buildVariantMcu(a: VariantBuildArgs): Mcu {
     peripheralSignals,
     logicalSignalSet,
     dma: a.dma,
+    interrupts: interruptsOf(a.doc),
   };
+}
+
+/** Interrupt lines per peripheral instance, or undefined when the document lists none. */
+function interruptsOf(doc: McuJsonDocument): Map<string, InterruptLine[]> | undefined {
+  const out = new Map<string, InterruptLine[]>();
+  for (const p of doc.peripherals ?? []) {
+    if (p.interrupts?.length) out.set(p.name, p.interrupts.map(i => ({ signal: i.signal, vector: i.interrupt })));
+  }
+  return out.size > 0 ? out : undefined;
 }
 
 function addLogical(

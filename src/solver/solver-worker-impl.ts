@@ -1,4 +1,4 @@
-import { newStats, solveConstraints, estimateComplexity, setActiveAnchorsFor, setFixedAssignments } from './solver';
+import { newStats, solveConstraints, estimateComplexity, setActiveAnchorsFor, setFixedAssignments, setIrqScope } from './solver';
 import { setSquaredCosts } from './cost-functions';
 import type { SolverConfig } from './solver';
 import { priorityPhase2Sort, costGuidedPhase2Sort, solveTwoPhase, runSharedPhase1, runPhase2Only } from './two-phase-solver';
@@ -178,6 +178,7 @@ export function handle(e: MessageEvent<SolverWorkerRequest>): void {
     // Solve from a solution: kept assignments, read by prepareSolverContext —
     // for the solvers and for post-optimize, which must not move them either.
     setFixedAssignments(config.fixed, config.fixedDma);
+    setIrqScope(config.irqExclusive ?? 'port');
     setSquaredCosts(!!config.squaredCosts);
 
     const complexity = estimateComplexity(ast, mcu);

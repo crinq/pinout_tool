@@ -29,7 +29,7 @@ import type { ProjectData, ProjectVersion, SerializedSolution } from './storage'
 import { mergeResults, type LabeledSolverResult } from './solver/result-merger';
 import { isInternalPin } from './solver/pattern-matcher';
 import { fromWire, type WireSolverResult } from './solver/solution-transfer';
-import { runPreSolveChecks, constraintsNeedDma } from './solver/solver';
+import { runPreSolveChecks, constraintsNeedDma, setIrqScope } from './solver/solver';
 import { interpolateAllComments } from './solver/comment-interpolation';
 import { SolverDebugOverlay } from './ui/solver-debug-overlay';
 import { analyzeSolverInputs, formatSolverSummary, type SolverDiagnosticsReport } from './solver/diagnostics';
@@ -135,6 +135,7 @@ export class App implements DataManagerHost {
   private dataManager = new DataManager(this);
 
   init(): void {
+    setIrqScope(this.settings.irqExclusive);
     const appEl = document.getElementById('app');
     if (!appEl) {
       throw new Error('No #app element found');
@@ -437,6 +438,7 @@ export class App implements DataManagerHost {
       parseResult.ast, this.settings, new Set(getAllCostFunctions().map(f => f.id)),
     );
     this.solveSettings = overrides.settings;
+    setIrqScope(this.solveSettings.irqExclusive);   // main-thread checks (validity, Modify mode) follow this run
     for (const msg of overrides.errors) {
       console.warn('[settings]', msg);
       this.showStatus(msg, 'error');
@@ -711,6 +713,7 @@ export class App implements DataManagerHost {
       skipGpioMapping: this.solveSettings.skipGpioMapping,
       postOptimize: this.solveSettings.postOptimize,
       postValidate: this.solveSettings.postValidate,
+      irqExclusive: this.solveSettings.irqExclusive,
       fixed: this.solveFixed ?? undefined,
       fixedDma: this.solveFixedDma ?? undefined,
       squaredCosts: this.solveSettings.squaredCosts,
@@ -2349,6 +2352,7 @@ export class App implements DataManagerHost {
 
   private saveSettings(): void {
     localStorage.setItem('app-settings', JSON.stringify(this.settings));
+    setIrqScope(this.settings.irqExclusive);
   }
 
   private showSettingsModal(): void {
@@ -2418,6 +2422,13 @@ export class App implements DataManagerHost {
           <div class="settings-row">
             <label title="Before listing solver results, check each solution against the constraints (the same check as the project solutions' valid/invalid badge) and drop the invalid ones">Post-validate solutions</label>
             <input type="checkbox" id="set-post-validate" ${this.settings.postValidate ? 'checked' : ''}>
+          </div>
+          <div class="settings-row">
+            <label title="Who may share one interrupt vector between irq() requirements (vectors are often shared between peripherals, e.g. ADC1/ADC2)">irq() vector exclusive per</label>
+            <select class="settings-input" id="set-irq-exclusive">
+              ${(['channel', 'config', 'port', 'global'] as const).map(v =>
+                `<option value="${v}"${this.settings.irqExclusive === v ? ' selected' : ''}>${v === 'global' ? 'nobody (shared freely)' : v}</option>`).join('')}
+            </select>
           </div>
         </section>
 
@@ -2522,6 +2533,7 @@ export class App implements DataManagerHost {
       this.settings.skipGpioMapping = (modal.querySelector('#set-skip-gpio') as HTMLInputElement).checked;
       this.settings.postOptimize = (modal.querySelector('#set-post-optimize') as HTMLInputElement).checked;
       this.settings.postValidate = (modal.querySelector('#set-post-validate') as HTMLInputElement).checked;
+      this.settings.irqExclusive = (modal.querySelector('#set-irq-exclusive') as HTMLSelectElement).value as AppSettings['irqExclusive'];
       this.settings.squaredCosts = (modal.querySelector('#set-squared-costs') as HTMLInputElement).checked;
       this.settings.dataInspector = (modal.querySelector('#set-data-inspector') as HTMLInputElement).checked;
       this.settings.solverDebugOverlay = (modal.querySelector('#set-solver-debug') as HTMLInputElement).checked;

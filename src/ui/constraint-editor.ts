@@ -12,7 +12,7 @@ import { renderMarkdown } from './markdown';
 import syntaxHelpMd from './syntax-help.md?raw';
 import { createCodeEditor, type CodeEditor } from './code-editor';
 
-const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'gpio_number', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'flag']);
+const BUILTINS = new Set(['same_instance', 'diff_instance', 'instance', 'type', 'gpio_pin', 'gpio_port', 'gpio_number', 'channel_signal', 'channel_number', 'instance_number', 'pin_number', 'pin_row', 'pin_col', 'pin_distance', 'IN', 'OUT', 'dma', 'irq', 'flag']);
 
 /** Short docs shown as a hover tooltip over each keyword / built-in function. */
 const KEYWORD_DOCS: Record<string, string> = {
@@ -53,6 +53,7 @@ const KEYWORD_DOCS: Record<string, string> = {
   channel_number: 'The channel/signal number (e.g. 3 for TIM1_CH3).',
   instance_number: 'The peripheral instance number (e.g. 2 for SPI2).',
   pin_number: 'The package pin number / position of a channel\'s pin.',
+  irq: 'The channel\'s peripheral instance has an interrupt; optional "TYPE" or "TYPE_SIGNAL" filter. e.g. irq(tim, "TIM_BRK"). Vector exclusivity: setting irq_exclusive',
   pin_row: 'Row of a channel\'s pin (BGA row, or LQFP y-component).',
   pin_col: 'Column of a channel\'s pin (BGA column, or LQFP x-component).',
   pin_distance: 'Physical distance between two channels\' pins. e.g. pin_distance(A, B) < 5',

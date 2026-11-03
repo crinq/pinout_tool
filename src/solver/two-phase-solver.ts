@@ -718,6 +718,11 @@ function evaluateFunctionCallPhase1(
       // Phase 1: no pin assigned yet, return 0 (vacuously pass)
       return 0;
 
+    case 'irq':
+      // Instance-level, but the vector allocation needs the whole assignment —
+      // stay optimistic here; Phase 2 checks it for real.
+      return true;
+
     case 'channel_number': {
       if (args.length === 1) {
         const vas = resolveChannel(args[0]);
@@ -879,7 +884,7 @@ export function solvePhase2ForGroup(
   if (mcu) {
     const pinByName = new Map<string, { position: string }>();
     for (const pin of mcu.logicalPins) pinByName.set(pin.name, { position: pin.physical.position });
-    mcuInfo = { package: mcu.package, pinByName };
+    mcuInfo = { package: mcu.package, pinByName, interrupts: mcu.interrupts };
   }
 
   solveBacktrack(

@@ -4,6 +4,7 @@
 // ============================================================
 
 import type { ProgramNode, SettingsDeclNode, SettingValue } from './parser/constraint-ast';
+import type { IrqScope } from './solver/solver';
 
 export interface AppSettings {
   maxSolutions: number;
@@ -21,6 +22,8 @@ export interface AppSettings {
   skipGpioMapping: boolean;
   postOptimize: boolean;
   postValidate: boolean;
+  /** Who may share one interrupt vector between irq() requirements. */
+  irqExclusive: IrqScope;
   squaredCosts: boolean;
   dataInspector: boolean;
   dynamicTimeoutMultiplier: number;
@@ -54,6 +57,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skipGpioMapping: true,
   postOptimize: false,
   postValidate: true,
+  irqExclusive: 'port',
   squaredCosts: false,
   dataInspector: false,
   solverDebugOverlay: false,
@@ -98,6 +102,7 @@ const SETTING_KEYS: Record<string, keyof AppSettings> = {
   skip_gpio_mapping: 'skipGpioMapping',
   post_optimize: 'postOptimize',
   post_validate: 'postValidate',
+  irq_exclusive: 'irqExclusive',
   squared_costs: 'squaredCosts',
 };
 
@@ -153,6 +158,7 @@ export function applySettingsOverrides(
           skipGpioMapping: DEFAULT_SETTINGS.skipGpioMapping,
           postOptimize: DEFAULT_SETTINGS.postOptimize,
           postValidate: DEFAULT_SETTINGS.postValidate,
+          irqExclusive: DEFAULT_SETTINGS.irqExclusive,
           squaredCosts: DEFAULT_SETTINGS.squaredCosts,
           ...preset,
           costWeights: { ...DEFAULT_SETTINGS.costWeights, ...preset.costWeights },
@@ -176,6 +182,16 @@ export function applySettingsOverrides(
       const field = SETTING_KEYS[key];
       if (!field) {
         errors.push(`Line ${loc.line}: unknown setting "${key}"`);
+        continue;
+      }
+
+      if (field === 'irqExclusive') {
+        const scope = Array.isArray(value) && value.length === 1 ? value[0] : null;
+        if (scope !== 'channel' && scope !== 'config' && scope !== 'port' && scope !== 'global') {
+          errors.push(`Line ${loc.line}: irq_exclusive expects "channel", "config", "port" or "global"`);
+          continue;
+        }
+        out.irqExclusive = scope;
         continue;
       }
 
@@ -232,6 +248,7 @@ export function formatSettingsBlock(s: AppSettings): string {
     `  skip_gpio_mapping: ${bool(s.skipGpioMapping)}`,
     `  post_optimize: ${bool(s.postOptimize)}`,
     `  post_validate: ${bool(s.postValidate)}`,
+    `  irq_exclusive: "${s.irqExclusive}"`,
     `  squared_costs: ${bool(s.squaredCosts)}`,
   ];
   for (const [id, w] of Object.entries(s.costWeights)) {

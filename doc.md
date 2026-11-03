@@ -529,6 +529,7 @@ settings:
 | `max_groups`, `max_solutions_per_group` | Two-phase search limits |
 | `num_restarts` | Restarts for the randomized solvers |
 | `skip_gpio_mapping`, `post_optimize`, `post_validate`, `squared_costs` | Booleans (`0`/`1` or `true`/`false`) |
+| `irq_exclusive` | `"channel"`, `"config"`, `"port"` or `"global"` — who may share an interrupt vector (see [Interrupt constraints](#interrupt-constraints)) |
 | *any cost-function id* | Sets that weight — `pin_count`, `port_spread`, `peripheral_count`, `debug_pin_penalty`, `pin_clustering`, `pin_group_clustering`, `pin_proximity`, `pin_anchor`, `optional_fulfillment` |
 
 **Presets.** `settings from "<name>":` restarts from a named preset instead of your current settings, then applies the block on top:
@@ -737,6 +738,7 @@ port DEBUG:
 | `flag(ch, "name", value)` | 1 channel + name + value | boolean | Every pin the channel uses carries that vendor pin flag with that value |
 | `dma(ch)` | 1 channel | boolean | Channel's signal has a DMA stream available |
 | `dma(ch, "TYPE")` or `dma(ch, "TYPE_REQUEST")` | 1 channel + filter | boolean | DMA check filtered by peripheral type, or type + specific request (e.g. `"USART_TX"`) |
+| `irq(ch)`, `irq(ch, "TYPE")`, `irq(ch, "TYPE_SIGNAL")` | 1 channel + filter | boolean | The channel's instance has an interrupt (optionally one for that signal, e.g. `"TIM_BRK"`); see [Interrupt constraints](#interrupt-constraints) |
 | `pin_number(ch)` | 1 channel | number | Physical pin number (position) |
 | `pin_row(ch)` | 1 channel | number | BGA: row (A=1, B=2, ...). LQFP: y-component |
 | `pin_col(ch)` | 1 channel | number | BGA: column number. LQFP: x-component |
@@ -778,6 +780,29 @@ Flags come from the remote JSON catalogue's optional `flags` dict per GPIO:
 ```
 
 CubeMX XML carries no flags, so `flag()` never holds for XML-imported MCUs.
+
+#### Interrupt constraints
+
+`irq()` requires an interrupt for the channel's peripheral instance. The optional string filters by peripheral type (`"TIM"`) or type + interrupt signal (`"TIM_BRK"`, `"TIM_UP"`, `"USART_GLOBAL"`):
+
+```
+port LOG:
+  channel TX = USART*_TX
+  internal tim = TIM*_UP
+  require irq(TX)
+  require irq(tim, "TIM_BRK")
+```
+
+Interrupt vectors are often shared between peripherals -- ADC1 and ADC2 on one `ADC` vector, TIM1's update with TIM10 on `TIM1_UP_TIM10`. The **irq_exclusive** setting decides who may share a vector between `irq()` requirements:
+
+| Value | A vector serves… |
+|-------|------------------|
+| `"channel"` | one channel |
+| `"config"` | one config of a port |
+| `"port"` (default) | one port (all its channels and configs) |
+| `"global"` | anyone -- only existence is checked |
+
+Only `irq()` calls that must hold count towards exclusivity: at the top level of a `require` or inside `&` (not under `|`, not in `require?`). The interrupt data comes from the remote MCU catalogue; CubeMX XML carries none, so `irq()` on an XML-loaded MCU is a pre-solve error.
 
 #### DMA constraints
 
@@ -1292,6 +1317,7 @@ Access via the **Settings** button:
 - **Dynamic timeout** -- if the first solver run finds 0 solutions, retry with timeout × this multiplier. Disabled if ≤1 (default: 3)
 - **Skip GPIO mapping** -- skip pin assignment for IN/OUT channels and only verify enough free pins remain (much faster when there are many GPIO channels; default: on). IN/OUT channels passed to a pin function in a `require` (`gpio_number`, `gpio_pin`, `gpio_port`, `pin_number`, `pin_row`, `pin_col`, `pin_distance`, `flag` — e.g. `gpio_number(IRQ) != gpio_number(SYNC)`) are still placed, so the require can be checked
 - **Post-optimize pins** -- after solving, greedily relocate single-signal pins to free alternatives that lower total cost, repeating until no move improves. Off by default
+- **irq() vector exclusive per** -- who may share one interrupt vector between `irq()` requirements: channel, config, port (default) or nobody (see [Interrupt constraints](#interrupt-constraints))
 - **Post-validate solutions** -- before solver results are listed, check every solution against the constraints with the same check as the project solutions' valid/invalid badge, and drop the invalid ones. Each solver that produced invalid solutions gets a warning with the count and the first reason (default: on)
 - **Square distance costs** -- sum squared distances in pin_clustering / pin_proximity / pin_anchor so single outliers are punished harder (default: off)
 - **Cost weights** -- adjust the ranking formula for all cost functions
